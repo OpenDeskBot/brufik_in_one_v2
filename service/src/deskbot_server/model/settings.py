@@ -1,0 +1,262 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from typing import Any
+
+
+def _env_bool(name: str) -> bool | None:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return None
+
+
+def _env_str(name: str, default: str = "") -> str:
+    """读取环境变量字符串，未设置返回 default。"""
+    return os.environ.get(name, default).strip() or default
+
+
+def _env_int(name: str, default: int = 0) -> int:
+    """读取环境变量整数，未设置或解析失败返回 default。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+@dataclass(frozen=True)
+class ServerSettings:
+    host: str = "0.0.0.0"
+    port: int = 9000
+    ws_path: str = "/asr_chat"
+    ws_ping_interval: float | None = 20.0
+    ws_ping_timeout: float = 20.0
+    asr_chat_device_pb_only: bool = True
+    asr_chat_minimal_device_downlink: bool = False
+    send_face_info_to_asr_chat: bool = False
+    web_public_host: str = ""
+    # 0 = 启动时按 CPU 核数推导（见 core/concurrency.py）
+    max_concurrent_asr: int = 0
+    max_concurrent_face_infer: int = 0
+
+
+@dataclass(frozen=True)
+class AudioSettings:
+    input_codec: str = "opus"
+    output_codec: str = "opus"
+    sample_rate: int = 16000
+    channels: int = 1
+
+
+@dataclass(frozen=True)
+class VadSettings:
+    mode: int = 2
+    frame_ms: int = 30
+    min_speech_ms: int = 250
+    max_silence_ms: int = 500
+    pre_speech_ms: int = 300
+    silero_model_path: str = ""
+    silero_threshold: float = 0.5
+    silero_threshold_low: float = 0.2
+
+
+@dataclass(frozen=True)
+class AsrTextFilterSettings:
+    min_text_len: int = 2
+    min_chinese_ratio: float = 0.0
+
+
+@dataclass(frozen=True)
+class AsrSettings:
+    model_dir: str = ""
+    hub: str = "hf"
+    language: str = "zh"
+    use_quant_onnx: bool = True
+    onnx_intra_op_threads: int = 4
+    text_filter: AsrTextFilterSettings = field(default_factory=AsrTextFilterSettings)
+
+
+@dataclass(frozen=True)
+class LlmSettings:
+    base_url: str = ""
+    model_name: str = ""
+    system_prompt: str = ""
+
+
+@dataclass(frozen=True)
+class TtsSettings:
+    provider: str = "doubao"
+    ws_url: str = ""
+    lang: str = "zh"
+    spk_id: int = 0
+    sample_rate: int = 24000
+    pb_random_servo: dict[str, Any] = field(default_factory=dict)
+    pb_face_bundle_json: str = ""
+    pb_face_bundle_file: str = ""
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AppSettings:
+    """统一运行时配置：YAML + 环境变量覆盖。"""
+
+    server: ServerSettings
+    audio: AudioSettings
+    vad: VadSettings
+    asr: AsrSettings
+    llm: LlmSettings
+    tts: TtsSettings
+    camera_face: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> AppSettings:
+        srv = dict(config.get("server") or {})
+        audio = dict(config.get("audio") or {})
+        vad = dict(config.get("vad") or {})
+        asr = dict(config.get("asr") or {})
+        llm = dict(config.get("llm") or {})
+        tts = dict(config.get("tts") or {})
+        tf = dict(asr.get("text_filter") or {})
+
+        pb_only_env = _env_bool("DESKBOT_ASR_CHAT_DEVICE_PB_ONLY")
+        pb_only = pb_only_env if pb_only_env is not None else bool(srv.get("asr_chat_device_pb_only", True))
+
+        minimal_env = _env_bool("DESKBOT_ASR_CHAT_MINIMAL_DOWNLINK")
+        minimal = minimal_env if minimal_env is not None else bool(srv.get("asr_chat_minimal_device_downlink", False))
+
+        face_info_env = _env_bool("DESKBOT_SEND_FACE_INFO")
+        face_info = face_info_env if face_info_env is not None else bool(srv.get("send_face_info_to_asr_chat", False))
+
+        if env := _env_str("TTS_PROVIDER"):
+            tts["provider"] = env
+        if env := _env_str("TTS_WS_URL"):
+            tts["ws_url"] = env
+        if env := _env_int("TTS_SPK_ID"):
+            tts["spk_id"] = env
+        if env := _env_int("TTS_SAMPLE_RATE"):
+            tts["sample_rate"] = env
+
+        tts_extra = {
+            k: v
+            for k, v in tts.items()
+            if k
+            not in (
+                "provider",
+                "ws_url",
+                "lang",
+                "spk_id",
+                "sample_rate",
+                "pb_random_servo",
+                "pb_face_bundle_json",
+                "pb_face_bundle_file",
+            )
+        }
+
+        return cls(
+            server=ServerSettings(
+                host=os.environ.get("DESKBOT_SERVER_HOST") or str(srv.get("host", "0.0.0.0")),
+                port=int(os.environ.get("DESKBOT_SERVER_PORT") or srv.get("port", 9000)),
+                ws_path=os.environ.get("DESKBOT_WS_PATH") or str(srv.get("ws_path", "/asr_chat")),
+                ws_ping_interval=_parse_ping_interval(
+                    os.environ.get("DESKBOT_WS_PING_INTERVAL"), srv.get("ws_ping_interval", 20)
+                ),
+                ws_ping_timeout=float(os.environ.get("DESKBOT_WS_PING_TIMEOUT") or srv.get("ws_ping_timeout", 20)),
+                asr_chat_device_pb_only=pb_only,
+                asr_chat_minimal_device_downlink=minimal,
+                send_face_info_to_asr_chat=face_info and not pb_only,
+                web_public_host=str(srv.get("web_public_host") or ""),
+                max_concurrent_asr=int(srv.get("max_concurrent_asr", 0)),
+                max_concurrent_face_infer=int(srv.get("max_concurrent_face_infer", 0)),
+            ),
+            audio=AudioSettings(
+                input_codec=str(audio.get("input_codec", "opus")),
+                output_codec=str(audio.get("output_codec", "opus")),
+                sample_rate=int(audio.get("sample_rate", 16000)),
+                channels=int(audio.get("channels", 1)),
+            ),
+            vad=VadSettings(
+                mode=int(vad.get("mode", 2)),
+                frame_ms=int(vad.get("frame_ms", 30)),
+                min_speech_ms=int(vad.get("min_speech_ms", 300)),
+                max_silence_ms=int(vad.get("max_silence_ms", 500)),
+                pre_speech_ms=int(vad.get("pre_speech_ms", 300)),
+                silero_model_path=str(vad.get("silero_model_path", "")),
+                silero_threshold=float(vad.get("silero_threshold", 0.5)),
+                silero_threshold_low=float(vad.get("silero_threshold_low", 0.2)),
+            ),
+            asr=AsrSettings(
+                model_dir=str(asr.get("model_dir", "")),
+                hub=str(asr.get("hub", "hf")),
+                language=str(asr.get("language", "zh")),
+                use_quant_onnx=bool(asr.get("use_quant_onnx", True)),
+                onnx_intra_op_threads=max(1, int(asr.get("onnx_intra_op_threads", 4))),
+                text_filter=AsrTextFilterSettings(
+                    min_text_len=int(tf.get("min_text_len", 2)),
+                    min_chinese_ratio=float(tf.get("min_chinese_ratio", 0.2)),
+                ),
+            ),
+            llm=LlmSettings(
+                base_url=str(llm.get("base_url", "")),
+                model_name=str(llm.get("model_name", "")),
+                system_prompt=str(llm.get("system_prompt", "")),
+            ),
+            tts=TtsSettings(
+                provider=str(tts.get("provider") or "doubao").strip().lower(),
+                ws_url=str(tts.get("ws_url", "")),
+                lang=str(tts.get("lang", "zh")),
+                spk_id=int(tts.get("spk_id", 0)),
+                sample_rate=int(tts.get("sample_rate", 24000)),
+                pb_random_servo=dict(tts.get("pb_random_servo") or {}),
+                pb_face_bundle_json=str(tts.get("pb_face_bundle_json") or ""),
+                pb_face_bundle_file=str(tts.get("pb_face_bundle_file") or ""),
+                extra=tts_extra,
+            ),
+            camera_face=dict(config.get("camera_face") or {}),
+            raw=config,
+        )
+
+    def pb_random_servo_cfg(self) -> dict[str, Any] | None:
+        sub = self.tts.pb_random_servo
+        env = _env_bool("DESKBOT_PB_RANDOM_SERVO")
+        enabled = bool(sub.get("enabled", False))
+        if env is True:
+            enabled = True
+        if env is False:
+            enabled = False
+        if not enabled:
+            return None
+        out = dict(sub)
+        out["enabled"] = True
+        return out
+
+    @property
+    def tts_cfg(self) -> dict[str, Any]:
+        """兼容旧代码对 dict 形式 tts 配置的访问。"""
+        base = {
+            "provider": self.tts.provider,
+            "ws_url": self.tts.ws_url,
+            "lang": self.tts.lang,
+            "spk_id": self.tts.spk_id,
+            "sample_rate": self.tts.sample_rate,
+            "pb_random_servo": self.tts.pb_random_servo,
+            "pb_face_bundle_json": self.tts.pb_face_bundle_json,
+            "pb_face_bundle_file": self.tts.pb_face_bundle_file,
+        }
+        base["output_codec"] = self.audio.output_codec
+        base.update(self.tts.extra)
+        return base
+
+
+def _parse_ping_interval(env_val: str | None, cfg_val: Any) -> float | None:
+    raw = env_val if env_val is not None else str(cfg_val)
+    raw = str(raw).strip().lower()
+    if raw in ("0", "none", "off", "false"):
+        return None
+    return max(5.0, float(raw))

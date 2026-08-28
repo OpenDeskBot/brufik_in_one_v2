@@ -1,0 +1,163 @@
+#pragma once
+
+#include <stddef.h>
+#include <driver/gpio.h>
+
+/* ========== 烧录前可改：网络 ==========
+ * 默认连 deskbot_wifi；也可改成你的路由器 SSID/密码。
+ * 若 SSID 留空 → 开放热点（SSID=设备 ID，无密码），http://192.168.4.1/ 配网；NVS 已存凭证优先。
+ * WS host 留空 → 禁用内置 WebSocket；可在配网页添加自定义云服务器。
+ */
+#define WIFI_DEFAULT_SSID "deskbot_wifi"
+#define WIFI_DEFAULT_PASSWORD "hello2026"
+
+/** 开机 AP 配网窗口（ms）编译期兜底；运行时以 NVS 为准（默认 20s，5–60s 可配）。 */
+#ifndef DESKBOT_AP_OFFER_TIMEOUT_MS
+#define DESKBOT_AP_OFFER_TIMEOUT_MS 20000
+#endif
+
+#define DESKBOT_WS_HOST "39.107.38.241"
+// #define DESKBOT_WS_HOST "39.107.38.241"
+#define DESKBOT_WS_PORT 9000
+
+#define ASR_CHAT_HOST DESKBOT_WS_HOST
+#define ASR_CHAT_PORT DESKBOT_WS_PORT
+
+static inline bool deskbot_ws_configured(void) {
+  return DESKBOT_WS_HOST[0] != '\0';
+}
+
+/* ========== 硬件接线（Deskbot v2 自研板，已从 Seeed XIAO ESP32S3 Sense 移植）==========
+ * 引脚表来源：open-desk-bot-v2/hardware 固件 DESKBOT_BOARD_V2=1 分支（经 app.log 实机验证）。
+ * 显示屏：ST7789P 240×284（模块 T183B7-C12-04），RST/BL 接 3.3V（不经 MCU GPIO）
+ */
+
+#define DESKBOT_DISPLAY_MOSI 5
+#define DESKBOT_DISPLAY_SCK  4
+#define DESKBOT_DISPLAY_CS   6
+#define DESKBOT_DISPLAY_DC   7
+
+#define DESKBOT_DISPLAY_WIDTH 240
+#ifndef DESKBOT_DISPLAY_HEIGHT
+#define DESKBOT_DISPLAY_HEIGHT 284
+#endif
+#ifndef DESKBOT_DISPLAY_ROW_OFFSET
+#define DESKBOT_DISPLAY_ROW_OFFSET 0
+#endif
+#ifndef DESKBOT_DISPLAY_COL_OFFSET
+#define DESKBOT_DISPLAY_COL_OFFSET 0
+#endif
+
+#ifndef DESKBOT_DISPLAY_TOP_SAFE_PX
+#define DESKBOT_DISPLAY_TOP_SAFE_PX 4
+#endif
+
+#define DESKBOT_PB_COORD_W DESKBOT_DISPLAY_HEIGHT
+#define DESKBOT_PB_COORD_H 240
+#ifndef DESKBOT_DISPLAY_CANVAS_X0
+#define DESKBOT_DISPLAY_CANVAS_X0 ((DESKBOT_DISPLAY_HEIGHT - DESKBOT_PB_COORD_W) / 2)
+#endif
+#ifndef DESKBOT_DISPLAY_ROT3_XSTART_ADJ
+#define DESKBOT_DISPLAY_ROT3_XSTART_ADJ (-18)
+#endif
+
+#define DESKBOT_DRAW_W DESKBOT_PB_COORD_W
+#define DESKBOT_DRAW_H DESKBOT_PB_COORD_H
+
+/* 舵机 PWM（v2 板：X → GPIO16，Y → GPIO15；均已避开 USB 19/20 与 strapping）
+ * 左右(X) → GPIO16 小舵机；上下(Y) → GPIO15 大舵机 */
+#ifndef DESKBOT_ROM_X_PIN
+#define DESKBOT_ROM_X_PIN 16
+#endif
+#ifndef DESKBOT_ROM_Y_PIN
+#define DESKBOT_ROM_Y_PIN 15
+#endif
+
+#ifndef DESKBOT_AUDIO_PLAY_VOLUME
+#define DESKBOT_AUDIO_PLAY_VOLUME 0.85f
+#endif
+
+/* 功放 NS4168（原 MAX98357A）：同为 I2S 输入 D 类功放，仅引脚不同。
+ * SD(=AMP_CTRL) 接 GPIO45，高电平使能（speaker.cpp 已有 SD≥0 时 pinMode OUTPUT + 拉高逻辑）。
+ * 注意 GPIO45 为 strapping 引脚，只能在 boot 后拉高，不要复位前强拉低。 */
+#define DESKBOT_ROM_MAX98357_DIN  GPIO_NUM_40
+#define DESKBOT_ROM_MAX98357_BCLK GPIO_NUM_41
+#define DESKBOT_ROM_MAX98357_LRC  GPIO_NUM_42
+#define DESKBOT_ROM_MAX98357_SD   GPIO_NUM_45
+#define DESKBOT_ROM_MAX98357_GAIN GPIO_NUM_NC
+
+#define DESKBOT_PDM_MIC_CLK  GPIO_NUM_1
+#define DESKBOT_PDM_MIC_DATA GPIO_NUM_2
+
+/* 能量门控（enhance_voice 后本地预处理，切句在服务端 Silero VAD） */
+#define DESKBOT_PDM_VOICE_MARGIN             320
+#define DESKBOT_PDM_VOICE_HANGOVER_MARGIN    200
+#define DESKBOT_PDM_VOICE_TRIGGER_RATIO_NUM    130
+#define DESKBOT_PDM_VOICE_TRIGGER_RATIO_DEN  100
+/** 触发阈值绝对下限（enhance_voice×5 后的 mean-abs）；防安静环境下 thr 过低。 */
+#define DESKBOT_PDM_VOICE_TRIGGER_FLOOR      140
+
+static inline size_t deskbot_pdm_voice_trigger_thr(size_t ema) {
+  const size_t t_delta = ema + (size_t)DESKBOT_PDM_VOICE_MARGIN;
+  const size_t t_ratio =
+      (ema * (size_t)DESKBOT_PDM_VOICE_TRIGGER_RATIO_NUM) / (size_t)DESKBOT_PDM_VOICE_TRIGGER_RATIO_DEN;
+  /* 取较高者：旧 min() 在 ema≈60 时 thr≈63，3m 人声也会触发。 */
+  size_t thr = (t_delta > t_ratio) ? t_delta : t_ratio;
+  if (thr < (size_t)DESKBOT_PDM_VOICE_TRIGGER_FLOOR) {
+    thr = (size_t)DESKBOT_PDM_VOICE_TRIGGER_FLOOR;
+  }
+  return thr;
+}
+
+static inline size_t deskbot_pdm_voice_hangover_thr(size_t ema) {
+  return ema + (size_t)DESKBOT_PDM_VOICE_HANGOVER_MARGIN;
+}
+#define DESKBOT_PDM_EMA_QUIET_RATIO_NUM      102
+#define DESKBOT_PDM_EMA_QUIET_RATIO_DEN      100
+/** 连续超阈帧数（20ms/帧）；3=60ms，可滤远场短促人声。 */
+#define DESKBOT_PDM_VOICE_TRIGGER_FRAMES     3
+#define DESKBOT_PDM_VOICE_THRESHOLD_MAX      24000
+#define DESKBOT_PDM_PRE_VOICE_FRAMES         50
+/** 说完后连续静音多久结束本轮（ms）；600–700 适合短指令，句内长停顿需靠 hangover 续录。 */
+#define DESKBOT_PDM_SILENCE_END_MS           650
+
+/** I2S 播放 chunk 的 mean-abs×volume 低于此值视为静音，isSpeaking 保持 false。 */
+#define DESKBOT_SPEAKER_AUDIBLE_MEAN_ABS     16
+
+/** TTS 结束后尾音抑制（ms）；无 AEC 时开麦前丢弃环内回声。 */
+#ifndef DESKBOT_TAIL_SUPPRESS_MS
+#define DESKBOT_TAIL_SUPPRESS_MS               300
+#endif
+
+/** 单轮连续 Opus 上行上限（秒）；正常由 pb_start 提前结束。 */
+#ifndef DESKBOT_UPLINK_MAX_SEC
+#define DESKBOT_UPLINK_MAX_SEC                 30
+#endif
+
+/** WS TCP 握手 + upgrade 等待上限（ms）；重连时适当加长。 */
+#ifndef DESKBOT_WS_CONNECT_TIMEOUT_MS
+#define DESKBOT_WS_CONNECT_TIMEOUT_MS          10000
+#endif
+
+/** disconnect 后泵 loop 清空 lwIP 发送队列（ms）。 */
+#ifndef DESKBOT_WS_DISCONNECT_DRAIN_MS
+#define DESKBOT_WS_DISCONNECT_DRAIN_MS         1500
+#endif
+
+/* ========== pb 执行器缓冲 / 调度 ==========
+ * xQueue：pb_runtime → 执行器（跨任务，深度约 50）。
+ * 预取目标约 1s（墙钟信用）；abort 置 need_cancel 后队尾入队 cancel。
+ */
+#ifndef DESKBOT_PB_EXECUTOR_QUEUE_DEPTH
+#define DESKBOT_PB_EXECUTOR_QUEUE_DEPTH 50
+#endif
+#ifndef DESKBOT_PB_MODEL_RING_CAPACITY
+#define DESKBOT_PB_MODEL_RING_CAPACITY 50
+#endif
+#ifndef DESKBOT_PB_PREFETCH_TARGET_MS
+#define DESKBOT_PB_PREFETCH_TARGET_MS 1000
+#endif
+#ifndef DESKBOT_PB_CREDIT_TICK_MS
+#define DESKBOT_PB_CREDIT_TICK_MS 100
+#endif
+
