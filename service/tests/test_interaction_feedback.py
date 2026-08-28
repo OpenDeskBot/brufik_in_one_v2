@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import asyncio
+import time
+
+
+def test_listen_feedback_gaze_when_face_recent():
+    from deskbot_server.service.application import interaction_feedback as fb
+
+    fb.clear_face_analysis("dev1")
+    fb._listen_last_mono.clear()
+    fb.note_face_analysis(
+        "dev1",
+        {
+            "landmarks": [{"name": "nose", "x": 160, "y": 120}],
+            "image_w": 320,
+            "image_h": 240,
+        },
+    )
+    kind, moves = fb.listen_feedback_moves("dev1")
+    assert kind == "gaze"
+    assert len(moves) == 1
+    assert moves[0]["move"] == "__custom__"
+    assert moves[0]["ms"] == fb._MOTION_MS
+
+
+def test_build_servo_only_pb_frames_respects_chunk_max():
+    from deskbot_server.pb.servo_pcm import PB_CHUNK_MS_MAX
+    from deskbot_server.service.application import interaction_feedback as fb
+
+    fb.clear_face_analysis("dev1")
+    fb.note_face_analysis(
+        "dev1",
+        {
+            "landmarks": [{"name": "nose", "x": 160, "y": 120}],
+            "image_w": 320,
+            "image_h": 240,
+        },
+    )
+    _kind, moves = fb.listen_feedback_moves("dev1")
+    built = fb.build_servo_only_pb_frames(moves, device_id="dev1", request_id="abc123")
+    assert built is not None
+    frames, req_id = built
+    assert req_id == "abc123"
+    assert frames
+    assert all(f.get("audio") is None for f in frames)
+    assert all(int(f["chunk_ms"]) <= PB_CHUNK_MS_MAX for f in frames)
+    assert sum(len(f.get("servo") or []) for f in frames) >= 1
+    if len(frames) == 1:
+        assert frames[0]["type"] == "pb_single"
+    else:
+        assert frames[0]["type"] == "pb_start"
+        assert frames[-1]["type"] == "pb_end"
+
+
+def test_llm_wait_nod_is_one_short_nod(monkeypatch):
+    from deskbot_server.service.application import interaction_feedback as fb
+
+    moves = fb.llm_wait_nod_moves()
+    assert moves == [{"move": "nod_head", "ms": fb._LLM_WAIT_NOD_MS}]
+
+    def _fake_expand(moves_in, *, device_id=None):
+        assert moves_in == moves
+        return [
+            {"xm": 0, "ym": 0, "x": 90, "y": 70, "ms": 200},
+            {"xm": 0, "ym": 0, "x": 90, "y": 110, "ms": 400},
+            {"xm": 0, "ym": 0, "x": 90, "y": 90, "ms": 200},
+        ]
+
+    monkeypatch.setattr(fb, "expand_llm_moves", _fake_expand)
+    built = fb.build_servo_only_pb_frames(moves, device_id="dev-nod", request_id="nod")
+    assert built is not None
+    frames, _ = built
+    from deskbot_server.pb.servo_pcm import PB_CHUNK_MS_MAX
+
+    assert frames
+    assert all(int(f["chunk_ms"]) <= PB_CHUNK_MS_MAX for f in frames)
+    assert sum(int(f["chunk_ms"]) for f in frames) == fb._LLM_WAIT_NOD_MS
+    assert sum(len(f.get("servo") or []) for f in frames) >= 3
+
+
+def test_camera_face_follow_sends_latest_absolute_position(monkeypatch):
+    from deskbot_server.service.application import camera_servo_follower as follower
+
+    class Hub:
+        _bus_service = None
+
+        def __init__(self):
+            self.payloads: list[dict] = []
+
+        async def send(self, _device_id, payload):
+            self.payloads.append(payload)
+            return 1
+
+    async def _run() -> None:
+        follower._device_state.clear()
+        monkeypatch.setattr(follower, "get_asr_voice_auto_reply_enabled", lambda: True)
+        monkeypatch.setattr(follower, "get_camera_servo_auto_mode", lambda: "follow")
+        hub = Hub()
+        await follower.camera_servo_follower_tick(
+            hub,  # type: ignore[arg-type]
+            "dev-follow",
+            {"landmarks": [{"name": "nose", "x": 240, "y": 120}], "image_w": 320, "image_h": 240},
+        )
+        assert len(hub.payloads) == 1
+        payload = hub.payloads[0]
+        assert payload["action"] == "replace"
+        assert payload["level"] == 0
+        assert payload["servo"][0]["xm"] == 0
+        assert payload["servo"][0]["ym"] == 0
+
+    asyncio.run(_run())
+
+
+def test_listen_feedback_patrol_without_face():
+    from deskbot_server.service.application import interaction_feedback as fb
+
+    fb.clear_face_analysis("dev2")
+    kind, moves = fb.listen_feedback_moves("dev2")
+    assert kind == "patrol"
+    assert [m["move"] for m in moves] == ["look_left", "center", "look_right", "center"]
+    assert sum(m["ms"] for m in moves) == fb._MOTION_MS
+
+
+def test_listen_feedback_respects_min_gap(monkeypatch):
+    from deskbot_server.service.application import interaction_feedback as fb
+    from deskbot_server.service.device_ws_service import DeviceWsService
+
+    async def _run() -> None:
+        DeviceWsService.reset_instance()
+        fb._listen_last_mono.clear()
+        sent: list[str] = []
+
+        async def fake_send(*_a, **_k):
+            sent.append("ok")
+            return 1
+
+        monkeypatch.setattr(fb, "_send_servo_moves", fake_send)
+        monkeypatch.setattr("deskbot_server.auto_reply.get_asr_voice_auto_reply_enabled", lambda: True)
+
+        svc = DeviceWsService()
+        svc._get_ws = lambda _dev: object()  # type: ignore[method-assign]
+
+        await fb.maybe_send_listen_feedback(svc, "dev3")
+        await fb.maybe_send_listen_feedback(svc, "dev3")
+        assert len(sent) == 1
+
+        fb._listen_last_mono["dev3"] = time.monotonic() - fb._LISTEN_MIN_GAP_SEC - 0.1
+        await fb.maybe_send_listen_feedback(svc, "dev3")
+        assert len(sent) == 2
+
+    asyncio.run(_run())
+
+
+def test_llm_wait_nod_loop_stops_when_done(monkeypatch):
+    from deskbot_server.service.application import interaction_feedback as fb
+    from deskbot_server.service.device_ws_service import DeviceWsService
+
+    async def _run() -> None:
+        DeviceWsService.reset_instance()
+        calls: list[int] = []
+
+        async def fake_send(*_a, **_k):
+            calls.append(1)
+            return 1
+
+        monkeypatch.setattr(fb, "_send_servo_moves", fake_send)
+        monkeypatch.setattr(fb, "_MOTION_MS", 50)
+        monkeypatch.setattr("deskbot_server.auto_reply.get_asr_voice_auto_reply_enabled", lambda: True)
+
+        svc = DeviceWsService()
+        svc._get_ws = lambda _dev: object()  # type: ignore[method-assign]
+
+        done = asyncio.Event()
+        task = asyncio.create_task(fb.llm_wait_nod_feedback_loop(svc, "dev4", done))
+        await asyncio.sleep(0.05)
+        assert calls
+        done.set()
+        await fb.stop_llm_wait_nod_feedback(done, task)
+
+    asyncio.run(_run())

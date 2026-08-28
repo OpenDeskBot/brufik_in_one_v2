@@ -1,0 +1,76 @@
+"""开机后设备首次 WS 连接：下发「苏醒」表情场景。"""
+
+from __future__ import annotations
+
+import logging
+import os
+import uuid
+
+from deskbot_server.constants import FACE_DESIGN_FILE
+from deskbot_server.dao.face_expr_scenes_store import (
+    design_frames_to_pb_chain,
+    find_design_scene_by_name,
+    load_face_expr_scenes_file,
+)
+from deskbot_server.pb.servo_pcm import attach_pb_device_hints_from_config
+from deskbot_server.pb.shapes import PB_ACTION_REPLACE, PB_LEVEL_TASK, apply_pb_dispatch_fields
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from deskbot_server.service.device_ws_service import DeviceWsService
+
+logger = logging.getLogger("deskbot-server")
+
+BOOT_WAKE_SCENE = "wake"
+
+
+async def deliver_boot_wake_scene(device_ws: DeviceWsService, device_id: str) -> int:
+    """向设备顺序下发 deskbot-face 中的「苏醒」场景（无 PCM）。"""
+    dev = str(device_id or "").strip()
+    if not dev:
+        return 0
+    rows = load_face_expr_scenes_file(seed_if_missing=False, device_id=dev) or []
+    ent = find_design_scene_by_name(rows, BOOT_WAKE_SCENE)
+    if ent is None:
+        logger.warning(
+            "[boot_wake] 场景 %r 不在 %s 中 device_id=%s", BOOT_WAKE_SCENE, os.path.basename(FACE_DESIGN_FILE), dev
+        )
+        return 0
+    req_id = uuid.uuid4().hex[:16]
+    pairs = design_frames_to_pb_chain(ent.get("frames") or [], runtime_req=req_id)
+    if not pairs:
+        logger.warning("[boot_wake] 场景 %r 无有效帧 device_id=%s", BOOT_WAKE_SCENE, dev)
+        return 0
+    frames = [msg for msg, _bins in pairs]
+    apply_pb_dispatch_fields(frames, action=PB_ACTION_REPLACE, level=PB_LEVEL_TASK)
+    attach_pb_device_hints_from_config(frames)
+    # frames 是 pairs 中 dict 的引用，修改已就地生效
+    from deskbot_server.model.pb_seq import PbSeq
+
+    pb_seq = PbSeq.from_wire_pairs(pairs, level=PB_LEVEL_TASK)
+    n = 0
+    try:
+        n = await device_ws.send(dev, pb_seq)
+        logger.info(
+            "[boot_wake] scene=%s device_id=%s req=%s frames=%d ws_sends=%d",
+            BOOT_WAKE_SCENE,
+            dev,
+            req_id,
+            len(frames),
+            n,
+        )
+    except Exception:
+        logger.exception("[boot_wake] 下发失败 device_id=%s", dev)
+    scene_title = str(ent.get("title") or BOOT_WAKE_SCENE).strip()
+    bus = getattr(device_ws, 'bus_service', None)
+    if bus is not None:
+        await bus.publish_auto_dispatch(
+            dev,
+            request_id=req_id,
+            source="auto_boot_wake",
+            summary=f"开机苏醒 {scene_title}（{len(frames)} 帧）",
+            status="ok" if n > 0 else "error",
+            error=None if n > 0 else "未送达 WebSocket",
+        )
+    return n

@@ -1,0 +1,17 @@
+{% extends "auth_base.html" %}
+{% block page_title %}登录 · BRUFIK CONSOLE{% endblock %}
+{% block content %}
+<h1>登录</h1>
+<p class="sub">用邮箱和密码进入控制台</p>
+<form method="post" action="{{ url_for('auth.login_post') }}">
+  <input type="hidden" name="next" value="{{ next_url }}" />
+  <label for="email">邮箱</label>
+  <input id="email" name="email" type="email" class="tinput" required autocomplete="username" value="{{ email or '' }}" />
+  <label for="password">密码</label>
+  <input id="password" name="password" type="password" class="tinput" required autocomplete="current-password" />
+  <div class="row">
+    <button type="submit" class="btn primary">登录</button>
+    <a class="btn ghost" href="{{ url_for('auth.register') }}">注册</a>
+  </div>
+</form>
+{% endblock %}

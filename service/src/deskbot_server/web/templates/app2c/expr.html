@@ -1,0 +1,2212 @@
+{% extends "base_2c.html" %}
+{% block page_title %}表情 · 小歪{% endblock %}
+{% block global_setup_suppress_device %}1{% endblock %}
+{% block extra_head %}
+<script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>
+<script src="{{ url_for('static', filename='face_preview_2c.js') }}?v=20260709-svg-library-left-preview"></script>
+<style>
+.face-editor-svg{touch-action:none;overflow:visible}
+.face-editor-svg.editable{cursor:grab}
+.face-editor-controls{pointer-events:all}
+.face-editor-hit{fill:transparent;stroke:#ff6700;stroke-width:2;stroke-dasharray:5 4;opacity:0;transition:opacity .12s;pointer-events:all}
+.face-editor-handle{fill:#ff6700;stroke:#0c0d10;stroke-width:3;opacity:0;transition:opacity .12s;pointer-events:all}
+.face-editor-svg.editable:hover .face-editor-hit,
+.face-editor-svg.editable:hover .face-editor-handle,
+.face-editor-svg.dragging .face-editor-hit,
+.face-editor-svg.dragging .face-editor-handle{opacity:.9}
+.face-editor-svg.editable .face-editor-hit{opacity:.35}
+.face-editor-svg.editable .face-editor-handle{opacity:.85}
+.face-editor-move{cursor:grab}
+.face-editor-svg.dragging .face-editor-move{cursor:grabbing}
+.face-editor-scale{cursor:nwse-resize}
+.face-editor-rotate{cursor:crosshair}
+.expr-left-column{display:flex;flex-direction:column;gap:14px;min-width:0;width:100%}
+.expr-global-svg-library{border:var(--bw) solid var(--line);border-radius:var(--rs);background:var(--panel);box-shadow:var(--shadow);padding:12px;display:flex;flex-direction:column;gap:10px;box-sizing:border-box}
+.expr-global-svg-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.expr-global-svg-head p{margin:4px 0 0;color:var(--dim);font-family:var(--mono);font-size:10px;line-height:1.45}
+.expr-global-svg-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.expr-global-svg-actions .btn{padding:7px 9px;font-size:11px}
+.vector-save-actions{align-items:center}
+.vector-name-input{width:220px;max-width:100%;box-sizing:border-box;flex:0 1 220px}
+.saved-vector-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px}
+.saved-vector-item{display:flex;flex-direction:column;gap:8px;align-items:stretch;text-align:left;border:var(--bw) solid var(--line);border-radius:var(--rs);background:var(--panel);box-shadow:var(--shadow);padding:12px;cursor:pointer}
+.saved-vector-item.on{border-color:var(--accent);box-shadow:6px 6px 0 var(--accent)}
+.saved-vector-preview{height:92px;border:var(--bw) solid var(--line);border-radius:var(--rs);background:#0c0d10;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.saved-vector-preview svg{width:118px;height:100px}
+.saved-vector-name{font-weight:900;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.saved-vector-meta{font-size:12px;color:var(--muted);font-family:var(--mono)}
+.saved-vector-actions{display:flex;gap:8px;justify-content:flex-end}
+.saved-vector-actions .btn{padding:6px 8px;font-size:11px}
+.expr-global-svg-library .vector-name-input{width:auto;min-width:0;flex:1 1 160px}
+.expr-global-svg-library .saved-vector-list{grid-template-columns:1fr;gap:8px;margin-top:0;max-height:220px;overflow:auto;padding-right:4px}
+.expr-global-svg-library .saved-vector-item{padding:9px;gap:6px;box-shadow:none}
+.expr-global-svg-library .saved-vector-item.on{box-shadow:4px 4px 0 var(--accent)}
+.expr-global-svg-empty{margin:0;color:var(--dim);font-size:12px;line-height:1.5}
+@media (pointer:coarse){.face-editor-hit,.face-editor-handle{opacity:.55}}
+</style>
+{% endblock %}
+{% block content %}
+<div id="app">
+  <div class="pagehd"><div><div class="eyebrow">FACE · CONFIG</div><h1>表情</h1><p>捏一张脸，保存后家页和设备都会使用同一套表情。</p></div>
+    <div class="page-actions">
+      <button class="btn ghost" type="button" @click="sendPreviewToDevice" :disabled="sending">[[ sending ? '发送中…' : '设备预览' ]]</button>
+      <button class="btn primary" type="button" @click="save" id="saveBtn">保存表情</button>
+    </div>
+  </div>
+  <div class="exprgrid">
+    <div class="expr-left-column">
+      <section class="expr-global-svg-library" aria-label="SVG 表情库">
+        <div class="expr-global-svg-head">
+          <div>
+            <div class="blocktitle top">保存表情 / SVG 库</div>
+            <p>保存左侧当前表情，列表点击后仍在同一个预览位置浏览。</p>
+          </div>
+          <button type="button" class="btn ghost" @click="downloadCurrentExpressionSvg">下载 SVG</button>
+        </div>
+        <div class="expr-global-svg-actions vector-save-actions">
+          <input class="tinput vector-name-input" v-model.trim="savedVectorName" placeholder="自定义表情名字" @keyup.enter="saveCurrentExpressionToLibrary">
+          <button type="button" class="btn primary" @click="saveCurrentExpressionToLibrary">保存到库</button>
+        </div>
+        <template v-if="savedVectorLibrary.length">
+          <div class="blocktitle top">表情库 / LOCAL</div>
+          <div class="saved-vector-list">
+            <div class="saved-vector-item" :class="{on:item.id===activeSavedExpressionId}" v-for="item in savedVectorLibrary" :key="item.id" role="button" tabindex="0" @click="showSavedExpression(item)" @keyup.enter="showSavedExpression(item)">
+              <span class="saved-vector-preview">
+                <svg viewBox="0 0 284 240" aria-hidden="true"><g v-html="savedVectorItemSvg(item)"></g></svg>
+              </span>
+              <span class="saved-vector-name">[[ item.title ]]</span>
+              <span class="saved-vector-meta">[[ item.name ]]</span>
+              <span class="saved-vector-actions">
+                <button type="button" class="btn ghost" @click.stop="downloadSavedExpression(item)">下载</button>
+                <button type="button" class="btn ghost" @click.stop="removeSavedExpression(item)">删除</button>
+              </span>
+            </div>
+          </div>
+        </template>
+        <p v-else class="expr-global-svg-empty">还没有保存的 SVG 表情。</p>
+      </section>
+      <div class="stage expr-stage">
+      <div class="brackets"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+      <div class="stage-hd">
+        <span class="unit">FACE · [[ previewTitle ]]</span>
+        <span class="uid">[[ deviceId || '未绑定' ]]</span>
+      </div>
+      <div class="face">
+        <div class="scanline"></div>
+        <svg ref="faceEditorSvg" class="face-editor-svg" :class="{editable: isFaceEditorEditable, dragging: !!shapeDrag}" width="240" height="200" viewBox="0 0 284 240" role="img" aria-label="表情编辑预览"
+             @pointermove="moveFaceShape" @pointerup="endFaceShapeDrag" @pointercancel="endFaceShapeDrag">
+          <g v-html="customPreviewSvg" aria-hidden="true"></g>
+          <g v-if="isFaceEditorEditable" class="face-editor-controls" aria-hidden="true">
+            <ellipse class="face-editor-hit face-editor-move" :cx="faceEditorGeometry.eyeLeftX" :cy="faceEditorGeometry.eyeLeftY"
+                     :rx="faceEditorGeometry.eyeLeftSize + 16" :ry="faceEditorGeometry.eyeLeftSize + 18"
+                     @pointerdown.stop.prevent="startFaceShapeDrag($event, 'eye_l', 'move')"></ellipse>
+            <ellipse class="face-editor-hit face-editor-move" :cx="faceEditorGeometry.eyeRightX" :cy="faceEditorGeometry.eyeRightY"
+                     :rx="faceEditorGeometry.eyeRightSize + 16" :ry="faceEditorGeometry.eyeRightSize + 18"
+                     @pointerdown.stop.prevent="startFaceShapeDrag($event, 'eye_r', 'move')"></ellipse>
+            <circle class="face-editor-handle face-editor-scale" :cx="faceEditorGeometry.eyeLeftScaleX" :cy="faceEditorGeometry.eyeLeftScaleY" r="7"
+                    @pointerdown.stop.prevent="startFaceShapeDrag($event, 'eye_l', 'scale')"></circle>
+            <circle class="face-editor-handle face-editor-scale" :cx="faceEditorGeometry.eyeRightScaleX" :cy="faceEditorGeometry.eyeRightScaleY" r="7"
+                    @pointerdown.stop.prevent="startFaceShapeDrag($event, 'eye_r', 'scale')"></circle>
+            <circle class="face-editor-handle face-editor-rotate" :cx="faceEditorGeometry.eyeLeftRotateX" :cy="faceEditorGeometry.eyeLeftRotateY" r="6"
+                    @pointerdown.stop.prevent="startFaceShapeDrag($event, 'eye_l', 'rotate')"></circle>
+            <circle class="face-editor-handle face-editor-rotate" :cx="faceEditorGeometry.eyeRightRotateX" :cy="faceEditorGeometry.eyeRightRotateY" r="6"
+                    @pointerdown.stop.prevent="startFaceShapeDrag($event, 'eye_r', 'rotate')"></circle>
+            <rect class="face-editor-hit face-editor-move" :x="faceEditorGeometry.mouthHitX" :y="faceEditorGeometry.mouthHitY"
+                  :width="faceEditorGeometry.mouthHitW" :height="faceEditorGeometry.mouthHitH" rx="12"
+                  @pointerdown.stop.prevent="startFaceShapeDrag($event, 'mouth', 'move')"></rect>
+            <circle class="face-editor-handle face-editor-scale" :cx="faceEditorGeometry.mouthScaleX" :cy="faceEditorGeometry.mouthScaleY" r="7"
+                    @pointerdown.stop.prevent="startFaceShapeDrag($event, 'mouth', 'scale')"></circle>
+            <circle class="face-editor-handle face-editor-rotate" :cx="faceEditorGeometry.mouthRotateX" :cy="faceEditorGeometry.mouthRotateY" r="6"
+                    @pointerdown.stop.prevent="startFaceShapeDrag($event, 'mouth', 'rotate')"></circle>
+            <g v-if="faceEditorGeometry.vectorVisible">
+              <rect class="face-editor-hit face-editor-move" :x="faceEditorGeometry.vectorX" :y="faceEditorGeometry.vectorY"
+                    :width="faceEditorGeometry.vectorW" :height="faceEditorGeometry.vectorH" rx="8"
+                    @pointerdown.stop.prevent="startFaceShapeDrag($event, 'vector', 'move')"></rect>
+              <circle class="face-editor-handle face-editor-scale" :cx="faceEditorGeometry.vectorScaleX" :cy="faceEditorGeometry.vectorScaleY" r="7"
+                      @pointerdown.stop.prevent="startFaceShapeDrag($event, 'vector', 'scale')"></circle>
+              <circle class="face-editor-handle face-editor-rotate" :cx="faceEditorGeometry.vectorRotateX" :cy="faceEditorGeometry.vectorRotateY" r="6"
+                      @pointerdown.stop.prevent="startFaceShapeDrag($event, 'vector', 'rotate')"></circle>
+            </g>
+          </g>
+        </svg>
+      </div>
+      <div class="framebar" v-if="previewFrameCount > 1">
+        <button type="button" class="btn ghost" @click="prevPreviewFrame">上一帧</button>
+        <button type="button" class="btn" @click="togglePreviewPlayback">[[ previewPlaying ? '暂停' : '播放' ]]</button>
+        <button type="button" class="btn ghost" @click="nextPreviewFrame">下一帧</button>
+        <span>[[ previewFrameLabel ]]</span>
+      </div>
+      <div class="expr-stage-actions">
+        <button type="button" class="btn ghost" @click="resetCustomFace">重置</button>
+        <button type="button" class="btn" @click="applyPreset('smile')">微笑</button>
+        <button type="button" class="btn" @click="applyPreset('sleepy')">困困</button>
+        <button type="button" class="btn" @click="applyPreset('surprised')">惊讶</button>
+      </div>
+      </div>
+    </div>
+    <div class="expr-editor">
+      <div class="expr-tabs" role="tablist" aria-label="表情编辑模式">
+        <button type="button" :class="{on: exprTab==='image'}" @click="setExprTab('image')" role="tab" :aria-selected="String(exprTab==='image')">图片生成</button>
+        <button type="button" :class="{on: exprTab==='face'}" @click="setExprTab('face')" role="tab" :aria-selected="String(exprTab==='face')">基础捏脸</button>
+        <button type="button" :class="{on: exprTab==='professional'}" @click="setExprTab('professional')" role="tab" :aria-selected="String(exprTab==='professional')">专业设计</button>
+      </div>
+      <section v-show="exprTab==='face'" class="expr-tabpane" role="tabpanel">
+        <div class="blocktitle top">捏脸参数 / BASIC</div>
+        <div class="editor-grid basic-face-controls">
+          <label class="slider-card"><span>眼距</span><b>[[ customFace.eyeGap ]]</b><input type="range" min="64" max="132" v-model.number="customFace.eyeGap" @input="activateBasicCustom"></label>
+          <label class="slider-card"><span>眼高</span><b>[[ customFace.eyeY ]]</b><input type="range" min="64" max="132" v-model.number="customFace.eyeY" @input="activateBasicCustom"></label>
+          <label class="slider-card"><span>眼大小</span><b>[[ customFace.eyeSize ]]</b><input type="range" min="8" max="26" v-model.number="customFace.eyeSize" @input="activateBasicCustom"></label>
+          <label class="slider-card"><span>眯眼</span><b>[[ customFace.eyeSquint ]]</b><input type="range" min="0" max="18" v-model.number="customFace.eyeSquint" @input="activateBasicCustom"></label>
+          <label class="slider-card"><span>嘴高</span><b>[[ customFace.mouthY ]]</b><input type="range" min="126" max="184" v-model.number="customFace.mouthY" @input="activateBasicCustom"></label>
+          <label class="slider-card"><span>嘴宽</span><b>[[ customFace.mouthWidth ]]</b><input type="range" min="24" max="92" v-model.number="customFace.mouthWidth" @input="activateBasicCustom"></label>
+          <label class="slider-card"><span>嘴厚</span><b>[[ customFace.mouthHeight ]]</b><input type="range" min="8" max="28" v-model.number="customFace.mouthHeight" @input="activateBasicCustom"></label>
+          <label class="slider-card"><span>嘴角</span><b>[[ customFace.mouthCurve ]]</b><input type="range" min="-18" max="18" v-model.number="customFace.mouthCurve" @input="activateBasicCustom"></label>
+        </div>
+        <div class="debug-actionbar">
+          <button type="button" class="btn ghost" @click="resetCustomFace">重置</button>
+          <button type="button" class="btn ghost" @click="applyPreset('smile')">微笑</button>
+          <button type="button" class="btn ghost" @click="applyPreset('sleepy')">困困</button>
+          <button type="button" class="btn ghost" @click="applyPreset('surprised')">惊讶</button>
+        </div>
+
+        <div class="design-loader vector-upload">
+          <input ref="customVectorFile" class="file-input-hidden" type="file" accept=".svg,image/svg+xml" @change="importCustomVectorFile">
+          <div>
+            <b>自定义 SVG 图形</b>
+            <small v-if="customVectorFileName">[[ customVectorFileName ]] · [[ customVectorCount ]] 个图元</small>
+            <small v-else>上传后在左侧预览中拖拽、缩放和旋转。</small>
+          </div>
+          <div class="design-actions">
+            <button type="button" class="btn" @click="$refs.customVectorFile && $refs.customVectorFile.click()">上传 SVG</button>
+            <button type="button" class="btn ghost" @click="clearCustomVectorShapes" :disabled="!customVectorCount">清空</button>
+          </div>
+        </div>
+
+        <template v-if="scenes.length > 1">
+          <div class="blocktitle top">已保存的表情 / SWITCH</div>
+          <div class="thumbs">
+            <button type="button" class="thumb" :class="{sel: i===selected}" v-for="(s,i) in scenes" :key="s.name"
+                 @click="selectScene(i)">[[ s.title || s.name ]]</button>
+          </div>
+        </template>
+        <div class="blocktitle">情绪 → 表情 / MAP</div>
+        <div class="maprow" v-for="[k,emoji,label] in emotions" :key="k">
+          <div class="lab"><span class="e">[[ emoji ]]</span>[[ label ]]</div>
+          <select v-model="map[k]" @change="syncSelectedMood(k)">
+            <option value="">（不指定）</option>
+            <option v-for="s in scenes" :key="s.name" :value="s.name">[[ s.title || s.name ]]</option>
+          </select>
+        </div>
+      </section>
+      <section v-show="exprTab==='image'" class="expr-tabpane image-design" role="tabpanel">
+        <div class="blocktitle top">图片生成 / ARK SEED</div>
+        <div class="design-loader image-ai">
+          <input ref="imageExpressionFile" class="file-input-hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="selectImageExpressionFile">
+          <div>
+            <b>图片表情包生成</b>
+            <small>上传表情包图片，使用 Ark Seed 2.1 生成可预览的 SVG，并转成当前设备可保存的表情 scene。</small>
+          </div>
+          <div class="design-actions">
+            <button type="button" class="btn" @click="$refs.imageExpressionFile && $refs.imageExpressionFile.click()">选择图片</button>
+            <button type="button" class="btn primary" @click="generateImageExpression" :disabled="generatingImageExpression || !imageExpressionFile">[[ generatingImageExpression ? '生成中…' : '生成 SVG' ]]</button>
+          </div>
+        </div>
+        <div class="image-generation-progress progress-strip" v-if="imageExpressionProgressVisible" aria-live="polite">
+          <div class="progress-meta">
+            <b>[[ imageExpressionProgressLabel ]]</b>
+            <span>[[ imageExpressionProgressValue ]]%</span>
+          </div>
+          <progress max="100" :value="imageExpressionProgressValue"></progress>
+        </div>
+        <div class="image-ai-body" v-show="imageExpressionFile || imageExpressionResult">
+          <div class="image-file-name" v-if="imageExpressionFileName">[[ imageExpressionFileName ]]</div>
+          <textarea class="tinput debug-textarea image-prompt" v-model="imageExpressionPrompt" placeholder="可选：补充你想保留的情绪、嘴型或风格，例如：保留坏笑和眼神，做成小歪 OLED 表情"></textarea>
+          <div class="generated-result-card" v-if="imageExpressionResult">
+            <div class="generated-result-meta">
+              <b>[[ imageExpressionResult.title || imageExpressionResult.name ]]</b>
+              <small>[[ imageExpressionResult.model || 'doubao-seed-2-1-pro-260628' ]]</small>
+              <div class="debug-actionbar">
+                <button type="button" class="btn primary" @click="applyImageExpressionScene">加入当前表情</button>
+                <button type="button" class="btn ghost" @click="downloadImageExpressionSvg">下载 SVG</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section v-show="exprTab==='professional'" class="expr-tabpane professional-design" role="tabpanel">
+        <div class="blocktitle top">专业设计 / VISEMESYNC</div>
+        <div class="design-loader design-ai">
+          <div>
+            <b>AI 辅助生成</b>
+            <small>输入一句风格描述，调用当前 LLM 生成 VisemeSync JSON，生成后仍需手动应用保存。</small>
+          </div>
+          <button type="button" class="btn ghost" @click="professionalAiOpen=!professionalAiOpen">
+            [[ professionalAiOpen ? '收起配置' : '展开配置' ]]
+          </button>
+        </div>
+        <div class="design-ai-body" v-show="professionalAiOpen">
+          <textarea class="tinput debug-textarea" v-model="professionalPrompt" placeholder="例如：生成一套开心、困困、惊讶、思考、待机的圆润表情，嘴型适合中文说话"></textarea>
+          <div class="debug-actionbar">
+            <button type="button" class="btn primary" @click="generateProfessionalDesign" :disabled="generatingProfessional || !professionalPrompt.trim()">[[ generatingProfessional ? '生成中…' : 'AI 生成设计' ]]</button>
+            <button type="button" class="btn ghost" @click="professionalPrompt='做一套小歪默认表情：开心、困困、惊讶、思考、待机，风格圆润，嘴型适合中文拼音。'">默认表情</button>
+            <button type="button" class="btn ghost" @click="professionalPrompt='做一套可爱夸张的儿童向表情，强调大眼睛、微笑、惊讶和打哈欠。'">可爱夸张</button>
+          </div>
+        </div>
+        <div class="design-loader">
+          <input ref="professionalFile" class="file-input-hidden" type="file" accept=".json,application/json" @change="importProfessionalFile">
+          <div>
+            <b>VisemeSync JSON</b>
+            <small>导入 phonemes / emotions 后，可把情绪表情写入当前表情库，嘴型会同步到拼音口型配置。</small>
+          </div>
+          <div class="design-actions">
+            <button type="button" class="btn" @click="$refs.professionalFile && $refs.professionalFile.click()">选择 JSON</button>
+            <button type="button" class="btn ghost" @click="loadProfessionalFromCurrent">从当前生成</button>
+            <button type="button" class="btn ghost" @click="exportProfessionalDesign">导出 JSON</button>
+            <button type="button" class="btn primary" @click="saveProfessionalDesign" :disabled="savingProfessional || !professionalDesign">[[ savingProfessional ? '保存中…' : '应用并保存' ]]</button>
+          </div>
+        </div>
+        <div class="metric-grid pro-metrics">
+          <div class="metric accent">
+            <span>设计名</span>
+            <b>[[ professionalStats.name ]]</b>
+            <small>[[ professionalFileName || '当前页面' ]]</small>
+          </div>
+          <div class="metric">
+            <span>PHONEMES</span>
+            <b>[[ professionalStats.phonemes ]]</b>
+            <small>拼音/音素嘴型</small>
+          </div>
+          <div class="metric">
+            <span>EMOTIONS</span>
+            <b>[[ professionalStats.emotions ]]</b>
+            <small>可导入表情</small>
+          </div>
+          <div class="metric">
+            <span>FRAMES</span>
+            <b>[[ professionalStats.frames ]]</b>
+            <small>动画帧总数</small>
+          </div>
+        </div>
+        <div class="design-warnings" v-if="professionalWarnings.length">
+          <b>配置状态</b>
+          <ul>
+            <li v-for="w in professionalWarnings" :key="w">[[ w ]]</li>
+          </ul>
+        </div>
+        <div class="adv-table-wrap pro-table" v-if="professionalPreviewRows.length">
+          <table class="adv-table">
+            <thead><tr><th>类型</th><th>名称</th><th>别名</th><th>帧数</th></tr></thead>
+            <tbody>
+              <tr v-for="row in professionalPreviewRows" :key="row.kind + row.name">
+                <td>[[ row.kind ]]</td>
+                <td><b>[[ row.title ]]</b><small>[[ row.name ]]</small></td>
+                <td><small>[[ row.alias || '-' ]]</small></td>
+                <td>[[ row.frames ]]</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+  <p class="lead" v-if="msg">[[ msg ]]</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const { createApp } = Vue;
+const DEFAULT_CUSTOM_FACE = Object.freeze({
+  eyeCenterX:142, eyeGap:112, eyeY:96, eyeLeftX:86, eyeLeftY:96, eyeLeftSize:17, eyeLeftRotation:0,
+  eyeRightX:198, eyeRightY:96, eyeRightSize:17, eyeRightRotation:0, eyeSize:17, eyeSquint:0,
+  mouthCenterX:142, mouthY:156, mouthWidth:54, mouthHeight:14, mouthRotation:0, mouthCurve:8, blush:0,
+  customVectors:[]
+});
+createApp({
+  delimiters:['[[',']]'],
+  data(){ return {
+    scenes:[], selected:0, mode:'custom', editingFace:false, exprTab:'image', deviceId:'', noDevice:false, sending:false, savingProfessional:false,
+    emotions:[['happy','😄','开心'],['surprised','😲','惊讶'],['thinking','🤔','思考'],['sleepy','😴','困'],['idle','😐','待机']],
+    map:{}, msg:'', customFace:{...DEFAULT_CUSTOM_FACE, customVectors:[]}, professionalDesign:null, professionalFileName:'', customVectorFileName:'',
+    savedVectorName:'我的表情', savedVectorLibrary:[], activeSavedExpressionId:'',
+    diyDesign:null, diyKind:'emotion', diySelectedIndex:0, diyFrameIndex:0, diyLayer:'mouth',
+    diySelectedPrimitiveIndex:-1, diyColor:'#ff6700', diySourceText:'', diyDrag:null,
+    diyUndoStack:[], diyRedoStack:[], diyLastSnapshot:'',
+    diyLayers:['mouth','eye_l','eye_r','nose','extra'],
+    diyPalette:['#f4f4ef','#ff6700','#ffd23f','#69e7ff','#ff5c8a','#16171b'],
+    imageExpressionFile:null, imageExpressionFileName:'', imageExpressionResult:null,
+    previewFrameIndex:0, previewPlaying:true, previewTimer:null, shapeDrag:null,
+    generatedFrameIndex:0, generatedPreviewPlaying:true, generatedPreviewTimer:null,
+    generatingImageExpression:false, imageExpressionProgress:0, imageExpressionProgressLabel:'', imageExpressionProgressTimer:null,
+    imageExpressionPrompt:'保留原图最鲜明的情绪和嘴型，做成小歪 OLED 表情。',
+    llmNeedsConfig:false, llmConfigMessage:'',
+    professionalAiOpen:false, generatingProfessional:false,
+    professionalPrompt:'做一套小歪默认表情：开心、困困、惊讶、思考、待机，风格圆润，嘴型适合中文拼音。'
+  }; },
+  computed:{
+    homePreviewScene(){
+      const preview = window.DeskbotFacePreview;
+      return preview ? preview.pickScene(this.scenes, this.map, 'idle') : null;
+    },
+    previewScene(){
+      if(this.mode === 'custom'){
+        // 未开始编辑时，直接显示已保存的 idle/自定义脸场景本身（与首页 sceneToSvg 完全一致）；
+        // 一旦拖动滑块进入编辑，才切到 buildCustomScene（滑块合成脸）。
+        if(this.editingFace) return this.buildCustomScene();
+      }
+      return this.homePreviewScene || this.scenes[this.selected] || this.buildCustomScene();
+    },
+    previewTitle(){
+      if(this.activeSavedExpressionId && this.mode === 'custom'){
+        const activeSaved = (this.savedVectorLibrary || []).find(item => item && item.id === this.activeSavedExpressionId);
+        if(activeSaved) return activeSaved.title || activeSaved.name || '已保存表情';
+      }
+      const s = this.previewScene || {};
+      return s.title || s.name || '我的表情';
+    },
+    customPreviewSvg(){
+      return this.renderSceneSvg(this.previewScene, this.previewFrameIndex);
+    },
+    previewFrameCount(){
+      return this.sceneFrameCount(this.previewScene);
+    },
+    previewFrameLabel(){
+      return this.frameLabel(this.previewScene, this.previewFrameIndex);
+    },
+    generatedPreviewScene(){
+      return this.imageExpressionResult && this.imageExpressionResult.scene ? this.imageExpressionResult.scene : null;
+    },
+    generatedFrameCount(){
+      return this.sceneFrameCount(this.generatedPreviewScene);
+    },
+    generatedPreviewSvg(){
+      if(this.generatedPreviewScene) return this.renderSceneSvg(this.generatedPreviewScene, this.generatedFrameIndex);
+      return this.imageExpressionResult && this.imageExpressionResult.svg ? this.imageExpressionResult.svg : '';
+    },
+    generatedFrameLabel(){
+      return this.frameLabel(this.generatedPreviewScene, this.generatedFrameIndex);
+    },
+    imageExpressionProgressVisible(){
+      return !!(this.generatingImageExpression || this.imageExpressionProgress > 0);
+    },
+    imageExpressionProgressValue(){
+      return Math.round(this.imageExpressionProgress || 0);
+    },
+    professionalStats(){
+      const design = this.professionalDesign || {};
+      const phonemes = Array.isArray(design.phonemes) ? design.phonemes : [];
+      const emotions = Array.isArray(design.emotions) ? design.emotions : [];
+      const frames = phonemes.concat(emotions).reduce((sum, item) => {
+        return sum + (Array.isArray(item.frames) ? item.frames.length : 0);
+      }, 0);
+      return {
+        name: design.name || '未导入',
+        phonemes: phonemes.length,
+        emotions: emotions.length,
+        frames,
+      };
+    },
+    professionalWarnings(){
+      if(!this.professionalDesign) return ['还没有导入专业设计，也可以先从当前表情生成一份 JSON。'];
+      const warnings = [];
+      if(!this.professionalStats.phonemes) warnings.push('没有 phonemes，保存时不会更新拼音嘴型。');
+      if(!this.professionalStats.emotions) warnings.push('没有 emotions，保存时不会更新情绪表情库。');
+      return warnings;
+    },
+    professionalPreviewRows(){
+      const design = this.professionalDesign || {};
+      const rows = [];
+      const collect = (items, kind) => {
+        (items || []).slice(0, 8).forEach((item) => {
+          rows.push({
+            kind,
+            name: item.name || '-',
+            title: item.title || item.name || '-',
+            alias: (item.alias || []).join(', '),
+            frames: Array.isArray(item.frames) ? item.frames.length : 0,
+          });
+        });
+      };
+      collect(design.emotions, 'emotion');
+      collect(design.phonemes, 'phoneme');
+      return rows.slice(0, 12);
+    },
+    customVectorCount(){
+      return Array.isArray((this.customFace || {}).customVectors) ? this.customFace.customVectors.length : 0;
+    },
+    isFaceEditorEditable(){
+      return this.exprTab === 'face' || this.mode === 'custom';
+    },
+    faceEditorGeometry(){
+      const f = Object.assign({}, DEFAULT_CUSTOM_FACE, this.customFace || {});
+      const eyes = this.eyeState(f);
+      const mouthW = this.clamp(f.mouthWidth, 24, 92);
+      const mouthH = this.clamp(f.mouthHeight, 8, 28);
+      const mouthCenterX = this.clamp(f.mouthCenterX, mouthW / 2 + 2, 282 - mouthW / 2);
+      const mouthY = this.clamp(f.mouthY, 2, 238 - mouthH);
+      const vectorBox = this.primitiveBounds(f.customVectors);
+      return {
+        eyeLeftX:eyes.eyeLeftX,
+        eyeLeftY:eyes.eyeLeftY,
+        eyeLeftSize:eyes.eyeLeftSize,
+        eyeRightX:eyes.eyeRightX,
+        eyeRightY:eyes.eyeRightY,
+        eyeRightSize:eyes.eyeRightSize,
+        eyeLeftScaleX:eyes.eyeLeftX + eyes.eyeLeftSize + 12,
+        eyeLeftScaleY:eyes.eyeLeftY + eyes.eyeLeftSize + 10,
+        eyeRightScaleX:eyes.eyeRightX + eyes.eyeRightSize + 12,
+        eyeRightScaleY:eyes.eyeRightY + eyes.eyeRightSize + 10,
+        eyeLeftRotateX:eyes.eyeLeftX,
+        eyeLeftRotateY:eyes.eyeLeftY - eyes.eyeLeftSize - 18,
+        eyeRightRotateX:eyes.eyeRightX,
+        eyeRightRotateY:eyes.eyeRightY - eyes.eyeRightSize - 18,
+        mouthHitX:mouthCenterX - mouthW / 2 - 12,
+        mouthHitY:mouthY - 12,
+        mouthHitW:mouthW + 24,
+        mouthHitH:mouthH + 24,
+        mouthScaleX:mouthCenterX + mouthW / 2 + 14,
+        mouthScaleY:mouthY + mouthH + 12,
+        mouthRotateX:mouthCenterX,
+        mouthRotateY:mouthY - 18,
+        vectorVisible:!!vectorBox,
+        vectorX:vectorBox ? vectorBox.x - 8 : 0,
+        vectorY:vectorBox ? vectorBox.y - 8 : 0,
+        vectorW:vectorBox ? vectorBox.w + 16 : 0,
+        vectorH:vectorBox ? vectorBox.h + 16 : 0,
+        vectorScaleX:vectorBox ? vectorBox.x + vectorBox.w + 14 : 0,
+        vectorScaleY:vectorBox ? vectorBox.y + vectorBox.h + 14 : 0,
+        vectorRotateX:vectorBox ? vectorBox.cx : 0,
+        vectorRotateY:vectorBox ? vectorBox.y - 18 : 0,
+      };
+    },
+    diyItems(){
+      const design = this.ensureDiyDesign();
+      return this.diyKind === 'phoneme' ? design.phonemes : design.emotions;
+    },
+    activeDiyItem(){
+      if(this.diyKind === 'source') return null;
+      const items = this.diyItems;
+      return items[Math.max(0, Math.min(this.diySelectedIndex, items.length - 1))] || null;
+    },
+    activeDiyFrame(){
+      const item = this.activeDiyItem;
+      if(!item || !Array.isArray(item.frames) || !item.frames.length) return {ms:500, elements:this.emptyElements()};
+      return item.frames[Math.max(0, Math.min(this.diyFrameIndex, item.frames.length - 1))] || item.frames[0];
+    },
+    diyFrameCount(){
+      const item = this.activeDiyItem;
+      return Math.max(1, item && Array.isArray(item.frames) ? item.frames.length : 1);
+    },
+    diyTotalMs(){
+      const item = this.activeDiyItem;
+      return (item && Array.isArray(item.frames) ? item.frames : []).reduce((sum, frame) => sum + this.clamp(frame.ms || 500, 40, 5000), 0);
+    },
+    diyLayerPrimitives(){
+      const frame = this.activeDiyFrame;
+      const elements = frame && frame.elements && typeof frame.elements === 'object' ? frame.elements : {};
+      return Array.isArray(elements[this.diyLayer]) ? elements[this.diyLayer] : [];
+    },
+    selectedDiyPrimitive(){
+      return this.diyLayerPrimitives[this.diySelectedPrimitiveIndex] || null;
+    },
+    selectedDiyKeys(){
+      const p = this.selectedDiyPrimitive || {};
+      const shape = this.diyShapeKind(p);
+      if(shape === 'line') return ['x1','y1','x2','y2','sw'];
+      if(shape === 'rect' || shape === 'pixel') return ['x','y','w','h','radius','sw'];
+      if(shape === 'ellipse') return ['x','y','rw','rh','sw'];
+      if(shape === 'circle') return ['x','y','r','sw'];
+      return [];
+    },
+    diyStats(){
+      const design = this.ensureDiyDesign();
+      const rows = (design.phonemes || []).concat(design.emotions || []);
+      return {
+        name: design.name || 'deskbot-face-design',
+        phonemes: (design.phonemes || []).length,
+        emotions: (design.emotions || []).length,
+        frames: rows.reduce((sum, item) => sum + (Array.isArray(item.frames) ? item.frames.length : 0), 0),
+      };
+    },
+    diyGridXs(){
+      const out = [];
+      for(let x = 0; x <= 284; x += 20) out.push(x);
+      return out;
+    },
+    diyGridYs(){
+      const out = [];
+      for(let y = 0; y <= 240; y += 20) out.push(y);
+      return out;
+    },
+    diyInactiveLayerSvg(){
+      const frame = this.activeDiyFrame;
+      const clone = this.copyJson(frame, {ms:500, elements:this.emptyElements()});
+      if(clone.elements && clone.elements[this.diyLayer]) clone.elements[this.diyLayer] = [];
+      const scene = {name:'diy-preview', frames:[clone]};
+      const preview = window.DeskbotFacePreview;
+      return preview ? preview.sceneToSvg(scene, 0) : '';
+    }
+  },
+  methods:{
+    clamp(v, min, max){
+      const n = Number(v);
+      return Math.max(min, Math.min(Number.isFinite(n) ? n : min, max));
+    },
+    setExprTab(tab){
+      this.exprTab = tab;
+      if(tab === 'face') this.ensureCustomEditingForFaceTab();
+    },
+    ensureCustomEditingForFaceTab(){
+      if(this.mode !== 'custom' || !this.editingFace){
+        const source = this.homePreviewScene || this.scenes[this.selected] || this.buildCustomScene();
+        this.customFace = this.faceFromScene(source);
+        this.customVectorFileName = this.customVectorCount ? (this.customVectorFileName || '已保存 SVG 图形') : '';
+      }
+      this.mode = 'custom';
+      this.editingFace = true;
+      this.resetPreviewPlayback();
+    },
+    numberOr(value, fallback){
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    },
+    roundCoord(value){
+      return Math.round(Number(value) * 10) / 10;
+    },
+    normalizedAngle(value){
+      const n = Number(value);
+      if(!Number.isFinite(n)) return 0;
+      const out = ((n + 180) % 360 + 360) % 360 - 180;
+      return Math.abs(out) < 0.05 ? 0 : Math.round(out * 10) / 10;
+    },
+    dragAngleDelta(drag, point, cx, cy){
+      const start = Math.atan2(drag.startY - cy, drag.startX - cx) * 180 / Math.PI;
+      const current = Math.atan2(point.y - cy, point.x - cx) * 180 / Math.PI;
+      return this.normalizedAngle(current - start);
+    },
+    sanitizeSvgColor(value){
+      const raw = String(value || '').trim();
+      if(!raw || /^(none|transparent|currentcolor)$/i.test(raw)) return '';
+      if(/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
+      if(/^rgba?\([0-9.,%\s]+\)$/i.test(raw)) return raw;
+      if(/^hsla?\([0-9.,%\s]+\)$/i.test(raw)) return raw;
+      if(/^[a-z]+$/i.test(raw)) return raw;
+      return '';
+    },
+    svgStyleValue(node, name){
+      const style = String((node && node.getAttribute('style')) || '');
+      const match = style.match(new RegExp('(?:^|;)\\s*' + name + '\\s*:\\s*([^;]+)', 'i'));
+      return match ? match[1].trim() : '';
+    },
+    svgColor(node, outline){
+      const direct = outline ? (node.getAttribute('stroke') || this.svgStyleValue(node, 'stroke')) : (node.getAttribute('fill') || this.svgStyleValue(node, 'fill'));
+      const fallback = outline ? (node.getAttribute('fill') || this.svgStyleValue(node, 'fill')) : (node.getAttribute('stroke') || this.svgStyleValue(node, 'stroke'));
+      return this.sanitizeSvgColor(direct) || this.sanitizeSvgColor(fallback);
+    },
+    primitiveCenter(item){
+      const p = item || {};
+      const shape = String(p.shape || '').toLowerCase();
+      if(shape === 'line'){
+        return {x:(this.numberOr(p.x1, 0) + this.numberOr(p.x2, 0)) / 2, y:(this.numberOr(p.y1, 0) + this.numberOr(p.y2, 0)) / 2};
+      }
+      if(shape === 'svg_path'){
+        return {x:this.numberOr(p.x, 0) + this.numberOr(p.w, 284) / 2, y:this.numberOr(p.y, 0) + this.numberOr(p.h, 240) / 2};
+      }
+      if(['rect','rect_fill','rect_outline','round_rect','round_rect_fill','round_rect_outline'].includes(shape)){
+        return {x:this.numberOr(p.x, 0) + this.numberOr(p.w, 1) / 2, y:this.numberOr(p.y, 0) + this.numberOr(p.h, 1) / 2};
+      }
+      if(['triangle','triangle_fill','triangle_outline'].includes(shape)){
+        return {
+          x:(this.numberOr(p.x0, 0) + this.numberOr(p.x1, 0) + this.numberOr(p.x2, 0)) / 3,
+          y:(this.numberOr(p.y0, 0) + this.numberOr(p.y1, 0) + this.numberOr(p.y2, 0)) / 3,
+        };
+      }
+      return {x:this.numberOr(p.x, 0), y:this.numberOr(p.y, 0)};
+    },
+    rotatePoint(x, y, cx, cy, angle){
+      const rad = angle * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const dx = x - cx;
+      const dy = y - cy;
+      return {x:cx + dx * cos - dy * sin, y:cy + dx * sin + dy * cos};
+    },
+    primitiveBoundsPoints(item){
+      const p = item || {};
+      const shape = String(p.shape || '').toLowerCase();
+      const angle = this.normalizedAngle(p.rotation != null ? p.rotation : p.angle);
+      const center = this.primitiveCenter(p);
+      const rcx = this.numberOr(p.rot_cx != null ? p.rot_cx : p.cx, center.x);
+      const rcy = this.numberOr(p.rot_cy != null ? p.rot_cy : p.cy, center.y);
+      const add = (rows, x, y) => {
+        const point = angle ? this.rotatePoint(x, y, rcx, rcy, angle) : {x, y};
+        rows.push(point);
+      };
+      const points = [];
+      if(shape === 'circle' || shape === 'circle_outline' || shape === 'circle_fill'){
+        const r = this.numberOr(p.r, 1);
+        points.push({x:center.x - r, y:center.y - r}, {x:center.x + r, y:center.y + r});
+      }else if(['ellipse','ellipse_fill','ellipse_outline'].includes(shape)){
+        const rw = this.numberOr(p.rw != null ? p.rw : p.r, 1);
+        const rh = this.numberOr(p.rh != null ? p.rh : p.r, 1);
+        add(points, center.x - rw, center.y - rh); add(points, center.x + rw, center.y - rh);
+        add(points, center.x + rw, center.y + rh); add(points, center.x - rw, center.y + rh);
+      }else if(['rect','rect_fill','rect_outline','round_rect','round_rect_fill','round_rect_outline','svg_path'].includes(shape)){
+        const x = this.numberOr(p.x, 0), y = this.numberOr(p.y, 0), w = this.numberOr(p.w, shape === 'svg_path' ? 284 : 1), h = this.numberOr(p.h, shape === 'svg_path' ? 240 : 1);
+        add(points, x, y); add(points, x + w, y); add(points, x + w, y + h); add(points, x, y + h);
+      }else if(shape === 'line'){
+        add(points, this.numberOr(p.x1, 0), this.numberOr(p.y1, 0));
+        add(points, this.numberOr(p.x2, 0), this.numberOr(p.y2, 0));
+      }else if(['triangle','triangle_fill','triangle_outline'].includes(shape)){
+        add(points, this.numberOr(p.x0, 0), this.numberOr(p.y0, 0));
+        add(points, this.numberOr(p.x1, 0), this.numberOr(p.y1, 0));
+        add(points, this.numberOr(p.x2, 0), this.numberOr(p.y2, 0));
+      }
+      return points;
+    },
+    primitiveBounds(items){
+      const rows = this.vectorPrimitiveCopy(items);
+      const points = [];
+      rows.forEach((p) => this.primitiveBoundsPoints(p).forEach((point) => points.push(point)));
+      if(!points.length) return null;
+      const xs = points.map(p => p.x);
+      const ys = points.map(p => p.y);
+      const x = Math.min.apply(null, xs);
+      const y = Math.min.apply(null, ys);
+      const maxX = Math.max.apply(null, xs);
+      const maxY = Math.max.apply(null, ys);
+      return {x, y, w:maxX - x, h:maxY - y, cx:(x + maxX) / 2, cy:(y + maxY) / 2};
+    },
+    translatePrimitive(item, dx, dy){
+      const p = Object.assign({}, item || {});
+      const move = (kx, ky) => {
+        if(Number.isFinite(Number(p[kx]))) p[kx] = this.roundCoord(Number(p[kx]) + dx);
+        if(Number.isFinite(Number(p[ky]))) p[ky] = this.roundCoord(Number(p[ky]) + dy);
+      };
+      move('x', 'y'); move('x1', 'y1'); move('x2', 'y2'); move('x0', 'y0');
+      if(Number.isFinite(Number(p.rot_cx))) p.rot_cx = this.roundCoord(Number(p.rot_cx) + dx);
+      if(Number.isFinite(Number(p.rot_cy))) p.rot_cy = this.roundCoord(Number(p.rot_cy) + dy);
+      if(Number.isFinite(Number(p.cx))) p.cx = this.roundCoord(Number(p.cx) + dx);
+      if(Number.isFinite(Number(p.cy))) p.cy = this.roundCoord(Number(p.cy) + dy);
+      return p;
+    },
+    scalePrimitive(item, factor, cx, cy){
+      const p = Object.assign({}, item || {});
+      const shape = String(p.shape || '').toLowerCase();
+      const scalePoint = (x, y) => ({x:cx + (x - cx) * factor, y:cy + (y - cy) * factor});
+      const scalePair = (kx, ky) => {
+        if(Number.isFinite(Number(p[kx])) && Number.isFinite(Number(p[ky]))){
+          const point = scalePoint(Number(p[kx]), Number(p[ky]));
+          p[kx] = this.roundCoord(point.x);
+          p[ky] = this.roundCoord(point.y);
+        }
+      };
+      if(['rect','rect_fill','rect_outline','round_rect','round_rect_fill','round_rect_outline','svg_path'].includes(shape)){
+        const center = this.primitiveCenter(p);
+        const point = scalePoint(center.x, center.y);
+        p.w = Math.max(1, this.roundCoord(this.numberOr(p.w, shape === 'svg_path' ? 284 : 1) * factor));
+        p.h = Math.max(1, this.roundCoord(this.numberOr(p.h, shape === 'svg_path' ? 240 : 1) * factor));
+        p.x = this.roundCoord(point.x - p.w / 2);
+        p.y = this.roundCoord(point.y - p.h / 2);
+      }else{
+        scalePair('x', 'y'); scalePair('x1', 'y1'); scalePair('x2', 'y2'); scalePair('x0', 'y0');
+      }
+      if(Number.isFinite(Number(p.r))) p.r = Math.max(1, this.roundCoord(Number(p.r) * factor));
+      if(Number.isFinite(Number(p.rw))) p.rw = Math.max(1, this.roundCoord(Number(p.rw) * factor));
+      if(Number.isFinite(Number(p.rh))) p.rh = Math.max(1, this.roundCoord(Number(p.rh) * factor));
+      if(Number.isFinite(Number(p.radius))) p.radius = Math.max(1, this.roundCoord(Number(p.radius) * factor));
+      if(Number.isFinite(Number(p.sw))) p.sw = Math.max(1, this.roundCoord(Number(p.sw) * factor));
+      if(Number.isFinite(Number(p.stroke_width))) p.stroke_width = Math.max(1, this.roundCoord(Number(p.stroke_width) * factor));
+      scalePair('rot_cx', 'rot_cy'); scalePair('cx', 'cy');
+      return p;
+    },
+    rotatePrimitive(item, delta, cx, cy){
+      const p = Object.assign({}, item || {});
+      const shape = String(p.shape || '').toLowerCase();
+      const rotatePair = (kx, ky) => {
+        if(Number.isFinite(Number(p[kx])) && Number.isFinite(Number(p[ky]))){
+          const point = this.rotatePoint(Number(p[kx]), Number(p[ky]), cx, cy, delta);
+          p[kx] = this.roundCoord(point.x);
+          p[ky] = this.roundCoord(point.y);
+        }
+      };
+      if(['rect','rect_fill','rect_outline','round_rect','round_rect_fill','round_rect_outline','ellipse','ellipse_fill','ellipse_outline','svg_path'].includes(shape)){
+        const center = this.primitiveCenter(p);
+        const point = this.rotatePoint(center.x, center.y, cx, cy, delta);
+        if(['rect','rect_fill','rect_outline','round_rect','round_rect_fill','round_rect_outline','svg_path'].includes(shape)){
+          p.x = this.roundCoord(point.x - this.numberOr(p.w, shape === 'svg_path' ? 284 : 1) / 2);
+          p.y = this.roundCoord(point.y - this.numberOr(p.h, shape === 'svg_path' ? 240 : 1) / 2);
+        }else{
+          p.x = this.roundCoord(point.x);
+          p.y = this.roundCoord(point.y);
+        }
+        p.rotation = this.normalizedAngle(this.numberOr(p.rotation != null ? p.rotation : p.angle, 0) + delta);
+        p.rot_cx = this.roundCoord(point.x);
+        p.rot_cy = this.roundCoord(point.y);
+      }else if(shape === 'circle' || shape === 'circle_outline' || shape === 'circle_fill'){
+        rotatePair('x', 'y');
+      }else{
+        rotatePair('x1', 'y1'); rotatePair('x2', 'y2'); rotatePair('x0', 'y0');
+        delete p.rotation; delete p.angle; delete p.rot_cx; delete p.rot_cy;
+      }
+      return p;
+    },
+    moveVectorPrimitives(items, dx, dy){
+      return this.vectorPrimitiveCopy(items).map(p => this.translatePrimitive(p, dx, dy));
+    },
+    fitVectorPrimitives(items){
+      const rows = this.vectorPrimitiveCopy(items);
+      const box = this.primitiveBounds(rows);
+      if(!box) return rows;
+      let dx = 0, dy = 0;
+      if(box.w <= 284){
+        if(box.x < 0) dx = -box.x;
+        else if(box.x + box.w > 284) dx = 284 - box.x - box.w;
+      }
+      if(box.h <= 240){
+        if(box.y < 0) dy = -box.y;
+        else if(box.y + box.h > 240) dy = 240 - box.y - box.h;
+      }
+      return dx || dy ? rows.map(p => this.translatePrimitive(p, dx, dy)) : rows;
+    },
+    scaleVectorPrimitives(items, factor, cx, cy){
+      const scale = this.clamp(factor, 0.2, 4);
+      return this.vectorPrimitiveCopy(items).map(p => this.scalePrimitive(p, scale, cx, cy));
+    },
+    rotateVectorPrimitives(items, delta, cx, cy){
+      const angle = this.normalizedAngle(delta);
+      return this.vectorPrimitiveCopy(items).map(p => this.rotatePrimitive(p, angle, cx, cy));
+    },
+    vectorPrimitiveCopy(items){
+      const rows = Array.isArray(items) ? items : [];
+      return rows.map((item) => {
+        const p = item && typeof item === 'object' ? Object.assign({}, item) : null;
+        if(!p) return null;
+        const shape = String(p.shape || '').toLowerCase();
+        if(!['circle','circle_fill','circle_outline','ellipse','ellipse_fill','ellipse_outline','rect','rect_fill','rect_outline','round_rect','round_rect_fill','round_rect_outline','line','triangle','triangle_fill','triangle_outline','svg_path'].includes(shape)) return null;
+        p.shape = shape;
+        p.custom_vector = true;
+        return p;
+      }).filter(Boolean).slice(0, 120);
+    },
+    svgNum(value, fallback){
+      const n = parseFloat(String(value == null ? '' : value).replace('px',''));
+      return Number.isFinite(n) ? n : fallback;
+    },
+    svgViewBox(root){
+      const raw = String(root.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+      if(raw.length >= 4 && raw.every(Number.isFinite)) return {x:raw[0], y:raw[1], w:raw[2] || 284, h:raw[3] || 240};
+      return {x:0, y:0, w:this.svgNum(root.getAttribute('width'), 284) || 284, h:this.svgNum(root.getAttribute('height'), 240) || 240};
+    },
+    svgPointList(value){
+      const nums = String(value || '').trim().split(/[\s,]+/).map(Number).filter(Number.isFinite);
+      const points = [];
+      for(let i = 0; i + 1 < nums.length; i += 2) points.push({x:nums[i], y:nums[i + 1]});
+      return points;
+    },
+    svgIsOutline(node){
+      const fill = String(node.getAttribute('fill') || '').trim().toLowerCase();
+      const style = String(node.getAttribute('style') || '').toLowerCase();
+      return fill === 'none' || fill === 'transparent' || /fill\s*:\s*(none|transparent)/.test(style);
+    },
+    svgToCustomVectorPrimitives(text){
+      const doc = new DOMParser().parseFromString(String(text || ''), 'image/svg+xml');
+      const root = doc.documentElement;
+      if(!root || String(root.tagName || '').toLowerCase() !== 'svg') throw new Error('请选择 SVG 文件');
+      if(root.querySelector('parsererror')) throw new Error('SVG 解析失败');
+      const vb = this.svgViewBox(root);
+      const sx = 284 / (vb.w || 284);
+      const sy = 240 / (vb.h || 240);
+      const sc = (sx + sy) / 2;
+      const px = (v) => this.clamp((this.svgNum(v, 0) - vb.x) * sx, 0, 284);
+      const py = (v) => this.clamp((this.svgNum(v, 0) - vb.y) * sy, 0, 240);
+      const out = [];
+      root.querySelectorAll('path,circle,ellipse,rect,line,polygon,polyline').forEach((node) => {
+        if(out.length >= 120) return;
+        const tag = String(node.tagName || '').toLowerCase();
+        const outline = this.svgIsOutline(node);
+        const color = this.svgColor(node, outline);
+        const meta = color ? {custom_vector:true, color} : {custom_vector:true};
+        if(tag === 'path'){
+          const d = String(node.getAttribute('d') || '').trim();
+          if(d) out.push(Object.assign({shape:"svg_path", d, x:0, y:0, w:284, h:240, viewX:vb.x, viewY:vb.y, viewW:vb.w, viewH:vb.h, fill:outline ? 'none' : (color || '#f4f4ef'), stroke:outline ? (color || '#f4f4ef') : 'none'}, meta));
+        }else if(tag === 'circle'){
+          out.push(Object.assign({shape:outline ? 'circle_outline' : 'circle', x:Math.round(px(node.getAttribute('cx'))), y:Math.round(py(node.getAttribute('cy'))), r:Math.max(1, Math.round(this.svgNum(node.getAttribute('r'), 1) * sc))}, meta));
+        }else if(tag === 'ellipse'){
+          out.push(Object.assign({shape:outline ? 'ellipse_outline' : 'ellipse_fill', x:Math.round(px(node.getAttribute('cx'))), y:Math.round(py(node.getAttribute('cy'))), rw:Math.max(1, Math.round(this.svgNum(node.getAttribute('rx'), 1) * sx)), rh:Math.max(1, Math.round(this.svgNum(node.getAttribute('ry'), 1) * sy))}, meta));
+        }else if(tag === 'rect'){
+          const x = px(node.getAttribute('x'));
+          const y = py(node.getAttribute('y'));
+          const w = Math.max(1, Math.round(this.svgNum(node.getAttribute('width'), 1) * sx));
+          const h = Math.max(1, Math.round(this.svgNum(node.getAttribute('height'), 1) * sy));
+          const radius = Math.round(this.svgNum(node.getAttribute('rx'), 0) * sc);
+          out.push(Object.assign({shape:radius > 0 ? (outline ? 'round_rect_outline' : 'round_rect') : (outline ? 'rect_outline' : 'rect'), x:Math.round(x), y:Math.round(y), w, h, radius}, meta));
+        }else if(tag === 'line'){
+          out.push(Object.assign({shape:'line', x1:Math.round(px(node.getAttribute('x1'))), y1:Math.round(py(node.getAttribute('y1'))), x2:Math.round(px(node.getAttribute('x2'))), y2:Math.round(py(node.getAttribute('y2'))), sw:Math.max(1, Math.round(this.svgNum(node.getAttribute('stroke-width'), 2) * sc))}, meta));
+        }else if(tag === 'polygon'){
+          const pts = this.svgPointList(node.getAttribute('points')).map(p => ({x:Math.round((p.x - vb.x) * sx), y:Math.round((p.y - vb.y) * sy)}));
+          if(pts.length === 3) out.push(Object.assign({shape:outline ? 'triangle' : 'triangle_fill', x0:pts[0].x, y0:pts[0].y, x1:pts[1].x, y1:pts[1].y, x2:pts[2].x, y2:pts[2].y}, meta));
+          else {
+            for(let i = 0; i < pts.length && out.length < 120; i++){
+              const a = pts[i], b = pts[(i + 1) % pts.length];
+              if(a && b) out.push(Object.assign({shape:'line', x1:a.x, y1:a.y, x2:b.x, y2:b.y, sw:2}, meta));
+            }
+          }
+        }else if(tag === 'polyline'){
+          const pts = this.svgPointList(node.getAttribute('points')).map(p => ({x:Math.round((p.x - vb.x) * sx), y:Math.round((p.y - vb.y) * sy)}));
+          for(let i = 0; i + 1 < pts.length && out.length < 120; i++) out.push(Object.assign({shape:'line', x1:pts[i].x, y1:pts[i].y, x2:pts[i + 1].x, y2:pts[i + 1].y, sw:2}, meta));
+        }
+      });
+      if(!out.length) throw new Error('这个 SVG 暂时没有可转换的基础图形');
+      return out;
+    },
+    eyeState(face){
+      const f = Object.assign({}, DEFAULT_CUSTOM_FACE, face || {});
+      const eyeSize = this.clamp(f.eyeSize, 8, 26);
+      const eyeLeftSize = this.clamp(this.numberOr(f.eyeLeftSize, eyeSize), 8, 26);
+      const eyeRightSize = this.clamp(this.numberOr(f.eyeRightSize, eyeSize), 8, 26);
+      const maxEyeSize = Math.max(eyeLeftSize, eyeRightSize);
+      const eyeGap = this.clamp(f.eyeGap, 0, 282 - maxEyeSize * 2);
+      const eyeY = this.clamp(f.eyeY, maxEyeSize + 2, 238 - maxEyeSize);
+      const eyeCenterX = this.clamp(f.eyeCenterX, eyeGap / 2 + maxEyeSize + 2, 282 - eyeGap / 2 - maxEyeSize);
+      const leftFallback = eyeCenterX - eyeGap / 2;
+      const rightFallback = eyeCenterX + eyeGap / 2;
+      const eyeLeftX = this.clamp(this.numberOr(f.eyeLeftX, leftFallback), eyeLeftSize + 2, 282 - eyeLeftSize);
+      const eyeRightX = this.clamp(this.numberOr(f.eyeRightX, rightFallback), eyeRightSize + 2, 282 - eyeRightSize);
+      const eyeLeftY = this.clamp(this.numberOr(f.eyeLeftY, eyeY), eyeLeftSize + 2, 238 - eyeLeftSize);
+      const eyeRightY = this.clamp(this.numberOr(f.eyeRightY, eyeY), eyeRightSize + 2, 238 - eyeRightSize);
+      return {
+        eyeLeftX, eyeLeftY, eyeLeftSize, eyeRightX, eyeRightY, eyeRightSize,
+        eyeLeftRotation:this.normalizedAngle(f.eyeLeftRotation),
+        eyeRightRotation:this.normalizedAngle(f.eyeRightRotation),
+        eyeSize:(eyeLeftSize + eyeRightSize) / 2,
+        eyeCenterX:(eyeLeftX + eyeRightX) / 2,
+        eyeGap:Math.abs(eyeRightX - eyeLeftX),
+        eyeY:(eyeLeftY + eyeRightY) / 2,
+      };
+    },
+    writeEyeSummary(face){
+      const target = face || this.customFace;
+      const eyes = this.eyeState(target);
+      target.eyeLeftX = Math.round(eyes.eyeLeftX);
+      target.eyeLeftY = Math.round(eyes.eyeLeftY);
+      target.eyeLeftSize = Math.round(eyes.eyeLeftSize);
+      target.eyeLeftRotation = this.normalizedAngle(eyes.eyeLeftRotation);
+      target.eyeRightX = Math.round(eyes.eyeRightX);
+      target.eyeRightY = Math.round(eyes.eyeRightY);
+      target.eyeRightSize = Math.round(eyes.eyeRightSize);
+      target.eyeRightRotation = this.normalizedAngle(eyes.eyeRightRotation);
+      target.eyeCenterX = Math.round(eyes.eyeCenterX);
+      target.eyeGap = Math.round(eyes.eyeGap);
+      target.eyeY = Math.round(eyes.eyeY);
+      target.eyeSize = Math.round(eyes.eyeSize);
+      return target;
+    },
+    emptyElements(){
+      return {mouth:[], eye_l:[], eye_r:[], nose:[], extra:[]};
+    },
+    ensureFrameElements(frame){
+      if(!frame.elements || typeof frame.elements !== 'object') frame.elements = this.emptyElements();
+      this.diyLayers.forEach((layer) => {
+        if(!Array.isArray(frame.elements[layer])) frame.elements[layer] = [];
+      });
+      return frame.elements;
+    },
+    ensureDiyDesign(){
+      if(!this.diyDesign){
+        this.diyDesign = this.normalizeProfessionalDesign({
+          name:'deskbot-current-face',
+          description:'VisemeSync DIY design',
+          phonemes:[],
+          emotions:(this.scenes && this.scenes.length ? this.scenes : [this.buildCustomScene()]).map((scene) => ({
+            name:scene.name,
+            title:scene.title || scene.name,
+            alias:scene.alias || [],
+            frames:this.copyJson(scene.frames || [], []),
+          })),
+        });
+        this.syncDiySourceText();
+        this.diyLastSnapshot = JSON.stringify(this.diyDesign || {});
+      }
+      return this.diyDesign;
+    },
+    syncDiyFromProfessional(design){
+      const source = design || this.professionalDesign || {
+        name:'deskbot-current-face',
+        description:'VisemeSync DIY design',
+        phonemes:[],
+        emotions:(this.scenes && this.scenes.length ? this.scenes : [this.buildCustomScene()]).map((scene) => ({
+          name:scene.name,
+          title:scene.title || scene.name,
+          alias:scene.alias || [],
+          frames:this.copyJson(scene.frames || [], []),
+        })),
+      };
+      this.diyDesign = this.normalizeProfessionalDesign(this.copyJson(source, source));
+      this.diySelectedIndex = 0;
+      this.diyFrameIndex = 0;
+      this.diySelectedPrimitiveIndex = -1;
+      this.syncDiySourceText();
+      this.diyLastSnapshot = JSON.stringify(this.diyDesign || {});
+      this.diyUndoStack = [];
+      this.diyRedoStack = [];
+    },
+    syncDiySourceText(){
+      if(this.diyDesign) this.diySourceText = JSON.stringify(this.diyDesign, null, 2);
+    },
+    touchDiy(){
+      this.ensureDiyDesign();
+      const current = JSON.stringify(this.diyDesign || {});
+      if(current !== this.diyLastSnapshot){
+        if(this.diyLastSnapshot) this.diyUndoStack.push(this.diyLastSnapshot);
+        if(this.diyUndoStack.length > 40) this.diyUndoStack.shift();
+        this.diyRedoStack = [];
+        this.diyLastSnapshot = current;
+      }
+      this.professionalDesign = this.normalizeProfessionalDesign(this.copyJson(this.diyDesign, {}));
+      this.syncDiySourceText();
+    },
+    restoreDiySnapshot(snapshot){
+      if(!snapshot) return;
+      try{
+        const parsed = JSON.parse(snapshot);
+        this.diyDesign = this.normalizeProfessionalDesign(parsed);
+        this.professionalDesign = this.normalizeProfessionalDesign(this.copyJson(this.diyDesign, {}));
+        this.diySelectedIndex = Math.max(0, Math.min(this.diySelectedIndex, this.diyItems.length - 1));
+        this.diyFrameIndex = Math.max(0, Math.min(this.diyFrameIndex, this.diyFrameCount - 1));
+        this.diySelectedPrimitiveIndex = -1;
+        this.diyLastSnapshot = JSON.stringify(this.diyDesign || {});
+        this.syncDiySourceText();
+      }catch(e){
+        this.msg = '历史记录恢复失败：' + (e && e.message ? e.message : e);
+      }
+    },
+    diyUndo(){
+      if(!this.diyUndoStack.length) return;
+      const current = JSON.stringify(this.diyDesign || {});
+      const previous = this.diyUndoStack.pop();
+      this.diyRedoStack.push(current);
+      this.restoreDiySnapshot(previous);
+    },
+    diyRedo(){
+      if(!this.diyRedoStack.length) return;
+      const current = JSON.stringify(this.diyDesign || {});
+      const next = this.diyRedoStack.pop();
+      this.diyUndoStack.push(current);
+      this.restoreDiySnapshot(next);
+    },
+    loadDiyFromCurrent(){
+      this.syncDiyFromProfessional({
+        name:'deskbot-current-face',
+        description:'Generated from current Deskbot 2C face scenes',
+        phonemes:(this.professionalDesign && Array.isArray(this.professionalDesign.phonemes)) ? this.professionalDesign.phonemes : [],
+        emotions:(this.scenes && this.scenes.length ? this.scenes : [this.buildCustomScene()]).map((scene) => ({
+          name:scene.name,
+          title:scene.title || scene.name,
+          alias:scene.alias || [],
+          frames:this.copyJson(scene.frames || [], []),
+        })),
+      });
+      this.msg = '已载入当前表情到 VisemeSync DIY';
+    },
+    setDiyKind(kind){
+      this.diyKind = kind;
+      this.diySelectedIndex = 0;
+      this.diyFrameIndex = 0;
+      this.diySelectedPrimitiveIndex = -1;
+      if(kind === 'source') this.syncDiySourceText();
+    },
+    diyLayerLabel(layer){
+      return {mouth:'嘴巴', eye_l:'左眼', eye_r:'右眼', nose:'鼻子', extra:'附加'}[layer] || layer;
+    },
+    defaultDiyExpression(){
+      const prefix = this.diyKind === 'phoneme' ? 'phoneme' : 'emotion';
+      const index = this.diyItems.length + 1;
+      return {
+        name: prefix + '_' + index,
+        title: this.diyKind === 'phoneme' ? '音素 ' + index : '表情 ' + index,
+        alias:[],
+        frames:[{ms:500, elements:this.emptyElements()}],
+      };
+    },
+    diyAddExpression(){
+      const design = this.ensureDiyDesign();
+      const rows = this.diyKind === 'phoneme' ? design.phonemes : design.emotions;
+      rows.push(this.defaultDiyExpression());
+      this.diySelectedIndex = rows.length - 1;
+      this.diyFrameIndex = 0;
+      this.diySelectedPrimitiveIndex = -1;
+      this.touchDiy();
+    },
+    diyDeleteExpression(){
+      const rows = this.diyItems;
+      if(rows.length <= 1){ this.msg = '至少保留一个表情'; return; }
+      rows.splice(this.diySelectedIndex, 1);
+      this.diySelectedIndex = Math.max(0, Math.min(this.diySelectedIndex, rows.length - 1));
+      this.diyFrameIndex = 0;
+      this.diySelectedPrimitiveIndex = -1;
+      this.touchDiy();
+    },
+    selectDiyExpression(index){
+      this.diySelectedIndex = Math.max(0, Math.min(Number(index) || 0, this.diyItems.length - 1));
+      this.diyFrameIndex = 0;
+      this.diySelectedPrimitiveIndex = -1;
+    },
+    setDiyAlias(value){
+      if(!this.activeDiyItem) return;
+      this.activeDiyItem.alias = this.aliasList(value);
+      this.touchDiy();
+    },
+    setDiyFrameMs(value){
+      const frame = this.activeDiyFrame;
+      frame.ms = this.clamp(value, 40, 5000);
+      this.touchDiy();
+    },
+    diyAddFrame(){
+      const item = this.activeDiyItem;
+      if(!item) return;
+      const base = this.activeDiyFrame || {ms:500, elements:this.emptyElements()};
+      item.frames.splice(this.diyFrameIndex + 1, 0, {
+        ms:this.clamp(base.ms || 500, 40, 5000),
+        elements:this.copyJson(base.elements || this.emptyElements(), this.emptyElements()),
+      });
+      this.diyFrameIndex += 1;
+      this.diySelectedPrimitiveIndex = -1;
+      this.touchDiy();
+    },
+    diyDuplicateFrame(){
+      this.diyAddFrame();
+    },
+    diyDeleteFrame(){
+      const item = this.activeDiyItem;
+      if(!item || !Array.isArray(item.frames)) return;
+      if(item.frames.length <= 1){ this.msg = '至少保留一帧'; return; }
+      item.frames.splice(this.diyFrameIndex, 1);
+      this.diyFrameIndex = Math.max(0, Math.min(this.diyFrameIndex, item.frames.length - 1));
+      this.diySelectedPrimitiveIndex = -1;
+      this.touchDiy();
+    },
+    diyPrevFrame(){
+      this.diyFrameIndex = (this.diyFrameIndex + this.diyFrameCount - 1) % this.diyFrameCount;
+      this.diySelectedPrimitiveIndex = -1;
+    },
+    diyNextFrame(){
+      this.diyFrameIndex = (this.diyFrameIndex + 1) % this.diyFrameCount;
+      this.diySelectedPrimitiveIndex = -1;
+    },
+    diyDefaultPrimitive(shape){
+      const color = this.diyColor || '#f4f4ef';
+      const base = {color};
+      if(shape === 'pixel') return {...base, shape:'pixel', x:140, y:120, w:4, h:4};
+      if(shape === 'line') return {...base, shape:'line', x1:114, y1:150, x2:170, y2:150, sw:3};
+      if(shape === 'circle') return {...base, shape:'circle', x:142, y:116, r:7};
+      if(shape === 'ellipse_fill') return {...base, shape:'ellipse_fill', x:142, y:104, rw:18, rh:10};
+      if(shape === 'round_rect') return {...base, shape:'round_rect', x:112, y:148, w:60, h:18, radius:9};
+      return {...base, shape:'rect', x:132, y:112, w:20, h:12};
+    },
+    diyAddPrimitive(shape){
+      const item = this.activeDiyItem || (this.diyAddExpression(), this.activeDiyItem);
+      if(!item) return;
+      const frame = this.activeDiyFrame;
+      const elements = this.ensureFrameElements(frame);
+      const rows = elements[this.diyLayer];
+      rows.push(this.diyDefaultPrimitive(shape));
+      this.diySelectedPrimitiveIndex = rows.length - 1;
+      this.touchDiy();
+    },
+    diyClonePrimitive(){
+      const p = this.selectedDiyPrimitive;
+      if(!p) return;
+      const rows = this.diyLayerPrimitives;
+      const clone = this.copyJson(p, {});
+      this.moveDiyPrimitiveBy(clone, 8, 8);
+      rows.splice(this.diySelectedPrimitiveIndex + 1, 0, clone);
+      this.diySelectedPrimitiveIndex += 1;
+      this.touchDiy();
+    },
+    diyDeletePrimitive(){
+      const rows = this.diyLayerPrimitives;
+      if(this.diySelectedPrimitiveIndex < 0 || this.diySelectedPrimitiveIndex >= rows.length) return;
+      rows.splice(this.diySelectedPrimitiveIndex, 1);
+      this.diySelectedPrimitiveIndex = -1;
+      this.touchDiy();
+    },
+    setDiyPrimitiveNumber(key, value){
+      const p = this.selectedDiyPrimitive;
+      if(!p) return;
+      p[key] = Math.round(Number(value) || 0);
+      this.touchDiy();
+    },
+    setSelectedDiyColor(){
+      const p = this.selectedDiyPrimitive;
+      if(p){
+        p.color = this.diyColor;
+        this.touchDiy();
+      }
+    },
+    diyShapeKind(p){
+      const shape = String((p && p.shape) || '').toLowerCase();
+      if(shape === 'pixel') return 'pixel';
+      if(shape === 'line') return 'line';
+      if(shape.indexOf('circle') >= 0) return 'circle';
+      if(shape.indexOf('ellipse') >= 0) return 'ellipse';
+      if(shape.indexOf('rect') >= 0) return 'rect';
+      return 'rect';
+    },
+    diyShapeRadius(p){
+      const shape = String((p && p.shape) || '').toLowerCase();
+      return shape.indexOf('round_rect') >= 0 ? (p.radius || 4) : 0;
+    },
+    diyPrimitiveColor(p){
+      return (p && (p.color || (typeof p.c === 'string' ? p.c : ''))) || this.diyColor || '#f4f4ef';
+    },
+    diyPrimitiveFill(p){
+      const shape = String((p && p.shape) || '').toLowerCase();
+      return shape.indexOf('outline') >= 0 || shape === 'line' ? 'none' : this.diyPrimitiveColor(p);
+    },
+    diyPrimitiveStroke(p){
+      const shape = String((p && p.shape) || '').toLowerCase();
+      return shape.indexOf('outline') >= 0 || shape === 'line' ? this.diyPrimitiveColor(p) : 'none';
+    },
+    async importCustomVectorFile(event){
+      const input = event && event.target;
+      const file = input && input.files && input.files[0];
+      if(!file) return;
+      try{
+        const text = await file.text();
+        const vectors = this.svgToCustomVectorPrimitives(text);
+        this.customFace = Object.assign({}, DEFAULT_CUSTOM_FACE, this.customFace || {}, {customVectors:vectors});
+        this.customVectorFileName = file.name || 'custom.svg';
+        this.activeSavedExpressionId = '';
+        this.activateCustom();
+        this.exprTab = 'face';
+        this.msg = '已导入 SVG 图形：' + this.customVectorFileName;
+      }catch(e){
+        this.msg = 'SVG 图形导入失败：' + (e && e.message ? e.message : e);
+      }finally{
+        if(input) input.value = '';
+      }
+    },
+    clearCustomVectorShapes(){
+      this.customFace = Object.assign({}, DEFAULT_CUSTOM_FACE, this.customFace || {}, {customVectors:[]});
+      this.customVectorFileName = '';
+      this.activeSavedExpressionId = '';
+      this.activateCustom();
+      this.msg = '已清空自定义 SVG 图形';
+    },
+    svgPoint(evt){
+      const svg = this.$refs.faceEditorSvg ||
+        (evt.currentTarget && evt.currentTarget.tagName === 'svg'
+          ? evt.currentTarget
+          : (evt.currentTarget && evt.currentTarget.ownerSVGElement) || (evt.target && evt.target.ownerSVGElement));
+      if(!svg) return {x:0, y:0};
+      if(svg.createSVGPoint && svg.getScreenCTM){
+        const pt = svg.createSVGPoint();
+        pt.x = evt.clientX;
+        pt.y = evt.clientY;
+        const matrix = svg.getScreenCTM();
+        if(matrix){
+          const out = pt.matrixTransform(matrix.inverse());
+          return {x:out.x, y:out.y};
+        }
+      }
+      const rect = svg.getBoundingClientRect();
+      return {x: ((evt.clientX - rect.left) / rect.width) * 284, y: ((evt.clientY - rect.top) / rect.height) * 240};
+    },
+    startFaceShapeDrag(event, target, mode){
+      this.activateCustom();
+      const point = this.svgPoint(event);
+      const face = Object.assign({}, DEFAULT_CUSTOM_FACE, this.customFace || {});
+      face.customVectors = this.vectorPrimitiveCopy(face.customVectors);
+      this.shapeDrag = {pointerId:event.pointerId, target, mode, startX:point.x, startY:point.y, face};
+      const svg = this.$refs.faceEditorSvg;
+      if(svg && svg.setPointerCapture && event.pointerId !== undefined){
+        try{ svg.setPointerCapture(event.pointerId); }catch(_){}
+      }
+    },
+    moveFaceShape(event){
+      const drag = this.shapeDrag;
+      if(!drag || (drag.pointerId !== undefined && event.pointerId !== drag.pointerId)) return;
+      const point = this.svgPoint(event);
+      const dx = point.x - drag.startX;
+      const dy = point.y - drag.startY;
+      const start = Object.assign({}, DEFAULT_CUSTOM_FACE, drag.face || {});
+      const next = Object.assign({}, DEFAULT_CUSTOM_FACE, this.customFace || {});
+      const startEyes = this.eyeState(start);
+      if(drag.target === 'eye_l' && drag.mode === 'move'){
+        next.eyeRightX = Math.round(startEyes.eyeRightX);
+        next.eyeRightY = Math.round(startEyes.eyeRightY);
+        next.eyeRightSize = Math.round(startEyes.eyeRightSize);
+        next.eyeLeftSize = Math.round(startEyes.eyeLeftSize);
+        next.eyeLeftX = Math.round(this.clamp(startEyes.eyeLeftX + dx, startEyes.eyeLeftSize + 2, 282 - startEyes.eyeLeftSize));
+        next.eyeLeftY = Math.round(this.clamp(startEyes.eyeLeftY + dy, startEyes.eyeLeftSize + 2, 238 - startEyes.eyeLeftSize));
+        this.writeEyeSummary(next);
+      }else if(drag.target === 'eye_r' && drag.mode === 'move'){
+        next.eyeLeftX = Math.round(startEyes.eyeLeftX);
+        next.eyeLeftY = Math.round(startEyes.eyeLeftY);
+        next.eyeLeftSize = Math.round(startEyes.eyeLeftSize);
+        next.eyeRightSize = Math.round(startEyes.eyeRightSize);
+        next.eyeRightX = Math.round(this.clamp(startEyes.eyeRightX + dx, startEyes.eyeRightSize + 2, 282 - startEyes.eyeRightSize));
+        next.eyeRightY = Math.round(this.clamp(startEyes.eyeRightY + dy, startEyes.eyeRightSize + 2, 238 - startEyes.eyeRightSize));
+        this.writeEyeSummary(next);
+      }else if(drag.target === 'eye_l' && drag.mode === 'scale'){
+        const nextSize = this.clamp(startEyes.eyeLeftSize + (dx + dy) / 4, 8, 26);
+        next.eyeRightX = Math.round(startEyes.eyeRightX);
+        next.eyeRightY = Math.round(startEyes.eyeRightY);
+        next.eyeRightSize = Math.round(startEyes.eyeRightSize);
+        next.eyeLeftSize = Math.round(nextSize);
+        next.eyeLeftX = Math.round(this.clamp(startEyes.eyeLeftX, nextSize + 2, 282 - nextSize));
+        next.eyeLeftY = Math.round(this.clamp(startEyes.eyeLeftY, nextSize + 2, 238 - nextSize));
+        this.writeEyeSummary(next);
+      }else if(drag.target === 'eye_r' && drag.mode === 'scale'){
+        const nextSize = this.clamp(startEyes.eyeRightSize + (dx + dy) / 4, 8, 26);
+        next.eyeLeftX = Math.round(startEyes.eyeLeftX);
+        next.eyeLeftY = Math.round(startEyes.eyeLeftY);
+        next.eyeLeftSize = Math.round(startEyes.eyeLeftSize);
+        next.eyeRightSize = Math.round(nextSize);
+        next.eyeRightX = Math.round(this.clamp(startEyes.eyeRightX, nextSize + 2, 282 - nextSize));
+        next.eyeRightY = Math.round(this.clamp(startEyes.eyeRightY, nextSize + 2, 238 - nextSize));
+        this.writeEyeSummary(next);
+      }else if(drag.target === 'eye_l' && drag.mode === 'rotate'){
+        next.eyeLeftRotation = this.normalizedAngle(startEyes.eyeLeftRotation + this.dragAngleDelta(drag, point, startEyes.eyeLeftX, startEyes.eyeLeftY));
+        next.eyeRightRotation = startEyes.eyeRightRotation;
+        this.writeEyeSummary(next);
+      }else if(drag.target === 'eye_r' && drag.mode === 'rotate'){
+        next.eyeLeftRotation = startEyes.eyeLeftRotation;
+        next.eyeRightRotation = this.normalizedAngle(startEyes.eyeRightRotation + this.dragAngleDelta(drag, point, startEyes.eyeRightX, startEyes.eyeRightY));
+        this.writeEyeSummary(next);
+      }else if(drag.target === 'mouth' && drag.mode === 'move'){
+        next.mouthCenterX = Math.round(this.clamp(start.mouthCenterX + dx, start.mouthWidth / 2 + 2, 282 - start.mouthWidth / 2));
+        next.mouthY = Math.round(this.clamp(start.mouthY + dy, 2, 238 - start.mouthHeight));
+      }else if(drag.target === 'mouth' && drag.mode === 'scale'){
+        next.mouthWidth = Math.round(this.clamp(start.mouthWidth + dx * 2, 24, 92));
+        next.mouthHeight = Math.round(this.clamp(start.mouthHeight + dy, 8, 28));
+        next.mouthCenterX = Math.round(this.clamp(start.mouthCenterX, next.mouthWidth / 2 + 2, 282 - next.mouthWidth / 2));
+        next.mouthY = Math.round(this.clamp(start.mouthY, 2, 238 - next.mouthHeight));
+      }else if(drag.target === 'mouth' && drag.mode === 'rotate'){
+        next.mouthRotation = this.normalizedAngle(this.numberOr(start.mouthRotation, 0) + this.dragAngleDelta(drag, point, start.mouthCenterX, start.mouthY + start.mouthHeight / 2));
+      }else if(drag.target === 'vector' && drag.mode === 'move'){
+        const box = this.primitiveBounds(start.customVectors);
+        if(box){
+          const moveDx = box.w <= 284 ? this.clamp(dx, -box.x, 284 - box.x - box.w) : dx;
+          const moveDy = box.h <= 240 ? this.clamp(dy, -box.y, 240 - box.y - box.h) : dy;
+          next.customVectors = this.moveVectorPrimitives(start.customVectors, moveDx, moveDy);
+        }
+      }else if(drag.target === 'vector' && drag.mode === 'scale'){
+        const box = this.primitiveBounds(start.customVectors);
+        if(box){
+          const startDistance = Math.max(8, Math.hypot(drag.startX - box.cx, drag.startY - box.cy));
+          const currentDistance = Math.max(2, Math.hypot(point.x - box.cx, point.y - box.cy));
+          next.customVectors = this.fitVectorPrimitives(this.scaleVectorPrimitives(start.customVectors, currentDistance / startDistance, box.cx, box.cy));
+        }
+      }else if(drag.target === 'vector' && drag.mode === 'rotate'){
+        const box = this.primitiveBounds(start.customVectors);
+        if(box){
+          next.customVectors = this.fitVectorPrimitives(this.rotateVectorPrimitives(start.customVectors, this.dragAngleDelta(drag, point, box.cx, box.cy), box.cx, box.cy));
+        }
+      }
+      this.customFace = next;
+      event.preventDefault();
+    },
+    endFaceShapeDrag(){
+      const drag = this.shapeDrag;
+      if(!drag) return;
+      const svg = this.$refs.faceEditorSvg;
+      if(svg && svg.releasePointerCapture && drag.pointerId !== undefined){
+        try{ svg.releasePointerCapture(drag.pointerId); }catch(_){}
+      }
+      this.shapeDrag = null;
+    },
+    startDiyPointer(evt, index){
+      if(index === undefined || index === null){
+        this.diySelectedPrimitiveIndex = -1;
+        return;
+      }
+      this.diySelectedPrimitiveIndex = Number(index);
+      const p = this.selectedDiyPrimitive;
+      if(!p) return;
+      this.diyColor = this.diyPrimitiveColor(p);
+      const point = this.svgPoint(evt);
+      this.diyDrag = {start:point, original:this.copyJson(p, {})};
+      if(evt.currentTarget && evt.currentTarget.setPointerCapture){
+        try{ evt.currentTarget.setPointerCapture(evt.pointerId); }catch(_){}
+      }
+      evt.preventDefault();
+    },
+    moveDiyPointer(evt){
+      if(!this.diyDrag || !this.selectedDiyPrimitive) return;
+      const point = this.svgPoint(evt);
+      const dx = point.x - this.diyDrag.start.x;
+      const dy = point.y - this.diyDrag.start.y;
+      const next = this.copyJson(this.diyDrag.original, {});
+      this.moveDiyPrimitiveBy(next, dx, dy);
+      Object.keys(this.selectedDiyPrimitive).forEach((key) => delete this.selectedDiyPrimitive[key]);
+      Object.assign(this.selectedDiyPrimitive, next);
+      evt.preventDefault();
+    },
+    endDiyPointer(){
+      if(this.diyDrag){
+        this.diyDrag = null;
+        this.touchDiy();
+      }
+    },
+    moveDiyPrimitiveBy(p, dx, dy){
+      const shape = this.diyShapeKind(p);
+      if(shape === 'line'){
+        p.x1 = Math.round((Number(p.x1) || 0) + dx);
+        p.y1 = Math.round((Number(p.y1) || 0) + dy);
+        p.x2 = Math.round((Number(p.x2) || 0) + dx);
+        p.y2 = Math.round((Number(p.y2) || 0) + dy);
+      }else{
+        p.x = Math.round((Number(p.x) || 0) + dx);
+        p.y = Math.round((Number(p.y) || 0) + dy);
+      }
+    },
+    handleDiyKey(evt){
+      if(!this.selectedDiyPrimitive) return;
+      const step = evt.shiftKey ? 8 : 1;
+      const moves = {ArrowLeft:[-step,0], ArrowRight:[step,0], ArrowUp:[0,-step], ArrowDown:[0,step]};
+      if(evt.key === 'Delete' || evt.key === 'Backspace'){
+        this.diyDeletePrimitive();
+        evt.preventDefault();
+        return;
+      }
+      if(!moves[evt.key]) return;
+      this.moveDiyPrimitiveBy(this.selectedDiyPrimitive, moves[evt.key][0], moves[evt.key][1]);
+      this.touchDiy();
+      evt.preventDefault();
+    },
+    diyFormatSource(){
+      try{
+        this.diySourceText = JSON.stringify(JSON.parse(this.diySourceText || '{}'), null, 2);
+      }catch(e){
+        this.msg = '源码 JSON 格式化失败：' + (e && e.message ? e.message : e);
+      }
+    },
+    async diyCopySource(){
+      this.syncDiySourceText();
+      try{
+        await navigator.clipboard.writeText(this.diySourceText);
+        this.msg = '已复制源码 JSON';
+      }catch(_){
+        this.msg = '当前浏览器不允许复制，可手动选择源码';
+      }
+    },
+    diyApplySource(){
+      try{
+        const parsed = JSON.parse(this.diySourceText || '{}');
+        this.syncDiyFromProfessional(parsed);
+        this.touchDiy();
+        this.msg = '源码 JSON 已应用到 DIY 编辑器';
+      }catch(e){
+        this.msg = '源码 JSON 应用失败：' + (e && e.message ? e.message : e);
+      }
+    },
+    diyExportJson(){
+      this.ensureDiyDesign();
+      this.syncDiySourceText();
+      const name = this.slugName((this.diyDesign && this.diyDesign.name) || 'visemesync-diy', 'visemesync-diy');
+      const blob = new Blob([this.diySourceText], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name + '.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      this.msg = '已导出 VisemeSync DIY JSON';
+    },
+    diyApplyToProfessional(opts){
+      this.ensureDiyDesign();
+      const design = this.normalizeProfessionalDesign(this.copyJson(this.diyDesign, {}));
+      this.professionalDesign = design;
+      this.professionalFileName = 'visemesync-diy.json';
+      const imported = this.mergeProfessionalScenes(design);
+      if(!(opts && opts.silent)){
+        this.msg = '已加入当前表情：' + imported.length + ' 个情绪表情；保存表情后生效';
+      }
+      return design;
+    },
+    sceneFrameCount(scene){
+      const preview = window.DeskbotFacePreview;
+      return preview && preview.frameCount ? preview.frameCount(scene) : 1;
+    },
+    sceneFrameMs(scene, index){
+      const preview = window.DeskbotFacePreview;
+      return preview && preview.frameMs ? preview.frameMs(scene, index) : 500;
+    },
+    activeFrameIndex(scene, index){
+      const count = this.sceneFrameCount(scene);
+      return Math.max(0, Math.min(Number(index) || 0, count - 1));
+    },
+    frameLabel(scene, index){
+      const count = this.sceneFrameCount(scene);
+      const current = this.activeFrameIndex(scene, index);
+      return '帧 ' + (current + 1) + '/' + count + ' · ' + this.sceneFrameMs(scene, current) + 'ms';
+    },
+    renderSceneSvg(scene, index){
+      const preview = window.DeskbotFacePreview;
+      return preview ? preview.sceneToSvg(scene, this.activeFrameIndex(scene, index)) : '';
+    },
+    clearPreviewTimer(){
+      if(this.previewTimer){ clearTimeout(this.previewTimer); this.previewTimer = null; }
+    },
+    clearGeneratedPreviewTimer(){
+      if(this.generatedPreviewTimer){ clearTimeout(this.generatedPreviewTimer); this.generatedPreviewTimer = null; }
+    },
+    clearImageExpressionProgressTimer(){
+      if(this.imageExpressionProgressTimer){
+        clearInterval(this.imageExpressionProgressTimer);
+        this.imageExpressionProgressTimer = null;
+      }
+    },
+    startImageExpressionProgress(label, start, cap){
+      this.clearImageExpressionProgressTimer();
+      this.imageExpressionProgress = start || 10;
+      this.imageExpressionProgressLabel = label || '正在生成 SVG';
+      const limit = cap || 90;
+      this.imageExpressionProgressTimer = setInterval(() => {
+        if(this.imageExpressionProgress >= limit) return;
+        const next = this.imageExpressionProgress + Math.max(1, Math.round((limit - this.imageExpressionProgress) * 0.12));
+        this.imageExpressionProgress = Math.min(limit, next);
+      }, 520);
+    },
+    finishImageExpressionProgress(label, value){
+      this.clearImageExpressionProgressTimer();
+      this.imageExpressionProgress = value;
+      this.imageExpressionProgressLabel = label || '';
+    },
+    schedulePreviewPlayback(){
+      this.clearPreviewTimer();
+      if(!this.previewPlaying || this.previewFrameCount <= 1) return;
+      const delay = this.sceneFrameMs(this.previewScene, this.previewFrameIndex);
+      this.previewTimer = setTimeout(() => {
+        this.previewFrameIndex = (this.previewFrameIndex + 1) % this.previewFrameCount;
+        this.schedulePreviewPlayback();
+      }, delay);
+    },
+    scheduleGeneratedPlayback(){
+      this.clearGeneratedPreviewTimer();
+      if(!this.generatedPreviewPlaying || this.generatedFrameCount <= 1) return;
+      const delay = this.sceneFrameMs(this.generatedPreviewScene, this.generatedFrameIndex);
+      this.generatedPreviewTimer = setTimeout(() => {
+        this.generatedFrameIndex = (this.generatedFrameIndex + 1) % this.generatedFrameCount;
+        this.scheduleGeneratedPlayback();
+      }, delay);
+    },
+    resetPreviewPlayback(){
+      this.previewFrameIndex = 0;
+      this.schedulePreviewPlayback();
+    },
+    resetGeneratedPlayback(){
+      this.generatedFrameIndex = 0;
+      this.scheduleGeneratedPlayback();
+    },
+    prevPreviewFrame(){
+      const count = this.previewFrameCount;
+      this.previewFrameIndex = (this.previewFrameIndex + count - 1) % count;
+      this.schedulePreviewPlayback();
+    },
+    nextPreviewFrame(){
+      this.previewFrameIndex = (this.previewFrameIndex + 1) % this.previewFrameCount;
+      this.schedulePreviewPlayback();
+    },
+    togglePreviewPlayback(){
+      this.previewPlaying = !this.previewPlaying;
+      this.schedulePreviewPlayback();
+    },
+    prevGeneratedFrame(){
+      const count = this.generatedFrameCount;
+      this.generatedFrameIndex = (this.generatedFrameIndex + count - 1) % count;
+      this.scheduleGeneratedPlayback();
+    },
+    nextGeneratedFrame(){
+      this.generatedFrameIndex = (this.generatedFrameIndex + 1) % this.generatedFrameCount;
+      this.scheduleGeneratedPlayback();
+    },
+    toggleGeneratedPlayback(){
+      this.generatedPreviewPlaying = !this.generatedPreviewPlaying;
+      this.scheduleGeneratedPlayback();
+    },
+    reflowEyesFromBasicControls(face){
+      const target = Object.assign({}, DEFAULT_CUSTOM_FACE, face || {});
+      const eyeGap = this.clamp(target.eyeGap, 64, 132);
+      const eyeSize = this.clamp(target.eyeSize, 8, 26);
+      const eyeY = this.clamp(target.eyeY, eyeSize + 2, 238 - eyeSize);
+      const eyeCenterX = this.clamp(target.eyeCenterX, eyeGap / 2 + eyeSize + 2, 282 - eyeGap / 2 - eyeSize);
+      target.eyeGap = Math.round(eyeGap);
+      target.eyeSize = Math.round(eyeSize);
+      target.eyeY = Math.round(eyeY);
+      target.eyeCenterX = Math.round(eyeCenterX);
+      target.eyeLeftX = Math.round(eyeCenterX - eyeGap / 2);
+      target.eyeRightX = Math.round(eyeCenterX + eyeGap / 2);
+      target.eyeLeftY = Math.round(eyeY);
+      target.eyeRightY = Math.round(eyeY);
+      target.eyeLeftSize = Math.round(eyeSize);
+      target.eyeRightSize = Math.round(eyeSize);
+      return target;
+    },
+    activateCustom(){ this.editingFace = true; this.mode = 'custom'; this.resetPreviewPlayback(); },
+    activateBasicCustom(){
+      this.customFace = this.reflowEyesFromBasicControls(this.customFace);
+      this.activateCustom();
+    },
+    resetCustomFace(){
+      this.customFace = {...DEFAULT_CUSTOM_FACE, customVectors:[]};
+      this.customVectorFileName = '';
+      this.activeSavedExpressionId = '';
+      this.editingFace = true;
+      this.mode = 'custom';
+      this.resetPreviewPlayback();
+      this.msg = '已重置为默认表情';
+    },
+    applyPreset(name){
+      const presets = {
+        smile:{eyeGap:112, eyeY:96, eyeSize:17, eyeSquint:0, mouthY:156, mouthWidth:58, mouthHeight:14, mouthCurve:12, blush:0},
+        sleepy:{eyeGap:108, eyeY:102, eyeSize:17, eyeSquint:14, mouthY:160, mouthWidth:42, mouthHeight:10, mouthCurve:-2, blush:0},
+        surprised:{eyeGap:116, eyeY:88, eyeSize:22, eyeSquint:0, mouthY:148, mouthWidth:34, mouthHeight:30, mouthCurve:0, blush:0},
+      };
+      this.customFace = this.reflowEyesFromBasicControls({...DEFAULT_CUSTOM_FACE, customVectors:[], ...(presets[name] || {})});
+      this.customVectorFileName = '';
+      this.activeSavedExpressionId = '';
+      this.editingFace = true;
+      this.mode = 'custom';
+      this.resetPreviewPlayback();
+    },
+    normalizeMap(map){
+      // 确保每个情绪 key 都有值（哪怕是空字符串），避免 <select v-model> 绑到
+      // undefined 时匹配不到任何 <option>，在浏览器里显示成空白下拉框
+      const out = Object.assign({}, map);
+      this.emotions.forEach(([k]) => { if(out[k] === undefined) out[k] = ''; });
+      return out;
+    },
+    buildCustomScene(){
+      const f = Object.assign({}, DEFAULT_CUSTOM_FACE, this.customFace || {});
+      const eyes = this.eyeState(f);
+      const eyeSquint = this.clamp(f.eyeSquint, 0, 18);
+      const eyeLeftRh = Math.max(2, eyes.eyeLeftSize - eyeSquint);
+      const eyeRightRh = Math.max(2, eyes.eyeRightSize - eyeSquint);
+      const mouthW = this.clamp(f.mouthWidth, 24, 92);
+      const mouthH = this.clamp(f.mouthHeight, 8, 28);
+      const mouthY = this.clamp(f.mouthY, 2, 238 - mouthH);
+      const mouthCenterX = this.clamp(f.mouthCenterX, mouthW / 2 + 2, 282 - mouthW / 2);
+      const mouthCenter = {x:this.roundCoord(mouthCenterX), y:this.roundCoord(mouthY + mouthH / 2)};
+      const mouthRotation = this.normalizedAngle(f.mouthRotation);
+      const withMouthRotation = (primitive) => mouthRotation ? Object.assign(primitive, {
+        rotation:mouthRotation,
+        rot_cx:mouthCenter.x,
+        rot_cy:mouthCenter.y,
+      }) : primitive;
+      const curve = this.clamp(f.mouthCurve, -18, 18);
+      const mouthX = Math.round(mouthCenterX - mouthW / 2);
+      const mouthMid = Math.round(mouthY + mouthH / 2);
+      const mouthCenterY = Math.round(mouthMid + curve);
+      const mouth = [];
+      if(Math.abs(curve) > 2){
+        mouth.push(withMouthRotation({shape:'round_rect_outline', x:mouthX, y:Math.round(mouthY), w:Math.round(mouthW), h:Math.round(mouthH), radius:Math.max(2, Math.round(mouthH / 2)), color:'#000000'}));
+        const sw = Math.max(2, Math.min(5, Math.round(mouthH / 4)));
+        mouth.push({shape:'line', x1:mouthX + 6, y1:mouthMid, x2:Math.round(mouthCenterX), y2:mouthCenterY, sw});
+        mouth[mouth.length - 1] = withMouthRotation(mouth[mouth.length - 1]);
+        mouth.push({shape:'line', x1:Math.round(mouthCenterX), y1:mouthCenterY, x2:mouthX + Math.round(mouthW) - 6, y2:mouthMid, sw});
+        mouth[mouth.length - 1] = withMouthRotation(mouth[mouth.length - 1]);
+      }else if(mouthH > 16){
+        mouth.push(withMouthRotation({shape:'round_rect_outline', x:mouthX, y:Math.round(mouthY), w:Math.round(mouthW), h:Math.round(mouthH), radius:Math.max(2, Math.round(mouthH / 2))}));
+      }else{
+        mouth.push(withMouthRotation({shape:'line', x1:mouthX + 6, y1:mouthMid, x2:mouthX + Math.round(mouthW) - 6, y2:mouthMid, sw:Math.max(2, Math.min(5, Math.round(mouthH / 4)))}));
+      }
+      const customVectors = this.fitVectorPrimitives(f.customVectors);
+      return {
+        name:'custom_face',
+        title:'我的表情',
+        frames:[{
+          ms:900,
+          elements:{
+            eye_l:[{shape:'ellipse_fill', x:Math.round(eyes.eyeLeftX), y:Math.round(eyes.eyeLeftY), rw:Math.round(eyes.eyeLeftSize), rh:Math.round(eyeLeftRh), rotation:eyes.eyeLeftRotation, rot_cx:Math.round(eyes.eyeLeftX), rot_cy:Math.round(eyes.eyeLeftY)}],
+            eye_r:[{shape:'ellipse_fill', x:Math.round(eyes.eyeRightX), y:Math.round(eyes.eyeRightY), rw:Math.round(eyes.eyeRightSize), rh:Math.round(eyeRightRh), rotation:eyes.eyeRightRotation, rot_cx:Math.round(eyes.eyeRightX), rot_cy:Math.round(eyes.eyeRightY)}],
+            nose:[],
+            mouth,
+            extra:customVectors,
+          },
+        }],
+      };
+    },
+    loadBrowseFallback(){
+      this.scenes = [];
+      this.map = this.normalizeMap({});
+      this.selected = 0;
+      this.mode = 'preset';
+      this.editingFace = false;
+      this.resetPreviewPlayback();
+      this.syncDiyFromProfessional();
+      this.msg = '';
+    },
+    faceFromScene(scene){
+      const preview = window.DeskbotFacePreview;
+      const base = {...DEFAULT_CUSTOM_FACE, customVectors:[]};
+      if(!scene || !preview) return base;
+      const elements = preview.frameElements ? preview.frameElements(scene) : null;
+      if(!elements) return base;
+      const eyeL = elements.eye_l && elements.eye_l[0] || null;
+      const eyeR = elements.eye_r && elements.eye_r[0] || null;
+      const mouthRect = (elements.mouth || []).find(p => String(p.shape || '').indexOf('round_rect') >= 0) || null;
+      const mouthLine = (elements.mouth || []).find(p => String(p.shape || '') === 'line' && Number.isFinite(Number(p.y2))) || null;
+      const extraRows = Array.isArray(elements.extra) ? elements.extra : [];
+      base.customVectors = this.vectorPrimitiveCopy(extraRows.filter(p => p && p.custom_vector));
+      if(eyeL && eyeR){
+        base.eyeLeftX = Math.round(Number(eyeL.x || base.eyeLeftX));
+        base.eyeLeftY = Math.round(Number(eyeL.y || base.eyeLeftY));
+        base.eyeLeftSize = Math.round(Number(eyeL.rw || eyeL.r || base.eyeLeftSize));
+        base.eyeLeftRotation = this.normalizedAngle(eyeL.rotation != null ? eyeL.rotation : eyeL.angle);
+        base.eyeRightX = Math.round(Number(eyeR.x || base.eyeRightX));
+        base.eyeRightY = Math.round(Number(eyeR.y || base.eyeRightY));
+        base.eyeRightSize = Math.round(Number(eyeR.rw || eyeR.r || base.eyeRightSize));
+        base.eyeRightRotation = this.normalizedAngle(eyeR.rotation != null ? eyeR.rotation : eyeR.angle);
+        base.eyeGap = Math.round(Math.abs(base.eyeRightX - base.eyeLeftX)) || base.eyeGap;
+        base.eyeY = Math.round((base.eyeLeftY + base.eyeRightY) / 2) || base.eyeY;
+        base.eyeCenterX = Math.round((base.eyeLeftX + base.eyeRightX) / 2) || base.eyeCenterX;
+        base.eyeSize = Math.round((base.eyeLeftSize + base.eyeRightSize) / 2) || base.eyeSize;
+        const rh = ((Number(eyeL.rh || base.eyeLeftSize) + Number(eyeR.rh || base.eyeRightSize)) / 2);
+        base.eyeSquint = Math.max(0, Math.round(base.eyeSize - rh));
+      }
+      if(mouthRect){
+        base.mouthWidth = Math.round(Number(mouthRect.w || base.mouthWidth)) || base.mouthWidth;
+        base.mouthHeight = Math.round(Number(mouthRect.h || base.mouthHeight)) || base.mouthHeight;
+        const center = this.primitiveCenter(mouthRect);
+        const mouthCenterX = this.numberOr(mouthRect.rot_cx != null ? mouthRect.rot_cx : mouthRect.cx, center.x);
+        const mouthCenterY = this.numberOr(mouthRect.rot_cy != null ? mouthRect.rot_cy : mouthRect.cy, center.y);
+        base.mouthCenterX = Math.round(mouthCenterX) || base.mouthCenterX;
+        base.mouthY = Math.round(mouthCenterY - base.mouthHeight / 2) || Math.round(Number(mouthRect.y || base.mouthY)) || base.mouthY;
+        base.mouthRotation = this.normalizedAngle(mouthRect.rotation != null ? mouthRect.rotation : mouthRect.angle);
+        if(mouthLine){
+          const mid = base.mouthY + base.mouthHeight / 2;
+          base.mouthCurve = Math.round(Number(mouthLine.y2 || mid) - mid);
+        }
+      }
+      return this.writeEyeSummary(base);
+    },
+    copyJson(value, fallback){
+      if(value === undefined || value === null) return fallback;
+      try{ return JSON.parse(JSON.stringify(value)); }
+      catch(e){ return fallback; }
+    },
+    slugName(value, fallback){
+      const raw = String(value || fallback || '').trim();
+      const slug = raw.toLowerCase()
+        .replace(/[^a-z0-9_\-\u4e00-\u9fa5]+/gi, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 64);
+      return slug || fallback || 'item';
+    },
+    aliasList(value){
+      if(Array.isArray(value)) return value.map(v => String(v || '').trim()).filter(Boolean);
+      if(typeof value === 'string') return value.split(/[,\s/]+/).map(v => v.trim()).filter(Boolean);
+      return [];
+    },
+    escapeXml(value){
+      return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({
+        '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&apos;',
+      }[ch]));
+    },
+    savedVectorStorageKey(){
+      return 'deskbot_saved_expression_svgs_v1';
+    },
+    normalizeSavedVectorItem(item){
+      const source = item && typeof item === 'object' ? item : {};
+      if(!source.scene || typeof source.scene !== 'object') return null;
+      const title = String(source.title || source.name || source.scene.title || source.scene.name || '我的表情').trim() || '我的表情';
+      const id = String(source.id || ('expr_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8)));
+      const scene = this.copyJson(source.scene, null);
+      if(!scene) return null;
+      scene.name = scene.name || this.slugName(title, 'saved_expression');
+      scene.title = scene.title || title;
+      return {
+        id,
+        title,
+        name:this.slugName(source.name || title, 'saved_expression'),
+        scene,
+        savedAt:source.savedAt || new Date().toISOString(),
+      };
+    },
+    loadSavedVectorLibrary(){
+      try{
+        const raw = localStorage.getItem(this.savedVectorStorageKey());
+        const rows = raw ? JSON.parse(raw) : [];
+        this.savedVectorLibrary = Array.isArray(rows) ? rows.map(item => this.normalizeSavedVectorItem(item)).filter(Boolean) : [];
+      }catch(_){
+        this.savedVectorLibrary = [];
+      }
+    },
+    persistSavedVectorLibrary(){
+      try{
+        localStorage.setItem(this.savedVectorStorageKey(), JSON.stringify((this.savedVectorLibrary || []).slice(0, 80)));
+      }catch(_){}
+    },
+    makeCurrentExpressionScene(title){
+      const preview = window.DeskbotFacePreview;
+      const source = this.previewScene || this.buildCustomScene();
+      const elements = preview && preview.frameElements ? preview.frameElements(source, this.previewFrameIndex) : (source.frames && source.frames[0] && source.frames[0].elements) || this.emptyElements();
+      const safeTitle = String(title || this.previewTitle || '我的表情').trim() || '我的表情';
+      return {
+        name:this.slugName(safeTitle, 'saved_expression'),
+        title:safeTitle,
+        frames:[{
+          ms:this.sceneFrameMs(source, this.previewFrameIndex),
+          elements:this.copyJson(elements, this.emptyElements()),
+        }],
+      };
+    },
+    svgDocumentFromScene(scene, title, frameIndex){
+      const label = this.escapeXml(title || (scene && (scene.title || scene.name)) || 'deskbot-expression');
+      const body = this.renderSceneSvg(scene, frameIndex || 0);
+      return [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="284" height="240" viewBox="0 0 284 240" role="img">',
+        '<title>' + label + '</title>',
+        '<rect width="284" height="240" fill="#0c0d10"/>',
+        body,
+        '</svg>',
+        '',
+      ].join('\n');
+    },
+    currentExpressionSvgDocument(){
+      return this.svgDocumentFromScene(this.previewScene, this.savedVectorName || this.previewTitle || 'deskbot-expression', this.previewFrameIndex);
+    },
+    savedVectorItemSvg(item){
+      return item && item.scene ? this.renderSceneSvg(item.scene, 0) : '';
+    },
+    saveCurrentExpressionToLibrary(){
+      const title = String(this.savedVectorName || this.previewTitle || '我的表情').trim() || '我的表情';
+      const item = this.normalizeSavedVectorItem({
+        title,
+        name:this.slugName(title, 'saved_expression'),
+        scene:this.makeCurrentExpressionScene(title),
+        savedAt:new Date().toISOString(),
+      });
+      if(!item) return;
+      const rest = (this.savedVectorLibrary || []).filter(row => row && row.id !== item.id);
+      this.savedVectorLibrary = [item].concat(rest).slice(0, 80);
+      this.persistSavedVectorLibrary();
+      this.showSavedExpression(item);
+      this.msg = '已保存到 SVG 库：' + item.title;
+    },
+    showSavedExpression(item){
+      const saved = this.normalizeSavedVectorItem(item);
+      if(!saved) return;
+      this.activeSavedExpressionId = saved.id;
+      this.customFace = this.faceFromScene(saved.scene);
+      this.customVectorFileName = this.customVectorCount ? (saved.title + '.svg') : '';
+      this.savedVectorName = saved.title || this.savedVectorName;
+      this.mode = 'custom';
+      this.editingFace = true;
+      this.resetPreviewPlayback();
+      this.msg = '正在左侧预览：' + saved.title;
+    },
+    downloadSvgDocument(svg, name){
+      const blob = new Blob([svg], {type:'image/svg+xml;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = (this.slugName(name, 'deskbot-expression') || 'deskbot-expression') + '.svg';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 200);
+    },
+    downloadCurrentExpressionSvg(){
+      const name = this.savedVectorName || this.previewTitle || 'deskbot-expression';
+      this.downloadSvgDocument(this.currentExpressionSvgDocument(), name);
+    },
+    downloadSavedExpression(item){
+      const saved = this.normalizeSavedVectorItem(item);
+      if(!saved) return;
+      this.downloadSvgDocument(this.svgDocumentFromScene(saved.scene, saved.title, 0), saved.title);
+    },
+    removeSavedExpression(item){
+      const id = item && item.id;
+      if(!id) return;
+      this.savedVectorLibrary = (this.savedVectorLibrary || []).filter(row => row && row.id !== id);
+      if(this.activeSavedExpressionId === id) this.activeSavedExpressionId = '';
+      this.persistSavedVectorLibrary();
+      this.msg = '已删除保存的表情';
+    },
+    normalizeDesignItem(item, prefix, index){
+      const source = item && typeof item === 'object' ? item : {};
+      const alias = this.aliasList(source.alias);
+      const name = this.slugName(source.name || alias[0], prefix + '_' + (index + 1));
+      const title = String(source.title || source.label || source.name || name);
+      const frameSource = Array.isArray(source.frames)
+        ? source.frames
+        : (source.elements ? [{ms: source.ms || 320, elements: source.elements}] : []);
+      const frames = frameSource.map((frame) => {
+        const row = frame && typeof frame === 'object' ? frame : {};
+        const elements = row.elements && typeof row.elements === 'object' ? this.copyJson(row.elements, {}) : {};
+        if(!Object.keys(elements).length) return null;
+        return {ms:this.clamp(row.ms || row.duration || 320, 40, 5000), elements};
+      }).filter(Boolean);
+      return {name, title, alias, frames};
+    },
+    normalizeProfessionalDesign(raw){
+      const source = raw && typeof raw === 'object' ? raw : {};
+      const phonemeSource = Array.isArray(source.phonemes) ? source.phonemes : [];
+      const emotionSource = Array.isArray(source.emotions) ? source.emotions : (Array.isArray(source.scenes) ? source.scenes : []);
+      return {
+        name: String(source.name || source.title || 'deskbot-face-design'),
+        description: String(source.description || ''),
+        phonemes: phonemeSource.map((item, index) => this.normalizeDesignItem(item, 'phoneme', index)).filter(item => item.frames.length),
+        emotions: emotionSource.map((item, index) => this.normalizeDesignItem(item, 'emotion', index)).filter(item => item.frames.length),
+      };
+    },
+    setProfessionalDesign(raw, fileName){
+      const design = this.normalizeProfessionalDesign(raw);
+      this.professionalDesign = design;
+      this.professionalFileName = fileName || '';
+      this.syncDiyFromProfessional(design);
+      this.exprTab = 'professional';
+      this.msg = '已载入专业设计：' + design.name;
+      return design;
+    },
+    async importProfessionalFile(event){
+      const input = event && event.target;
+      const file = input && input.files && input.files[0];
+      if(!file) return;
+      try{
+        const text = await file.text();
+        this.setProfessionalDesign(JSON.parse(text), file.name);
+      }catch(e){
+        this.msg = '专业设计导入失败：' + (e && e.message ? e.message : e);
+      }finally{
+        if(input) input.value = '';
+      }
+    },
+    selectImageExpressionFile(event){
+      const input = event && event.target;
+      const file = input && input.files && input.files[0];
+      if(!file) return;
+      this.imageExpressionFile = file;
+      this.imageExpressionFileName = file.name || 'image';
+      this.imageExpressionResult = null;
+      this.generatedFrameIndex = 0;
+      this.clearGeneratedPreviewTimer();
+      this.finishImageExpressionProgress('', 0);
+      this.msg = '已选择图片：' + this.imageExpressionFileName;
+    },
+    async generateImageExpression(){
+      if(!this.imageExpressionFile){ this.msg = '请先选择一张图片'; return; }
+      this.generatingImageExpression = true;
+      this.startImageExpressionProgress('正在上传图片并生成 SVG', 12, 90);
+      try{
+        const form = new FormData();
+        if(this.deviceId) form.append('device_id', this.deviceId);
+        form.append('prompt', String(this.imageExpressionPrompt || '').trim());
+        form.append('image', this.imageExpressionFile);
+        const res = await (await fetch('/api/face_design/generate-from-image', {method:'POST', body:form})).json();
+        if(!res.ok) throw new Error(res.error || '图片表情包生成失败');
+        this.imageExpressionResult = res;
+        this.generatedPreviewPlaying = true;
+        this.resetGeneratedPlayback();
+        this.applyImageExpressionScene({silent:true});
+        this.finishImageExpressionProgress('SVG 已生成，可预览后保存', 100);
+        this.msg = '已生成多帧动画表情，检查后点击保存表情生效';
+      }catch(e){
+        this.msg = '图片表情包生成失败：' + (e && e.message ? e.message : e);
+        this.finishImageExpressionProgress('', 0);
+      }finally{
+        this.generatingImageExpression = false;
+      }
+    },
+    applyImageExpressionScene(opts){
+      const silent = opts && opts.silent;
+      const scene = this.imageExpressionResult && this.imageExpressionResult.scene;
+      if(!scene){ if(!silent) this.msg = '没有可加入的表情 scene'; return; }
+      this.upsertScene(scene);
+      if(scene && scene.name) this.map = Object.assign({}, this.map, {idle: scene.name});
+      this.mode = 'preset';
+      this.resetPreviewPlayback();
+      if(!silent) this.msg = this.deviceId ? '已加入当前表情，点击保存表情后同步到设备配置' : '已加入当前表情，选择设备后可保存或预览到设备';
+    },
+    downloadImageExpressionSvg(){
+      const svg = this.imageExpressionResult && this.imageExpressionResult.svg;
+      if(!svg){ this.msg = '还没有生成 SVG'; return; }
+      const name = this.slugName(this.imageExpressionResult.name || 'image-expression', 'image-expression');
+      const blob = new Blob([svg], {type:'image/svg+xml'});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name + '.svg';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      this.msg = '已下载 SVG';
+    },
+    async generateProfessionalDesign(){
+      if(this.llmNeedsConfig){
+        this.msg = this.llmConfigMessage || '请先到「高级 · 模型配置」完成 AI 能力配置';
+        return;
+      }
+      const prompt = String(this.professionalPrompt || '').trim();
+      if(!prompt){ this.msg = '请先输入想要的表情风格'; return; }
+      this.generatingProfessional = true;
+      try{
+        const res = await (await fetch('/api/face_design/generate', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(this.faceDesignGeneratePayload(prompt))
+        })).json();
+        if(!res.ok) throw new Error(res.error || 'AI 生成失败');
+        this.setProfessionalDesign(res.design, 'ai-generated.json');
+        this.msg = 'AI 已生成专业设计，检查后可应用保存';
+      }catch(e){
+        this.msg = 'AI 生成失败：' + (e && e.message ? e.message : e);
+      }finally{
+        this.generatingProfessional = false;
+      }
+    },
+    faceDesignGeneratePayload(prompt){
+      const payload = {prompt};
+      if(this.deviceId) payload.device_id = this.deviceId;
+      return payload;
+    },
+    loadProfessionalFromCurrent(){
+      const sourceScenes = (this.scenes && this.scenes.length) ? this.scenes : [this.buildCustomScene()];
+      const currentPhonemes = this.professionalDesign && Array.isArray(this.professionalDesign.phonemes)
+        ? this.professionalDesign.phonemes
+        : [];
+      this.setProfessionalDesign({
+        name:'deskbot-current-face',
+        description:'Generated from current Deskbot 2C face scenes',
+        phonemes:currentPhonemes,
+        emotions:sourceScenes.map((scene) => ({
+          name:scene.name,
+          title:scene.title || scene.name,
+          frames:this.copyJson(scene.frames || [], []),
+        })),
+      }, 'current-face.json');
+    },
+    designItemToScene(item){
+      if(!item || !Array.isArray(item.frames) || !item.frames.length) return null;
+      return {
+        name:this.slugName(item.name, 'emotion'),
+        title:item.title || item.name,
+        frames:this.copyJson(item.frames, []),
+      };
+    },
+    emotionMapFromDesign(design){
+      const next = {};
+      const rules = [
+        ['happy', ['happy','joy','smile','开心','高兴','微笑']],
+        ['surprised', ['surprised','shock','wow','惊讶','吃惊']],
+        ['thinking', ['thinking','think','疑惑','思考']],
+        ['sleepy', ['sleepy','sleep','tired','困','睡']],
+        ['idle', ['idle','neutral','default','standby','待机','默认']],
+      ];
+      (design.emotions || []).forEach((item) => {
+        const hay = [item.name, item.title].concat(item.alias || []).join(' ').toLowerCase();
+        rules.forEach(([mood, keys]) => {
+          if(!next[mood] && keys.some(key => hay.indexOf(String(key).toLowerCase()) >= 0)) next[mood] = item.name;
+        });
+      });
+      if(!next.idle && design.emotions && design.emotions[0]) next.idle = design.emotions[0].name;
+      return next;
+    },
+    designToMouthGroups(design){
+      return (design.phonemes || []).map((item) => {
+        const frame = item.frames && item.frames[0] || null;
+        const mouth = frame && frame.elements && Array.isArray(frame.elements.mouth) ? frame.elements.mouth : [];
+        if(!mouth.length) return null;
+        const states = [item.name].concat(item.alias || []).map(v => String(v || '').trim()).filter(Boolean);
+        return {states, elements:this.copyJson(mouth, []), offset:{x:0, y:0}};
+      }).filter(Boolean);
+    },
+    mergeProfessionalScenes(design){
+      const imported = (design.emotions || []).map(item => this.designItemToScene(item)).filter(Boolean);
+      if(!imported.length) return [];
+      const rows = Array.isArray(this.scenes) ? this.scenes.slice() : [];
+      imported.forEach((scene) => {
+        const hit = rows.findIndex(row => row && row.name === scene.name);
+        if(hit >= 0) rows.splice(hit, 1, scene);
+        else rows.push(scene);
+      });
+      this.scenes = rows;
+      this.map = Object.assign({}, this.map, this.emotionMapFromDesign(design));
+      this.selectSceneByName(imported[0].name);
+      this.mode = 'preset';
+      this.resetPreviewPlayback();
+      return imported;
+    },
+    exportProfessionalDesign(){
+      const design = this.professionalDesign || this.normalizeProfessionalDesign({
+        name:'deskbot-current-face',
+        description:'Generated from current Deskbot 2C face scenes',
+        phonemes:[],
+        emotions:(this.scenes || []).map(scene => ({
+          name:scene.name,
+          title:scene.title || scene.name,
+          frames:this.copyJson(scene.frames || [], []),
+        })),
+      });
+      const blob = new Blob([JSON.stringify(design, null, 2)], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = (this.slugName(design.name, 'deskbot-face-design') || 'deskbot-face-design') + '.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      this.msg = '已导出专业设计 JSON';
+    },
+    async saveProfessionalDesign(){
+      if(!this.professionalDesign){ this.msg = '请先导入或生成专业设计'; return; }
+      if(!this.deviceId){ this.msg = '保存表情需要先选择一台设备'; return; }
+      this.savingProfessional = true;
+      try{
+        const design = this.normalizeProfessionalDesign(this.professionalDesign);
+        this.professionalDesign = design;
+        const importedScenes = this.mergeProfessionalScenes(design);
+        const mouthGroups = this.designToMouthGroups(design);
+        let mouthOk = true;
+        let mouthError = '';
+        if(mouthGroups.length){
+          const mouthResp = await (await fetch('/api/face_mouth_by_phoneme', {method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({device_id:this.deviceId, mouth_by_phoneme_groups:mouthGroups})})).json();
+          mouthOk = !!mouthResp.ok;
+          mouthError = mouthResp.error || '';
+        }
+        const savedScene = await this.save({silent:true, preserveMap:true});
+        if(mouthOk && savedScene !== null){
+          this.msg = '专业设计已保存：' + importedScenes.length + ' 个情绪表情，' + mouthGroups.length + ' 组拼音嘴型';
+        }else{
+          this.msg = '专业设计部分保存失败：' + (mouthError || '表情库保存失败');
+        }
+      }catch(e){
+        this.msg = '专业设计保存失败：' + (e && e.message ? e.message : e);
+      }finally{
+        this.savingProfessional = false;
+      }
+    },
+    upsertScene(scene){
+      const rows = Array.isArray(this.scenes) ? this.scenes.slice() : [];
+      const idx = rows.findIndex(s => s && s.name === scene.name);
+      if(idx >= 0) rows.splice(idx, 1, scene);
+      else rows.unshift(scene);
+      this.scenes = rows;
+      this.selectSceneByName(scene.name);
+      this.resetPreviewPlayback();
+      return scene;
+    },
+    selectScene(i){
+      if(!this.scenes.length){ this.selected = 0; return; }
+      this.selected = Math.max(0, Math.min(Number(i) || 0, this.scenes.length - 1));
+      const scene = this.scenes[this.selected];
+      if(scene && scene.name) this.map = Object.assign({}, this.map, {idle: scene.name});
+      this.mode = 'preset';
+      this.resetPreviewPlayback();
+    },
+    selectSceneByName(name){
+      const hit = (this.scenes || []).findIndex(s => s && s.name === name);
+      if(hit >= 0) this.selected = hit;
+    },
+    syncHomePreviewScene(){
+      const preview = window.DeskbotFacePreview;
+      const scene = preview ? preview.pickScene(this.scenes, this.map, 'idle') : null;
+      if(scene && scene.name) this.selectSceneByName(scene.name);
+    },
+    syncSelectedMood(k){
+      if(k === 'idle') this.syncHomePreviewScene();
+    },
+    async loadLlmConfigStatus(){
+      try{
+        const d = await (await fetch('/api/advanced')).json();
+        const llm = d && d.llm ? d.llm : {};
+        this.llmNeedsConfig = !!llm.needs_config;
+        this.llmConfigMessage = llm.config_message || '';
+      }catch(_){
+        this.llmNeedsConfig = false;
+        this.llmConfigMessage = '';
+      }
+    },
+    async load(){
+      try{
+        await this.loadLlmConfigStatus();
+        const d = await (await fetch('/app/api/devices')).json();
+        this.deviceId = d.current_device_id || '';
+        this.noDevice = !this.deviceId;
+        if(!this.deviceId){ this.loadBrowseFallback(); return; }
+        const q = '?device_id='+encodeURIComponent(this.deviceId);
+        const r = await (await fetch('/api/face_expr_scenes'+q)).json();
+        this.scenes = (r.config && r.config.length) ? r.config : [];
+        const m = await (await fetch('/api/emotion_expr_map'+q)).json();
+        this.map = this.normalizeMap(m.map || {});
+        const custom = (this.scenes || []).find(s => s && s.name === 'custom_face');
+        if(custom){
+          this.customFace = this.faceFromScene(custom);
+          this.customVectorFileName = this.customVectorCount ? '已保存 SVG 图形' : '';
+        }
+        this.syncHomePreviewScene();
+        const selectedScene = this.scenes[this.selected] || null;
+        this.mode = selectedScene && selectedScene.name === 'custom_face' ? 'custom' : 'preset';
+        this.editingFace = false;  // 初始显示保存的场景本身，与首页一致
+        this.syncDiyFromProfessional();
+        this.resetPreviewPlayback();
+      }catch(e){
+        this.scenes = [];
+        this.map = this.normalizeMap({});
+        this.mode = 'custom';
+        this.editingFace = false;
+        this.syncDiyFromProfessional();
+        this.resetPreviewPlayback();
+        this.msg = '表情数据加载失败：' + (e && e.message ? e.message : e);
+      }
+    },
+    async save(opts){
+      const options = opts || {};
+      if(!this.deviceId){ this.msg='保存表情需要先选择一台设备'; return null; }
+      const selectedScene = this.mode === 'custom' ? this.upsertScene(this.buildCustomScene()) : this.scenes[this.selected];
+      if(selectedScene && selectedScene.name && !options.preserveMap){
+        this.map = Object.assign({}, this.map, { idle: selectedScene.name });
+      }
+      const r = await (await fetch('/api/face_expr_scenes', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({device_id:this.deviceId, scenes:this.scenes})})).json();
+      const r2 = await (await fetch('/api/emotion_expr_map', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({device_id:this.deviceId, map:this.map})})).json();
+      if(r.ok && Array.isArray(r.config)) this.scenes = r.config;
+      if(!options.silent) this.msg = (r.ok && r2.ok) ? '当前表情已保存，并会同步到「家」页' : ('保存失败：'+((r.error||r2.error)||''));
+      return (r.ok && r2.ok && selectedScene) ? selectedScene : null;
+    },
+    async sendPreviewToDevice(){
+      if(!this.deviceId){ this.msg='设备预览需要先选择一台设备'; return; }
+      this.sending = true;
+      try{
+        const scene = await this.save({silent:true});
+        if(!scene || !scene.name){ this.msg='表情保存失败，未发送'; return; }
+        const q = '?device_id=' + encodeURIComponent(this.deviceId) + '&scene=' + encodeURIComponent(scene.name);
+        const r = await (await fetch('/proxy/deskbot/api/device_pb_expr_scene' + q)).json();
+        this.msg = r.ok ? '已发送到设备预览' : ('设备预览失败：' + (r.error || r.hint || '设备未在线'));
+      }catch(e){
+        this.msg = '设备预览失败：' + (e && e.message ? e.message : e);
+      }finally{
+        this.sending = false;
+      }
+    },
+  },
+  mounted(){
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    if(['face','image','professional'].includes(tab)) this.setExprTab(tab);
+    this.loadSavedVectorLibrary();
+    this.load().then(() => {
+      if(this.exprTab === 'face') this.ensureCustomEditingForFaceTab();
+    });
+    this.schedulePreviewPlayback();
+  },
+  beforeUnmount(){
+    this.clearPreviewTimer();
+    this.clearGeneratedPreviewTimer();
+    this.clearImageExpressionProgressTimer();
+  },
+}).mount('#app');
+</script>
+{% endblock %}
