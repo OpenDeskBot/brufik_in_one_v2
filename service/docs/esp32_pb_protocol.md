@@ -1,6 +1,6 @@
 # ESP32 与 BotServer 通信协议（pb v2.1）
 
-单条 WebSocket：`ws://<host>:9000/asr_chat?device_id=<id>&pin_code=<4位PIN>`。文本 JSON 与 binary 交替，**不用 base64**。长度由 **`next_bin_len`** 声明（上行在 JSON 根；下行在 `audio.next_bin_len`）。旧版 `audio.next_bin: 1` 已废弃。
+单条 WebSocket：`ws://<host>:9000/asr_chat?device_id=<id>`。文本 JSON 与 binary 交替，**不用 base64**。长度由 **`next_bin_len`** 声明（上行在 JSON 根；下行在 `audio.next_bin_len`）。旧版 `audio.next_bin: 1` 已废弃。
 
 > **相关文档：** 部署与快速使用见 [README.md](../README.md)；主服务配置见 [SERVER.md](./SERVER.md)。定时任务、长期记忆、控制台管理等为**服务端能力**，不扩展本设备协议字段。
 
@@ -14,18 +14,19 @@
 
 | 通道 | 路径 | 鉴权 |
 |------|------|------|
-| 生产主链路 | `/asr_chat` | **`device_id` 必须**；合法 **`pin_code` 强烈建议**（缺 PIN **不拒连**，合法 PIN 才写入 online pin）；含语音与 `camera_frame` |
-| 摄像头预览 | `/camera_view` | Web：API Key 或 debug token |
-| 流水线订阅 | `/device_pipeline` | 订阅侧 Web 鉴权；设备侧 pin |
-| HTTP API | `/api/*`（非本机） | API Key |
+| 生产主链路 | `/asr_chat` | **`device_id` 必须**（仅此一项）；含语音与 `camera_frame` |
+| 摄像头预览 | `/camera_view` | 控制台签发的 **`debug_token`** + 设备归属 |
+| 流水线订阅 | `/device_pipeline` 订阅侧 | 控制台签发的 **`debug_token`** + 设备归属 |
+| 流水线生产者 | `/device_pipeline` | **`device_id` 必须**（仅此一项） |
+| HTTP API | `/api/*` | Web 会话或 debug token；无 user_id 时匿名放行 |
 | 健康检查 | `/health` | 否 |
 
-**ESP32 直连不再使用 API Key**；PIN 为 4 位数字（1000–9999），开机屏幕会显示。
+**设备链路无 API Key、无 PIN**；`debug_token` 由 Web 控制台「调试台」为已登录用户签发（`GET /api/debug/ws_token`）。
 
 ### 0.2 设备连接 URL
 
 ```
-ws://<host>:9000/asr_chat?device_id=deskbot_abc123&pin_code=1234
+ws://<host>:9000/asr_chat?device_id=deskbot_abc123
 ```
 
 ### 0.3 失败行为（设备 WS）
@@ -33,11 +34,11 @@ ws://<host>:9000/asr_chat?device_id=deskbot_abc123&pin_code=1234
 | 情况 | WebSocket |
 |------|-----------|
 | 缺少 `device_id` | 关闭码 **1008**，reason `device_id_required` |
-| 缺少/无效 PIN | **不拒绝连接**；合法 PIN 才会写入 online pin（供 Web 绑定） |
+| 重复连接 | 同一 `device_id` 只保留最新一条（`keep_only_one_link`） |
 
-### 0.4 Web / API Key（仅控制台与调试）
+### 0.4 Web / 调试鉴权（仅控制台与调试）
 
-用户 Key（`odk_`）与免费 Key（`odk_free_`）仍用于 HTTP `/api/*` 与调试订阅；设备主链路不计量 Key 配额。
+Web 控制台（`:5050`）注册登录后，会话 cookie 即 Web / HTTP 鉴权；`/camera_view` 与 `/device_pipeline` 订阅侧使用 `debug_token`（`GET /api/debug/ws_token` 签发，URL 参数名 `debug_token` / `debugtoken` / `ws_token`）。设备主链路不涉及任何 Key。
 
 ### 0.5 固件最小接入示例
 
@@ -45,8 +46,7 @@ ws://<host>:9000/asr_chat?device_id=deskbot_abc123&pin_code=1234
 // 伪代码
 const char *url =
   "ws://192.168.1.10:9000/asr_chat"
-  "?device_id=deskbot_1cdbd476ab5c"
-  "&pin_code=1234";
+  "?device_id=deskbot_1cdbd476ab5c";
 websocket_connect(url);
 ```
 
@@ -359,7 +359,7 @@ c  = (R5 << 11) | (G6 << 5) | B5
 
 ## 11. 固件实现清单
 
-1. 仅连 `/asr_chat?device_id=&pin_code=`；JSON/binary 状态机。
+1. 仅连 `/asr_chat?device_id=`（无 PIN / API Key）；JSON/binary 状态机。
 2. 上行成对发送；下行处理 `pb_*`，按 `audio.next_bin_len` 收 PCM。
 3. `anim[]` 按 `ms` 切换；绘制顺序 §5.3；R6 校验 PCM 长度。
 4. `pb_start`/`pb_single` 入队（§7）；周期性 `pb_ack`。

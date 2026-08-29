@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=61,<81"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -15,9 +15,6 @@ dependencies = [
     "PyYAML==6.0.2",
     "numpy==1.26.4",
     "opuslib_next==1.1.5",
-    "webrtcvad==2.0.10",
-    "setuptools<81",
-    "ml_dtypes>=0.5.0",
     "librosa>=0.10.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
@@ -31,10 +28,6 @@ dependencies = [
     "croniter==2.0.7",
     "pypinyin>=0.53.0",
     "g2p-en>=2.1.0",
-    "aiohttp>=3.14.1",
-    "aiofiles>=25.1.0",
-    "cryptography>=44.0.0",
-    "pydantic>=2.13.4",
     "pyserial>=3.5",
 ]
 
@@ -46,10 +39,10 @@ dev = [
 ]
 # miloco-miot 需从 iotctl/wheels 本地安装：
 #   pip install --no-deps src/deskbot_server/iotctl/wheels/miloco_miot-*.whl
+# aiohttp/aiofiles/pydantic 为 miloco_miot wheel 的运行时依赖
 miot = [
     "aiohttp>=3.14.1",
     "aiofiles>=25.1.0",
-    "cryptography>=44.0.0",
     "pydantic>=2.13.4",
 ]
 

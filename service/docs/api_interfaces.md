@@ -1,16 +1,15 @@
 # 接口清单
 
-更新时间：2026-08-06
+更新时间：2026-08-29
 
-本文按当前代码实现整理所有对外接口，覆盖 Web 控制台、deskbot 设备服务、paddlespeech TTS 侧车。重点列 HTTP / WebSocket 路由、鉴权、主要参数与返回用途；ESP32 pb 字段细节见 [esp32_pb_protocol.md](./esp32_pb_protocol.md)。固件工具链见 [../../hardware/README.md](../../hardware/README.md)。
+本文按当前代码实现整理所有对外接口，覆盖 Web 控制台与 deskbot 设备服务。重点列 HTTP / WebSocket 路由、鉴权、主要参数与返回用途；ESP32 pb 字段细节见 [esp32_pb_protocol.md](./esp32_pb_protocol.md)。固件工具链见 [../../hardware/README.md](../../hardware/README.md)。
 
 ## 服务与端口
 
 | 服务 | 默认地址 | 实现位置 | 说明 |
 |------|----------|----------|------|
 | Web 控制台 | `http://<host>:5050` | `deskbot_server.web` | FastAPI 页面、用户登录、设备/记忆/模型管理、调试页、代理到设备服务 |
-| deskbot 设备服务 | `ws://<host>:9000` / `http://<host>:9000` | `deskbot_server.ws` | ESP32 主链路、调试订阅、设备下发、轻量 HTTP API |
-| paddlespeech TTS 侧车 | `ws://<host>:8092` | `paddlespeech_server` | 官方流式 TTS 与音素对齐 TTS |
+| deskbot 设备服务 | `ws://<host>:9000` / `http://<host>:9000` | `deskbot_server.controller` / `deskbot_server.ws` | ESP32 主链路、调试订阅、设备下发、轻量 HTTP API |
 
 ## 鉴权约定
 
@@ -28,12 +27,12 @@
 | 范围 | 鉴权 |
 |------|------|
 | `GET /health` | 公开 |
-| `/api/*` | 需要 API Key；支持查询参数 `api_key` / `apikey` / `key`，Header `X-API-Key`，或 `Authorization: Bearer <key>` |
-| `/asr_chat` | 需要 `device_id`；合法 `pin_code` 可选（写入 online pin 供绑定）；含语音与 `camera_frame` |
-| `/device_pipeline` 生产者 | 需要 `device_id`；合法 `pin_code` 可选 |
-| `/device_pipeline` 订阅者、`/camera_view` | API Key 或 Web 控制台签发的 `debug_token` |
+| `/api/*` | Web 会话或 `debug_token`；无 user_id 时匿名放行 |
+| `/asr_chat` | 仅需 `device_id`（无 API Key / PIN）；含语音与 `camera_frame` |
+| `/device_pipeline` 生产者 | 仅需 `device_id` |
+| `/device_pipeline` 订阅者、`/camera_view` | Web 控制台签发的 `debug_token` + 设备归属 |
 
-常见错误：设备缺 `device_id` 为 WS close `1008 device_id_required`；HTTP 无 Key 为 `401`；免费 Key 超额为 `429`；用户 Key 操作未绑定设备为 `403 forbidden_device`。
+常见错误：设备缺 `device_id` 为 WS close `1008 device_id_required`；未登录访问 Web API 为 `401`；操作未绑定设备为 `403 forbidden_device`。
 
 ## Web 控制台页面与表单 `:5050`
 
@@ -73,11 +72,9 @@
 | GET | `/app/memories` | 长期记忆 |
 | GET | `/app/llm-models` | LLM 模型配置 |
 | GET | `/app/usage` | 用量看板 |
-| GET | `/app/settings` | 账号设置/API Key |
+| GET | `/app/settings` | 账号设置（资料、密码、LLM 模型配置） |
 | POST | `/app/settings/profile` | 更新显示名 | form: `display_name` |
 | POST | `/app/settings/password` | 修改密码 | form: `old_password`, `new_password`, `confirm_password` |
-| POST | `/app/settings/api-keys` | 创建 API Key | form: `key_name` |
-| POST | `/app/settings/api-keys/{key_id}/revoke` | 吊销 API Key | path: `key_id` |
 
 ### 调试页面
 
@@ -86,7 +83,6 @@
 | GET | `/debug/devices` | 在线设备、流水线、表情/舵机调试 |
 | GET | `/debug/tts` | 豆包 TTS 调试 |
 | GET | `/debug/llm` | LLM 试聊与 system prompt |
-| GET | `/debug/paddlespeech` | PaddleSpeech 音素 TTS 调试 |
 | GET | `/debug/simulation` | 模拟对话/显示调试 |
 
 ## Web 控制台 JSON API `:5050`
@@ -95,11 +91,9 @@
 
 | 方法 | 路径 | 用途 | 主要输入 |
 |------|------|------|----------|
-| GET | `/api/advanced` | 汇总当前用户、设备、用量、API Key、LLM 配置 | - |
+| GET | `/api/advanced` | 汇总当前用户、设备、用量、LLM 配置 | - |
 | PATCH | `/api/advanced/profile` | 更新显示名 | JSON: `display_name` |
 | POST | `/api/advanced/password` | 修改密码 | JSON: `old_password`, `new_password`, `confirm_password` |
-| POST | `/api/advanced/api-keys` | 创建 API Key | JSON: `name` |
-| DELETE | `/api/advanced/api-keys/{key_id}` | 吊销 API Key | path: `key_id` |
 | GET | `/api/emotion_expr_map` | 读取情绪到表情映射 | query: `device_id` 可选，默认当前设备 |
 | POST | `/api/emotion_expr_map` | 保存情绪到表情映射 | JSON: `map` |
 
@@ -138,7 +132,6 @@
 | GET | `/api/doubao_tts/config` | 读取豆包 TTS 配置，密钥脱敏 | - |
 | POST | `/api/doubao_tts/config` | 保存豆包 TTS 配置 | JSON: `api_key`, `speaker`, `resource_id`, `model`, `ws_url`, `sample_rate`, `audio_format` |
 | POST | `/api/doubao_tts/synthesize` | 豆包 TTS 合成并返回 WAV base64 | JSON: `text`，可带临时 TTS 配置 |
-| POST | `/api/paddlespeech/phoneme_tts` | 代理调用音素 TTS，返回分片与 WAV base64 | JSON: `text`, `spk_id` |
 | GET | `/api/llm/system_prompt` | 读取设备 LLM system prompt | query/body/session: `device_id` |
 | POST | `/api/llm/system_prompt` | 保存设备 LLM system prompt | JSON: `system_prompt` 或 `content`, `device_id` 可选 |
 | POST | `/api/llm/chat` | 调试 LLM 对话，不直接走设备 ASR | JSON: `text`, `history`, `system_prompt`, `temperature`, `device_id`, `device_context` |
@@ -165,7 +158,7 @@
 |------|------|------|
 | GET/POST/PUT/DELETE/OPTIONS | `/proxy/deskbot/{subpath}` | 登录用户访问 `:9000` HTTP API 的代理入口；会过滤 `/api/devices`，并对需要设备的路径校验/补全当前 `device_id` |
 
-代理会将请求转发到 `deskbot_upstream_base()`，并尽量附带服务器保存的免费 API Key。当前设备相关的代理路径包括 `/api/device_servo`、`/api/device_tts`、`/api/device_pb_scene`、`/api/device_pb_anim`、`/api/device_pb_expr_scene`、`/api/device_pb_scenes`、`/api/scene_playbook/run`。
+代理会将请求转发到 `deskbot_upstream_base()`。当前设备相关的代理路径包括 `/api/device_servo`、`/api/device_tts`、`/api/device_pb_scene`、`/api/device_pb_anim`、`/api/device_pb_expr_scene`、`/api/device_pb_scenes`、`/api/scene_playbook/run`。
 
 ## deskbot WebSocket `:9000`
 
@@ -174,7 +167,7 @@
 生产设备主链路。默认 URL：
 
 ```text
-ws://<host>:9000/asr_chat?device_id=<id>&pin_code=<4位PIN>
+ws://<host>:9000/asr_chat?device_id=<id>
 ```
 
 `device_id` 别名：`device_id`、`deviceid`、`device`、`id`。连接成功后服务端发送：
@@ -210,7 +203,6 @@ ws://<host>:9000/asr_chat?device_id=<id>&pin_code=<4位PIN>
 调试 JPEG 预览订阅。URL：
 
 ```text
-ws://<host>:9000/camera_view?device_id=<id>&api_key=<key>
 ws://<host>:9000/camera_view?device_id=<id>&debug_token=<token>
 ```
 
@@ -227,13 +219,12 @@ ws://<host>:9000/camera_view?device_id=<id>&debug_token=<token>
 生产者 URL：
 
 ```text
-ws://<host>:9000/device_pipeline?device_id=<id>&api_key=<key>
+ws://<host>:9000/device_pipeline?device_id=<id>
 ```
 
 订阅者 URL：
 
 ```text
-ws://<host>:9000/device_pipeline?role=subscriber&device_id=<id>&api_key=<key>
 ws://<host>:9000/device_pipeline?role=subscriber&device_id=<id>&debug_token=<token>
 ```
 
@@ -256,12 +247,12 @@ ws://<host>:9000/device_pipeline?role=subscriber&device_id=<id>&debug_token=<tok
 
 ## deskbot HTTP API `:9000`
 
-所有 `/api/*` 均支持 `OPTIONS` CORS 预检。除 `/health` 外，均需 API Key。
+所有 `/api/*` 均支持 `OPTIONS` CORS 预检。除 `/health` 外，鉴权走 Web 会话或 `debug_token`（无 user_id 时匿名放行）。
 
 | 方法 | 路径 | 用途 | 主要输入 |
 |------|------|------|----------|
 | GET | `/health` | 存活探针 | - |
-| GET | `/api/devices` | 当前在线设备列表；用户 Key 会按绑定设备过滤 | - |
+| GET | `/api/devices` | 当前在线设备列表；登录用户按绑定设备过滤 | - |
 | GET | `/api/asr_auto_reply` | 查询/设置 ASR 自动应答开关 | query: `enabled=1|0|true|false` 可选 |
 | GET | `/api/camera_servo_auto_mode` | 查询/设置相机舵机自动模式 | query: `mode=follow|follow_frontal|gaze|off` 可选 |
 | GET | `/api/debug_prefs` | 查询/批量设置调试偏好 | query: `asr_auto_reply`, `camera_servo_auto_mode` 可选 |
@@ -279,55 +270,18 @@ ws://<host>:9000/device_pipeline?role=subscriber&device_id=<id>&debug_token=<tok
 
 未知 `/api/*` 返回 `404 {"error":"not found","path":"..."}`。不支持的方法返回 `405`。
 
-## paddlespeech WebSocket `:8092`
-
-### `/paddlespeech/tts/streaming`
-
-PaddleSpeech 官方流式 TTS WebSocket，由 `paddlespeech.server.ws.api.setup_router` 根据配置 `engine_list: ['tts_online-onnx']` 注册。本项目未修改该协议；deskbot 默认通过 `config.yaml -> tts.ws_url` 连接它。
-
-### `/paddlespeech/tts/streaming_phoneme`
-
-音素分片 TTS，供口型对齐使用。传输为 WebSocket JSON 文本帧。
-
-请求流程：
-
-| 步骤 | 客户端消息 | 服务端响应 |
-|------|------------|------------|
-| 开始 | `{"signal":"start"}` | `{"status":0,"signal":"server ready","session":"..."}` |
-| 合成 | `{"text":"你好","spk_id":0}` | `{"status":1,"segments":[...]}`，随后 `{"status":2,"segments":[]}` |
-| 结束 | `{"signal":"end","session":"..."}` | `{"status":0,"signal":"connection will be closed","session":"..."}` |
-
-`segments[]` 字段：
-
-| 字段 | 说明 |
-|------|------|
-| `phoneme_id` | PaddleSpeech 音素 ID |
-| `phoneme` | 音素符号 |
-| `ms` | 该分片估算时长，毫秒 |
-| `audio` | 小端 int16 PCM 分片的 base64 |
-
-错误响应：
-
-```json
-{"status": -1, "message": "...", "segments": []}
-```
-
-常见错误包括 `send signal start first`、`empty text`、`empty phone_ids for text`、`invalid request json`。
-
 ## 源码索引
 
 | 范围 | 文件 |
 |------|------|
-| FastAPI Web 挂载与全局鉴权 | `service/src/deskbot_server/web/mount.py` |
-| Web 控制台账号路由 | `service/deskbot-server/src/deskbot_server/web/blueprints/auth_bp.py` |
-| Web 管理后台路由 | `service/deskbot-server/src/deskbot_server/web/blueprints/app_bp.py` |
-| 2C 页面/API 路由 | `service/deskbot-server/src/deskbot_server/web/blueprints/app2c_bp.py` |
-| Web 调试路由 | `service/deskbot-server/src/deskbot_server/web/blueprints/debug_bp.py` |
-| Web 到 deskbot 代理 | `service/deskbot-server/src/deskbot_server/web/blueprints/proxy_bp.py` |
-| deskbot WS 路由分发 | `service/deskbot-server/src/deskbot_server/ws/router.py` |
-| deskbot HTTP API | `service/deskbot-server/src/deskbot_server/ws/http_api.py` |
-| `/asr_chat` 协议 | `service/deskbot-server/src/deskbot_server/ws/asr_chat.py` |
-| `/device_pipeline` 协议 | `service/deskbot-server/src/deskbot_server/ws/device_pipeline.py` |
-| `/camera_view` 协议 | `service/deskbot-server/src/deskbot_server/ws/camera.py` |
-| TTS 侧车入口 | `service/paddlespeech-server/src/paddlespeech_server/main.py` |
-| 音素 TTS 路由 | `service/paddlespeech-server/src/paddlespeech_server/ws_phoneme.py` |
+| FastAPI 主服务与路由组装 | `service/src/deskbot_server/controller/app.py` |
+| Web 控制台账号路由 | `service/src/deskbot_server/web/blueprints/auth_bp.py` |
+| Web 管理后台路由 | `service/src/deskbot_server/web/blueprints/app_bp.py` |
+| 2C 页面/API 路由 | `service/src/deskbot_server/web/blueprints/app2c_bp.py` |
+| Web 调试路由 | `service/src/deskbot_server/web/blueprints/debug_bp.py` |
+| Web 到 deskbot 代理 | `service/src/deskbot_server/web/blueprints/proxy_bp.py` |
+| `/asr_chat` 会话处理 | `service/src/deskbot_server/service/device_ws_service.py` |
+| `/device_pipeline` 协议 | `service/src/deskbot_server/ws/device_pipeline.py` |
+| `/camera_view` 预览 | `service/src/deskbot_server/controller/web_controller.py` |
+| TTS 适配（豆包 doubao） | `service/src/deskbot_server/infrastructure/tts/` |
+| 人脸检测 / 跟随 | `service/src/deskbot_server/vision/`、`service/src/deskbot_server/service/camera_face_service.py` |

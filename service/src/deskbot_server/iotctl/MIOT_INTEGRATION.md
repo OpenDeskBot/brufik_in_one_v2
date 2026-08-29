@@ -38,7 +38,7 @@
 设备级数据目录：
 
 ```
-data/{device_id}_{pin}/miot/
+data/{device_id}/miot/
 ├── auth.json      # access_token / refresh_token / expires_ts
 ├── meta.json      # 上次续期、有效期、下次续期、昵称、同步时间
 ├── config.json    # uuid、cloud_server、redirect_uri

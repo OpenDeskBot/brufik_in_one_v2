@@ -27,7 +27,7 @@
 ## 一、开箱即用
 
 1. 编辑 [`firmware/deskbot_config.h`](firmware/deskbot_config.h)：把 `WIFI_DEFAULT_*` 改成你家路由，或把热点改成与宏一致；并设置 `DESKBOT_WS_HOST` / `DESKBOT_WS_PORT`。
-2. 上电后连 WiFi，并连接 `ws://…/asr_chat?device_id=…&pin_code=…`（开机屏会显示 PIN；**设备链路不用 API Key**）。
+2. 上电后连 WiFi，并连接 `ws://…/asr_chat?device_id=…`（**设备链路仅需 device_id，无 API Key / PIN**）。
 3. 改家里 WiFi：上电后连接开放热点，SSID 为 **`device_id`**（如 `deskbot_e83dc1faea30`），浏览器打开屏幕地址（通常 **`http://192.168.4.1/`**）按 onboarding 保存。
 
 ---

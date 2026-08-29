@@ -2,10 +2,10 @@
 
 ## 本地环境
 
-1. `cp .env.example .env`，填写 `LLM_API_KEY`
+1. `cp .env.example .env`，填写 `ARK_API_KEY` / `ARK_MODEL`（火山方舟 LLM）
 2. 在 `service/` 目录执行 `./start.sh`（或已装依赖时 `SKIP_SETUP=1 ./start.sh`）
-3. 浏览器打开 `http://127.0.0.1:5050/` 注册账号；控制台 / HTTP 联调用 `data/.free_api_key` 或账号 Key
-4. 模拟设备 WS 使用 `?device_id=…&pin_code=1234`（见 [tools/README.md](tools/README.md)）
+3. 浏览器打开 `http://127.0.0.1:5050/` 注册账号；Web / HTTP 走登录会话，调试 WS 订阅用「调试台」签发的 `debug_token`
+4. 模拟设备 WS 使用 `?device_id=deskbot_dev`（仅需 device_id，见 [tools/README.md](tools/README.md)）
 
 ## 提交前检查
 
@@ -27,6 +27,6 @@ pytest tests/ -q
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（若改模块结构）
 - 固件工具链变更时同步 [`../hardware/README.md`](../hardware/README.md)
 
-勿提交 `.env`、模型权重、`data/{device_id}_{pin}/` 运行时数据。
+勿提交 `.env`、模型权重、`data/{device_id}/` 运行时数据。
 
 贡献采用 [GPL-3.0](LICENSE)。

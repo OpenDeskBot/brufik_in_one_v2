@@ -27,7 +27,7 @@ Audio uses Arduino **`ESP_I2S`** (PDM RX mic + STD TX amp). Camera uplink prefer
 ## 1. Out of the box
 
 1. Edit [`firmware/deskbot_config.h`](firmware/deskbot_config.h): set `WIFI_DEFAULT_*` to your AP (or set the AP to match those macros), and set `DESKBOT_WS_HOST` / `DESKBOT_WS_PORT` to your backend.
-2. Power on — the device joins WiFi and opens `ws://…/asr_chat?device_id=…&pin_code=…` (PIN is shown on the boot screen; **no API key** on the device link).
+2. Power on — the device joins WiFi and opens `ws://…/asr_chat?device_id=…` (**device_id only**; no API key or PIN on the device link).
 3. To change WiFi later: power on, join the open soft-AP whose SSID is the **`device_id`** (e.g. `deskbot_e83dc1faea30`), then open the URL on the screen (usually **`http://192.168.4.1/`**).
 
 ---

@@ -11,7 +11,7 @@ SKIP_SETUP=1 ./start.sh
 ```
 
 ```bash
-cp .env.example .env   # 必填 LLM_API_KEY
+cp .env.example .env   # 必填 ARK_API_KEY / ARK_MODEL（火山方舟）
 ```
 
 | 端口 | 服务 |
@@ -32,14 +32,14 @@ cp .env.example .env   # 必填 LLM_API_KEY
 | `/app/scheduled-tasks` | 定时任务：cron 任务列表（东八区），可删除 |
 | `/app/memories` | 记忆：按设备增删改查长期记忆 |
 | `/app/face-profiles` | 人脸识别：按设备查看档案 |
-| `/app/usage` | 用量看板：按 Key / 设备统计 |
-| `/app/settings` | 账号设置：API Key 管理 |
+| `/app/usage` | 用量看板：按设备统计 |
+| `/app/settings` | 账号设置：资料、密码、LLM 模型配置 |
 | `/debug/devices` | 调试：在线设备、流水线 |
 | `/debug/llm` | 调试：LLM 试聊 |
 | `/debug/tts` | 调试：豆包 TTS |
 | `/debug/simulation` | 调试：pb 仿真 |
 
-首次启动自动创建免费体验 API Key，写入 `data/.free_api_key`（每日 1GB 总字节配额）。
+本地联调脚本可读取 `data/.free_api_key`（若存在）；设备链路不涉及任何 Key。
 
 ---
 
@@ -47,9 +47,9 @@ cp .env.example .env   # 必填 LLM_API_KEY
 
 | 路径 | 说明 |
 |------|------|
-| `/asr_chat?device_id=&pin_code=` | **生产设备**：语音 + 可选 `camera_frame`；pb 下行（`device_id` 必须；**强烈建议**带合法 pin，缺 pin 不拒连） |
-| `/camera_view?device_id=&api_key=` | 调试：JPEG 预览（Web API Key / debug token） |
-| `/device_pipeline?role=subscriber&device=&api_key=` | 调试：流水线事件 |
+| `/asr_chat?device_id=` | **生产设备**：语音 + 可选 `camera_frame`；pb 下行（仅 `device_id` 鉴权） |
+| `/camera_view?device_id=&debug_token=` | 调试：JPEG 预览（控制台签发 debug_token + 设备归属） |
+| `/device_pipeline?role=subscriber&device_id=&debug_token=` | 调试：流水线事件（订阅侧 debug_token；生产者仅 `device_id`） |
 
 `device_id` 别名：`device` / `deviceid` / `id`。协议：[../docs/esp32_pb_protocol.md](../docs/esp32_pb_protocol.md)。
 
@@ -64,7 +64,7 @@ cp .env.example .env   # 必填 LLM_API_KEY
 | `/health` | 健康检查（免 Key） |
 | `/api/devices` | 在线设备列表 |
 
-本机 `127.0.0.1` 经 Web 代理转发时可免 Key；**ESP32 设备 WS 仅需 `device_id`（可选 `pin_code` 供绑定）**。
+**ESP32 设备 WS 仅需 `device_id`**；HTTP `/api/*` 走 Web 会话（无 user_id 时匿名放行）。
 
 ---
 
@@ -81,33 +81,33 @@ cp .env.example .env   # 必填 LLM_API_KEY
 | `memory_add` / `memory_delete` | 长期记忆 |
 | `session` | 查询对话 session |
 | `webfetch` / `websearch` | 联网抓取 / 搜索 |
-| `read` / `write` | 读写 `data/{device_id}_{pin}/tmp/` |
+| `read` / `write` | 读写 `data/{device_id}/tmp/` |
 
 定时任务由后台调度器每分钟轮询，到期后复用创建时的 `session_id` 作为 LLM 上下文并播报提醒。
 
-人设与工具说明：`data/llm_system.txt`（全局模板）及 `data/{device_id}_{pin}/llm_system.txt`（设备级，优先）。
+人设与工具说明：`data/global/llm_system.txt`（全局模板，所有设备共用，不再复制到设备目录）。
 
 ---
 
-## 设备数据（按 `device_id` + PIN 隔离）
+## 设备数据（按 `device_id` 隔离）
 
-运行时数据在 `data/{device_id}_{pin}/`（**不入 Git**），首次使用设备时从 `data/` 复制模板：
+运行时数据在 `data/{device_id}/`（**不入 Git**），共享配置在 `data/global/`：
 
 | 文件 / 目录 | 说明 |
 |-------------|------|
-| `llm_system.txt` | 设备 LLM 人设 |
+| `data/global/llm_system.txt` | 全局 LLM 人设模板 |
 | `user_memory.json` | 长期记忆 |
 | `face_profiles.json` | 人脸档案 |
 | `session/` | 对话 session（10 分钟无对话开新 session） |
 | `tmp/` | LLM `read` / `write` 沙箱目录 |
 
-全局 SQLite：`data/opendesk.db`（用户、API Key、设备绑定、`scheduled_tasks` 表）。
+全局 SQLite：`data/opendesk.db`（用户、设备绑定、`scheduled_tasks`、用量等表）。
 
 ---
 
 ## 配置
 
-- **`.env`**：`LLM_API_KEY`、`DOUBAO_TTS_*`（豆包 TTS）、`ASR_MODEL_DIR`、`DESKBOT_WEB_PUBLIC_HOST`（多网卡时填局域网 IP）、`DESKBOT_WEB_SECRET_KEY`（生产必设）
+- **`.env`**：`ARK_API_KEY` / `ARK_MODEL`（火山方舟 LLM，必填；兼容旧版 `LLM_API_KEY` / `DASHSCOPE_API_KEY`）、`DOUBAO_TTS_*`（豆包 TTS）、`ASR_MODEL_DIR`、`DESKBOT_WEB_PUBLIC_HOST`（多网卡时填局域网 IP）、`DESKBOT_WEB_SECRET_KEY`（生产必设）
 - **`config.yaml`**：`audio.input_codec`、`llm.model_name`、`tts.provider`（`doubao`）、`server.asr_chat_device_pb_only`、`debug.asr_auto_reply`
 
 架构概要：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
@@ -119,7 +119,7 @@ cp .env.example .env   # 必填 LLM_API_KEY
 ```bash
 source .venv/bin/activate
 python tools/test_client.py \
-  --ws-url "ws://127.0.0.1:9000/asr_chat?device_id=deskbot_dev&pin_code=1234" \
+  --ws-url "ws://127.0.0.1:9000/asr_chat?device_id=deskbot_dev" \
   --input-wav demo_16k_mono.wav
 ```
 

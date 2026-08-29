@@ -73,7 +73,7 @@ setup_venv() {
 venvs_look_ready() {
   local py
   py="$(platform_venv_python "$ROOT" 2>/dev/null)" || return 1
-  "$py" -c "import numpy, websockets, yaml, webrtcvad, openai, opuslib_next, torch, torchaudio, funasr, croniter, fastapi, uvicorn, deskbot_server" >/dev/null 2>&1 || return 1
+  "$py" -c "import numpy, websockets, yaml, opuslib_next, torch, torchaudio, funasr, croniter, fastapi, uvicorn, deskbot_server" >/dev/null 2>&1 || return 1
 }
 
 ensure_local_scripts() {

@@ -20,7 +20,7 @@ sudo apt install -y python3.11 python3.11-venv python3.11-dev ffmpeg curl git
 # 2. 配置大模型 Key（必填）
 cd service   # monorepo 内；独立 clone 时进入对应目录
 cp .env.example .env
-# 编辑 .env，填写 LLM_API_KEY=sk-...
+# 编辑 .env，填写 ARK_API_KEY 与 ARK_MODEL（火山方舟）
 
 # 3. 一键启动（自动建 venv、下载模型、起主服务 + Web 控制台）
 chmod +x start.sh
@@ -37,10 +37,10 @@ FAST_START=1 ./start.sh
 
 | 服务 | 地址 | 用途 |
 |------|------|------|
-| **Web 控制台** | `http://<本机IP>:5050/` | 注册登录、设备与 API Key、定时任务、记忆等 |
-| **设备 WebSocket** | `ws://<本机IP>:9000/asr_chat?device_id=<id>&pin_code=<4位PIN>` | ESP32 语音对话主链路（**不用 API Key**） |
+| **Web 控制台** | `http://<本机IP>:5050/` | 注册登录、设备绑定、定时任务、记忆等 |
+| **设备 WebSocket** | `ws://<本机IP>:9000/asr_chat?device_id=<id>` | ESP32 语音对话主链路（仅需 `device_id`，无 API Key / PIN） |
 
-启动后终端会打印**免费体验 API Key** 路径：`data/.free_api_key`（前缀 `odk_free_`，每日 1GB 配额）——用于 **Web / HTTP / 调试订阅**，不是设备 WS 鉴权。
+Web / HTTP 接口与调试订阅使用**控制台登录会话**；调试 WebSocket（`/camera_view`、`/device_pipeline` 订阅侧）在「调试台」页面签发 `debug_token`。本地联调脚本可读取 `data/.free_api_key`（若存在）。
 
 ---
 
@@ -50,20 +50,20 @@ FAST_START=1 ./start.sh
 
 浏览器访问 `http://<本机IP>:5050/` → **注册**账号 → 登录进入工作台。
 
-### 2. 获取 API Key（控制台 / HTTP）
+### 2. 鉴权方式（Web / HTTP / 调试订阅）
 
-**账号设置** 中创建 API Key，或直接使用首次启动生成的 `data/.free_api_key`。设备固件**不需要**此 Key。
+控制台注册登录后，Web / HTTP 接口直接走会话；调试 WebSocket 订阅（`/camera_view`、`/device_pipeline`）在「调试台」页面获取 `debug_token`。设备固件**不需要**任何 Key。
 
 ### 3. 绑定设备
 
-**我的设备** 中添加 `device_id`（与固件一致，如 `deskbot_e83dc1faea30`），并用设备开机屏上的 **4 位 PIN** 完成绑定。后续管理定时任务、记忆、人脸档案时需先**选择设备**。
+**我的设备** 中添加 `device_id`（与固件一致，如 `deskbot_e83dc1faea30`）即可绑定。后续管理定时任务、记忆、人脸档案时需先**选择设备**。
 
 ### 4. 连接设备对话
 
 固件连接（与 `hardware/firmware` 一致）：
 
 ```
-ws://<本机IP>:9000/asr_chat?device_id=<你的device_id>&pin_code=<4位PIN>
+ws://<本机IP>:9000/asr_chat?device_id=<你的device_id>
 ```
 
 说话后发送 `flush`，服务端识别 → 调用 LLM → TTS → pb 下行播放。
@@ -73,7 +73,7 @@ ws://<本机IP>:9000/asr_chat?device_id=<你的device_id>&pin_code=<4位PIN>
 ```bash
 source .venv/bin/activate
 python tools/test_client.py \
-  --ws-url "ws://127.0.0.1:9000/asr_chat?device_id=deskbot_dev&pin_code=1234" \
+  --ws-url "ws://127.0.0.1:9000/asr_chat?device_id=deskbot_dev" \
   --input-wav demo_16k_mono.wav
 ```
 
@@ -97,12 +97,12 @@ WAV 须 **16 kHz / mono / s16le**。麦克风实时测试见 [tools/README.md](t
 
 ## 与 ESP32 的交互（概要）
 
-单条 WebSocket：`/asr_chat?device_id=<id>&pin_code=<4位PIN>`。上行、下行均采用 **「JSON + 紧随一条 binary」**，长度由 **`next_bin_len`** 声明，**不用 base64**。
+单条 WebSocket：`/asr_chat?device_id=<id>`。上行、下行均采用 **「JSON + 紧随一条 binary」**，长度由 **`next_bin_len`** 声明，**不用 base64**。
 
 ```
 ┌──────── ESP32 ────────┐                    ┌──── deskbot-server ────┐
 │ 麦克风 Opus/PCM       │  audio + binary    │ VAD → FunASR → 文本     │
-│ 可选 JPEG             │  camera_frame      │ → DashScope LLM + tools │
+│ 可选 JPEG             │  camera_frame      │ → 方舟 LLM + tools │
 │ flush / pb_ack        │ ─────────────────► │ → 豆包 TTS + 音素口型   │
 │                       │                    │ → 组 pb + PCM           │
 │ 播放 PCM + 画屏       │  pb_* + binary     │                         │
@@ -129,7 +129,7 @@ TTS 使用火山引擎豆包（`tts.provider: doubao`），凭证配置见 `.env
 
 ### 固件要点
 
-1. URL 须带稳定 **`device_id`**；强烈建议带合法 **`pin_code`**（缺 PIN 不拒连，但无法写入 online pin / 按 PIN 隔离存储）。
+1. URL 须带稳定 **`device_id`**（设备链路仅此一项鉴权，无需 API Key / PIN）。
 2. JSON 与 binary **严格成对、顺序发送**。
 3. 周期性 **`pb_ack`** 做播放回压。
 4. 固件栈：Arduino-ESP32 **3.3.9** / IDF **5.5.4**（pioarduino），详见 [`../hardware/README.md`](../hardware/README.md)。
@@ -140,10 +140,10 @@ TTS 使用火山引擎豆包（`tts.provider: doubao`），凭证配置见 `.env
 
 | 路径 | 说明 |
 |------|------|
-| `data/opendesk.db` | 用户、API Key、设备绑定、定时任务（SQLite） |
-| `data/.free_api_key` | 免费体验 Key（勿提交 Git；给 Web/HTTP） |
-| `data/{device_id}_{pin}/` | 按设备+PIN 隔离的配置、session、记忆等（**不入 Git**） |
-| `data/llm_system.txt` | 全局 LLM 人设模板（新设备首次使用时复制） |
+| `data/opendesk.db` | 用户、设备绑定、定时任务（SQLite） |
+| `data/.free_api_key` | 免费体验 Key（勿提交 Git；本地联调脚本可读取） |
+| `data/{device_id}/` | 按设备隔离的配置、session、记忆等（**不入 Git**） |
+| `data/global/` | 全局共享配置（LLM 人设模板 `llm_system.txt` 等） |
 
 ---
 
@@ -151,7 +151,7 @@ TTS 使用火山引擎豆包（`tts.provider: doubao`），凭证配置见 `.env
 
 | 文档 | 内容 |
 |------|------|
-| [docs/api_interfaces.md](docs/api_interfaces.md) | Web 控制台、deskbot 设备服务、TTS 侧车接口清单 |
+| [docs/api_interfaces.md](docs/api_interfaces.md) | Web 控制台与 deskbot 设备服务接口清单 |
 | [docs/esp32_pb_protocol.md](docs/esp32_pb_protocol.md) | ESP32 通信、鉴权、pb 协议 |
 | [docs/SERVER.md](docs/SERVER.md) | 主服务 API、配置、LLM 工具 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 代码分层与模块 |

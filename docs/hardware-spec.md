@@ -9,7 +9,7 @@
 
 | 项目 | 规格 |
 |------|------|
-| 开发板 | **Seeed XIAO ESP32S3 Sense** |
+| 开发板 | **Seeed XIAO ESP32S3 Sense**（当前固件已移植到自研 Deskbot v2 板，引脚以 [`firmware/deskbot_config.h`](../hardware/firmware/deskbot_config.h) 为准；本文档引脚表仍按 XIAO 参考设计） |
 | MCU | ESP32-S3（Xtensa 双核 LX7） |
 | 框架 | Arduino-ESP32 3.3.9 + ESP-IDF 5.5.4 |
 | PlatformIO 平台 | pioarduino 55.03.9 |
@@ -258,7 +258,7 @@ D8  = GPIO7    D9  = GPIO8    D10 = GPIO9
 
 ### WebSocket 协议细节
 
-- 端点：`ws://<host>:<port>/asr_chat?device_id=<mac>&pin_code=<pin>`
+- 端点：`ws://<host>:<port>/asr_chat?device_id=<mac>`（仅 `device_id` 鉴权，无 API Key / PIN）
 - 最大消息大小：1MB
 - TCP 超时：15s，写超时：5s
 - 线格式：`u32be(json_len) + json_utf8 + optional_binary`
@@ -267,11 +267,11 @@ D8  = GPIO7    D9  = GPIO8    D10 = GPIO9
 
 ---
 
-## 9. 半双工音频注意事项
+## 9. 音频处理（全双工）
 
-- 扬声器播放时麦克风自动静音（mic_set_speaker_state 门控）
-- TTS 结束后 **300ms 尾部抑制**（无 AEC）
-- 麦克风无回声消除（AEC），依赖时分复用避免自激
+- 音频前端集成 **ESP-SR AFE**（`audio_frontend_esp_sr.cpp`）：AEC 回声消除 / NS 降噪 / AGC / VAD
+- **全双工**：已移除 speaker/mic 半双工互斥，播放时麦克风照常采集，机器人可以边听边说、随时被打断
+- 上行统一 16kHz（`SAMPLE_RATE`），下行 TTS 24kHz；切句在服务端 Silero VAD
 
 ---
 
@@ -283,8 +283,8 @@ D8  = GPIO7    D9  = GPIO8    D10 = GPIO9
 3. USB-C 接口需确保 CC1/CC2 5.1k 下拉电阻焊接正确，否则无法被主机识别
 
 ### 🔌 引脚冲突
-1. **D6/D7（GPIO43/44）是 UART0**，固件已将舵机从 D6/D7 改为 D3/D9，避免冲突
-2. **旧版 PCB（Board1）** 的舵机走线仍连到 D6/D7，需要手动飞线改到 D3/D9
+1. 舵机避开 USB 19/20 与 strapping 引脚：当前固件 X（左右）→ **GPIO16**（小舵机）、Y（上下）→ **GPIO15**（大舵机）
+2. **旧版 PCB（Board1）** 的舵机走线曾连到 D6/D7（UART0），需要手动飞线（见 `mechanical/pcb/Board1`）
 3. 板载 LED 引脚与音频/摄像头冲突，**不可用**
 
 ### 📷 摄像头
@@ -293,8 +293,8 @@ D8  = GPIO7    D9  = GPIO8    D10 = GPIO9
 3. 120° 广角镜头会产生桶形畸变，服务端可配置去畸变（默认关闭）
 
 ### 🔊 音频
-1. **无回声消除（AEC）**，采用半双工方案：播放时静音麦克风
-2. TTS 结束后有 300ms 静默期，避免尾音被采集
+1. 音频前端含 **AEC / NS / AGC / VAD**（ESP-SR AFE），全双工采集，播放时不静音麦克风
+2. AGC 压缩增益默认 12dB（`DESKBOT_AFE_AGC_COMPRESSION_GAIN_DB`），避免 AEC 残留抬过 VAD 阈值
 3. Opus 编码复杂度设为 0（最低），优先保证实时性
 
 ### 🖥️ 显示屏
