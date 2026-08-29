@@ -1,6 +1,7 @@
 #include "pb_runtime.h"
 
 #include <stdlib.h>
+#include <string.h>
 #include "display.h"
 #include "head.h"
 #include "logger.h"
@@ -24,20 +25,17 @@ static String s_req;
 static int s_dispatched_since_ack = 0;
 static String s_ack_req;
 
-/* ── 帧队列 ── */
+/* ── 模型队列 ──
+ * 入队即解析：队列里直接存 pb_model（媒体已拷贝，模型自包含），
+ * 出队直接分发，不再二次解析。 */
 
-struct PbRxFrame {
-  uint8_t* data = nullptr;
-  size_t len = 0;
-};
-
-static constexpr UBaseType_t kPbFrameQDepth = 64;
+static constexpr UBaseType_t kPbModelQDepth = 64;
 static constexpr uint32_t kPbRuntimeStack = 24 * 1024;
 static constexpr UBaseType_t kPbRuntimePrio = 5;
 
 static bool s_setup_ok = false;
 static TaskHandle_t s_task = nullptr;
-static QueueHandle_t s_frame_q = nullptr;
+static QueueHandle_t s_model_q = nullptr;
 
 /* ── 内部函数 ── */
 
@@ -81,42 +79,69 @@ static void abortRound() {
 }
 
 
-static bool model_slot_from_frame(const PbRxFrame& item, pb_model& out) {
+/* 打包帧 → pb_model（入队时解析一次；媒体已拷贝进模型，原始缓冲可立即释放）。 */
+static bool parse_frame_to_model(const uint8_t* data, size_t length, pb_model& out,
+                                 const char*& err) {
   PackedFrame frame;
-  if (!parse_packed_frame(item.data, item.len, frame)) {
-    log_warn("[PB] packed frame parse failed");
+  if (!parse_packed_frame(const_cast<uint8_t*>(data), length, frame)) {
     return false;
   }
-  const char* err = nullptr;
   const size_t media_len = frame.bin_len > 0 ? static_cast<size_t>(frame.bin_len) : 0;
-  if (!pb_model_from_json(frame.doc, frame.bin, media_len, out, err)) {
-    log_warn("[PB] model parse rejected: %s", err ? err : "unknown");
-    return false;
+  return pb_model_from_json(frame.doc, frame.bin, media_len, out, err);
+}
+
+/* ── pb_cancel 直接通知（不走模型队列）──
+ * cancel 在入队解析后被识别：立即清空模型队列（丢弃旧链积压帧）并直接通知
+ * pb_runtime 任务；任务在下一循环周期（≤2ms）内处理，drain/space 等待
+ * 也会被打断。避免 cancel 排在旧链帧之后、等执行器播完才生效。 */
+
+static volatile bool s_pending_cancel = false;
+static char s_pending_cancel_req[37];
+static portMUX_TYPE s_cancel_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void notify_pending_cancel(const char* req) {
+  portENTER_CRITICAL(&s_cancel_mux);
+  strncpy(s_pending_cancel_req, req, sizeof(s_pending_cancel_req) - 1);
+  s_pending_cancel_req[sizeof(s_pending_cancel_req) - 1] = '\0';
+  s_pending_cancel = true;
+  portEXIT_CRITICAL(&s_cancel_mux);
+}
+
+/* 任务侧取出待处理 cancel；返回 true 表示有（req 已拷出并清除标志）。 */
+static bool take_pending_cancel(char* req_out, size_t req_sz) {
+  portENTER_CRITICAL(&s_cancel_mux);
+  const bool has = s_pending_cancel;
+  if (has) {
+    strncpy(req_out, s_pending_cancel_req, req_sz - 1);
+    req_out[req_sz - 1] = '\0';
+    s_pending_cancel = false;
   }
-  return true;
+  portEXIT_CRITICAL(&s_cancel_mux);
+  return has;
+}
+
+/* 等待循环里只读标志：有 pending cancel 立即打断等待（处理在循环顶部统一做）。 */
+static bool cancel_pending() {
+  return s_pending_cancel;
 }
 
 static void task_loop_pb_runtime(void* /*arg*/) {
   constexpr TickType_t kIdleWaitTicks = pdMS_TO_TICKS(2);
 
   for (;;) {
-    PbRxFrame item{};
-    if (xQueueReceive(s_frame_q, &item, kIdleWaitTicks) != pdTRUE) {
-      continue;
-    }
-    MemGuard frame_guard{item.data};
-
-    pb_model incoming{};
-    if (!model_slot_from_frame(item, incoming)) {
-      continue;
-    }
-
-    if (incoming.type == PB_MODEL_CANCEL) {
-      log_info("[PB] cancel req=%s active_req=%s", incoming.req, s_req.c_str());
-      if (incoming.req[0] == '\0' || s_req.isEmpty() || s_req.equals(incoming.req)) {
+    /* pb_cancel 直接通知路径（模型队列已由入队侧清空，这里统一处理抢占）。 */
+    char cancel_req[37];
+    if (take_pending_cancel(cancel_req, sizeof(cancel_req))) {
+      log_info("[PB] cancel req=%s active_req=%s (direct)", cancel_req, s_req.c_str());
+      if (cancel_req[0] == '\0' || s_req.isEmpty() || s_req.equals(cancel_req)) {
         abortRound();
       }
-      pb_model_free(incoming);
+      continue;
+    }
+
+    /* 入队时已解析，出队直接分发。 */
+    pb_model incoming{};
+    if (xQueueReceive(s_model_q, &incoming, kIdleWaitTicks) != pdTRUE) {
       continue;
     }
 
@@ -162,21 +187,34 @@ static void task_loop_pb_runtime(void* /*arg*/) {
 
     pb_model_free(incoming);
 
+    bool preempted = false;
     if (s_dispatched_since_ack >= kAckBatchSize) {
       while (computeMinExecutorSpace() < (unsigned)kAckBatchSize) {
+        if (cancel_pending()) {
+          preempted = true;
+          break;
+        }
         vTaskDelay(pdMS_TO_TICKS(5));
       }
-      sendAck(kAckChunk);
+      if (!preempted) {
+        sendAck(kAckChunk);
+      }
     }
 
-    if (incoming_type == PB_MODEL_END || incoming_type == PB_MODEL_SINGLE) {
+    if (!preempted && (incoming_type == PB_MODEL_END || incoming_type == PB_MODEL_SINGLE)) {
       speaker_signal_task_done();
       head_signal_task_done();
       display_signal_task_done();
       while (!(speaker_task_done() && head_task_done() && display_task_done())) {
+        if (cancel_pending()) {
+          preempted = true;
+          break;
+        }
         vTaskDelay(pdMS_TO_TICKS(5));
       }
-      sendAck(kAckEnd);
+      if (!preempted) {
+        sendAck(kAckEnd);
+      }
     }
   }
 }
@@ -184,10 +222,10 @@ static void task_loop_pb_runtime(void* /*arg*/) {
 /* ── 公开接口 ── */
 
 bool setup_pb_runtime(void) {
-  if (!s_frame_q) {
-    s_frame_q = xQueueCreate(kPbFrameQDepth, sizeof(PbRxFrame));
-    if (!s_frame_q) {
-      log_error("[PB_RUNTIME] frame queue create failed");
+  if (!s_model_q) {
+    s_model_q = xQueueCreate(kPbModelQDepth, sizeof(pb_model));
+    if (!s_model_q) {
+      log_error("[PB_RUNTIME] model queue create failed");
       s_setup_ok = false;
       return false;
     }
@@ -195,7 +233,7 @@ bool setup_pb_runtime(void) {
   s_req.reserve(37);
   s_ack_req.reserve(37);
   s_setup_ok = true;
-  log_info("[PB_RUNTIME] setup ok frame_q=%u", (unsigned)kPbFrameQDepth);
+  log_info("[PB_RUNTIME] setup ok model_q=%u", (unsigned)kPbModelQDepth);
   return true;
 }
 
@@ -221,30 +259,47 @@ bool task_setup_pb_runtime(void) {
 }
 
 bool pb_runtime_enqueue_frame(uint8_t* data, size_t length) {
-  PbRxFrame item{};
-  item.data = data;
-  item.len = length;
-  if (xQueueSend(s_frame_q, &item, 0) != pdTRUE) {
-    PbRxFrame dropped{};
-    if (xQueueReceive(s_frame_q, &dropped, 0) == pdTRUE) {
-      free(dropped.data);
+  /* 入队即解析：队列里直接存 pb_model，出队不再二次解析。
+   * 解析成功后原始缓冲立即释放（媒体已拷贝进模型）。 */
+  pb_model model{};
+  const char* err = nullptr;
+  if (!parse_frame_to_model(data, length, model, err)) {
+    log_warn("[PB] model parse rejected: %s", err ? err : "packed");
+    return false;  // 调用方（ws_transport）负责 free(data)
+  }
+  free(data);
+
+  /* pb_cancel 不走模型队列：清空旧链积压帧并直接通知 pb_runtime 任务，
+   * 抢占不等当前链播完。 */
+  if (model.type == PB_MODEL_CANCEL) {
+    pb_runtime_discard_rx_queue();
+    notify_pending_cancel(model.req);
+    pb_model_free(model);
+    return true;
+  }
+
+  if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
+    pb_model dropped{};
+    if (xQueueReceive(s_model_q, &dropped, 0) == pdTRUE) {
+      pb_model_free(dropped);
     }
-    if (xQueueSend(s_frame_q, &item, 0) != pdTRUE) {
-      log_warn("[PB_RUNTIME] frame queue full after drop; free new len=%u", (unsigned)length);
-      return false;
+    if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
+      log_warn("[PB_RUNTIME] model queue full after drop; free new len=%u", (unsigned)length);
+      pb_model_free(model);
+      return true;  // 已自行释放，调用方无需再 free
     }
   }
   log_info("[PB_ENQ] pb_q_in len=%u q=%u", (unsigned)length,
-           (unsigned)uxQueueMessagesWaiting(s_frame_q));
+           (unsigned)uxQueueMessagesWaiting(s_model_q));
   return true;
 }
 
 void pb_runtime_discard_rx_queue(void) {
-  if (!s_frame_q) {
+  if (!s_model_q) {
     return;
   }
-  PbRxFrame item{};
-  while (xQueueReceive(s_frame_q, &item, 0) == pdTRUE) {
-    free(item.data);
+  pb_model item{};
+  while (xQueueReceive(s_model_q, &item, 0) == pdTRUE) {
+    pb_model_free(item);
   }
 }
