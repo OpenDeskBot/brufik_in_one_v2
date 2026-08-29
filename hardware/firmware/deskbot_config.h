@@ -16,6 +16,9 @@
 #define DESKBOT_AP_OFFER_TIMEOUT_MS 20000
 #endif
 
+/** 音频统一采样率（mic/speaker/AEC 共用）。 */
+#define SAMPLE_RATE 16000
+
 #define DESKBOT_WS_HOST "39.107.38.241"
 // #define DESKBOT_WS_HOST "39.107.38.241"
 #define DESKBOT_WS_PORT 9000
@@ -89,6 +92,16 @@ static inline bool deskbot_ws_configured(void) {
 #define DESKBOT_PDM_MIC_CLK  GPIO_NUM_1
 #define DESKBOT_PDM_MIC_DATA GPIO_NUM_2
 
+/* ========== ESP-SR AFE（AEC/NS/AGC/VAD，audio_frontend_esp_sr.cpp）==========
+ * 0=HIGH_PERF（生产默认），1=LOW_COST（A/B 对比，省 CPU）。 */
+#ifndef DESKBOT_AFE_LOW_COST
+#define DESKBOT_AFE_LOW_COST 0
+#endif
+/** WebRTC AGC 固定压缩增益（dB）；过高会把 AEC 残留抬过 VAD 阈值。 */
+#ifndef DESKBOT_AFE_AGC_COMPRESSION_GAIN_DB
+#define DESKBOT_AFE_AGC_COMPRESSION_GAIN_DB 12
+#endif
+
 /* 能量门控（enhance_voice 后本地预处理，切句在服务端 Silero VAD） */
 #define DESKBOT_PDM_VOICE_MARGIN             320
 #define DESKBOT_PDM_VOICE_HANGOVER_MARGIN    200
@@ -120,14 +133,6 @@ static inline size_t deskbot_pdm_voice_hangover_thr(size_t ema) {
 #define DESKBOT_PDM_PRE_VOICE_FRAMES         50
 /** 说完后连续静音多久结束本轮（ms）；600–700 适合短指令，句内长停顿需靠 hangover 续录。 */
 #define DESKBOT_PDM_SILENCE_END_MS           650
-
-/** I2S 播放 chunk 的 mean-abs×volume 低于此值视为静音，isSpeaking 保持 false。 */
-#define DESKBOT_SPEAKER_AUDIBLE_MEAN_ABS     16
-
-/** TTS 结束后尾音抑制（ms）；无 AEC 时开麦前丢弃环内回声。 */
-#ifndef DESKBOT_TAIL_SUPPRESS_MS
-#define DESKBOT_TAIL_SUPPRESS_MS               300
-#endif
 
 /** 单轮连续 Opus 上行上限（秒）；正常由 pb_start 提前结束。 */
 #ifndef DESKBOT_UPLINK_MAX_SEC

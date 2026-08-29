@@ -209,7 +209,6 @@ static bool camera_init_hw(void) {
 }
 
 static void task_loop_camera(void* /*arg*/) {
-  uint32_t last_enq_fail_log_ms = 0;
   for (;;) {
     const uint32_t interval = s_interval_ms.load(std::memory_order_relaxed);
     /* WS 未就绪时不抓不压：避免断线期间 JPEG 编码继续吃内部 heap，拖垮重连。 */
@@ -217,6 +216,9 @@ static void task_loop_camera(void* /*arg*/) {
       vTaskDelay(pdMS_TO_TICKS(interval > 0 ? interval : 1000u));
       continue;
     }
+    /* ===== TEMP: 摄像头 JPEG 上行暂时禁用（排查 WS sendBIN fail；服务端将收不到
+     * 帧，人脸追踪不可用）。恢复时删除 #if 0 / #endif 即可。 ===== */
+#if 0
     uint8_t* packed = nullptr;
     size_t packed_len = 0;
     if (camera_try_capture_packed(&packed, &packed_len)) {
@@ -228,6 +230,7 @@ static void task_loop_camera(void* /*arg*/) {
         }
       }
     }
+#endif
     vTaskDelay(pdMS_TO_TICKS(interval > 0 ? interval : 1000u));
   }
 }
