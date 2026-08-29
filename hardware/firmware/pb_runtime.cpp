@@ -2,6 +2,8 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+#include <atomic>
 #include "display.h"
 #include "head.h"
 #include "logger.h"
@@ -90,58 +92,67 @@ static bool parse_frame_to_model(const uint8_t* data, size_t length, pb_model& o
   return pb_model_from_json(frame.doc, frame.bin, media_len, out, err);
 }
 
-/* ── pb_cancel 直接通知（不走模型队列）──
- * cancel 在入队解析后被识别：立即清空模型队列（丢弃旧链积压帧）并直接通知
- * pb_runtime 任务；任务在下一循环周期（≤2ms）内处理，drain/space 等待
- * 也会被打断。避免 cancel 排在旧链帧之后、等执行器播完才生效。 */
+/* ── pb_cancel 抢占 ──
+ * cancel 帧解析后正常入队（模型队列），但入队前先置 s_pending_cancel 标志；
+ * 置标志与入队由 s_cancel_lock 保证原子，任务侧 handle_pb_cancel() 才能
+ * 拿到"队列里必有 cancel"的不变量。任务侧出队丢弃 cancel 及其之前的旧链
+ * 积压帧（cancel 之后的新链帧保留），随后 abortRound 清执行器。任务主循环
+ * 与 drain/space 等待都会调用 handle_pb_cancel，抢占不等当前链播完。 */
 
-static volatile bool s_pending_cancel = false;
-static char s_pending_cancel_req[37];
-static portMUX_TYPE s_cancel_mux = portMUX_INITIALIZER_UNLOCKED;
+static std::atomic<bool> s_pending_cancel{false};
+static SemaphoreHandle_t s_cancel_lock = nullptr;
 
-static void notify_pending_cancel(const char* req) {
-  portENTER_CRITICAL(&s_cancel_mux);
-  strncpy(s_pending_cancel_req, req, sizeof(s_pending_cancel_req) - 1);
-  s_pending_cancel_req[sizeof(s_pending_cancel_req) - 1] = '\0';
-  s_pending_cancel = true;
-  portEXIT_CRITICAL(&s_cancel_mux);
-}
-
-/* 任务侧取出待处理 cancel；返回 true 表示有（req 已拷出并清除标志）。 */
-static bool take_pending_cancel(char* req_out, size_t req_sz) {
-  portENTER_CRITICAL(&s_cancel_mux);
-  const bool has = s_pending_cancel;
-  if (has) {
-    strncpy(req_out, s_pending_cancel_req, req_sz - 1);
-    req_out[req_sz - 1] = '\0';
-    s_pending_cancel = false;
+static bool handle_pb_cancel() {
+  if (!s_pending_cancel.load(std::memory_order_acquire)) {
+    return false;
   }
-  portEXIT_CRITICAL(&s_cancel_mux);
-  return has;
-}
-
-/* 等待循环里只读标志：有 pending cancel 立即打断等待（处理在循环顶部统一做）。 */
-static bool cancel_pending() {
-  return s_pending_cancel;
+  if (!s_cancel_lock || xSemaphoreTake(s_cancel_lock, portMAX_DELAY) != pdTRUE) {
+    return false;
+  }
+  if (!s_pending_cancel.load(std::memory_order_relaxed)) {
+    xSemaphoreGive(s_cancel_lock);
+    return false;
+  }
+  pb_model item{};
+  while (xQueueReceive(s_model_q, &item, 0) == pdTRUE) {
+    const bool is_cancel = (item.type == PB_MODEL_CANCEL);
+    if (is_cancel) {
+      log_info("[PB] cancel req=%s active_req=%s (drain)", item.req, s_req.c_str());
+    }
+    pb_model_free(item);
+    if (is_cancel) {
+      break;  // cancel 已出：其后的新链帧保留
+    }
+  }
+  s_pending_cancel.store(false, std::memory_order_release);
+  xSemaphoreGive(s_cancel_lock);
+  /* abortRound 的执行器 abort 是阻塞入队（portMAX_DELAY），放锁后再调。 */
+  abortRound();
+  return true;
 }
 
 static void task_loop_pb_runtime(void* /*arg*/) {
   constexpr TickType_t kIdleWaitTicks = pdMS_TO_TICKS(2);
 
   for (;;) {
-    /* pb_cancel 直接通知路径（模型队列已由入队侧清空，这里统一处理抢占）。 */
-    char cancel_req[37];
-    if (take_pending_cancel(cancel_req, sizeof(cancel_req))) {
-      log_info("[PB] cancel req=%s active_req=%s (direct)", cancel_req, s_req.c_str());
-      if (cancel_req[0] == '\0' || s_req.isEmpty() || s_req.equals(cancel_req)) {
-        abortRound();
-      }
+    /* pb_cancel 抢占：先出队处理（丢弃旧链积压帧 + abortRound）。 */
+    if (handle_pb_cancel()) {
       continue;
     }
 
     /* 入队时已解析，出队直接分发。 */
     pb_model incoming{};
     if (xQueueReceive(s_model_q, &incoming, kIdleWaitTicks) != pdTRUE) {
+      continue;
+    }
+
+    /* 防御：队列中残留的 cancel（如连续两个 cancel）直接消费。 */
+    if (incoming.type == PB_MODEL_CANCEL) {
+      log_info("[PB] cancel req=%s active_req=%s (queue)", incoming.req, s_req.c_str());
+      if (incoming.req[0] == '\0' || s_req.isEmpty() || s_req.equals(incoming.req)) {
+        abortRound();
+      }
+      pb_model_free(incoming);
       continue;
     }
 
@@ -190,7 +201,7 @@ static void task_loop_pb_runtime(void* /*arg*/) {
     bool preempted = false;
     if (s_dispatched_since_ack >= kAckBatchSize) {
       while (computeMinExecutorSpace() < (unsigned)kAckBatchSize) {
-        if (cancel_pending()) {
+        if (handle_pb_cancel()) {
           preempted = true;
           break;
         }
@@ -206,7 +217,7 @@ static void task_loop_pb_runtime(void* /*arg*/) {
       head_signal_task_done();
       display_signal_task_done();
       while (!(speaker_task_done() && head_task_done() && display_task_done())) {
-        if (cancel_pending()) {
+        if (handle_pb_cancel()) {
           preempted = true;
           break;
         }
@@ -228,6 +239,12 @@ bool setup_pb_runtime(void) {
       log_error("[PB_RUNTIME] model queue create failed");
       s_setup_ok = false;
       return false;
+    }
+  }
+  if (!s_cancel_lock) {
+    s_cancel_lock = xSemaphoreCreateMutex();
+    if (!s_cancel_lock) {
+      log_warn("[PB_RUNTIME] cancel lock create failed");
     }
   }
   s_req.reserve(37);
@@ -258,6 +275,22 @@ bool task_setup_pb_runtime(void) {
   return true;
 }
 
+/* 模型入队；满则丢最旧。失败时内部已释放 model。 */
+static bool enqueue_model(pb_model& model) {
+  if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
+    pb_model dropped{};
+    if (xQueueReceive(s_model_q, &dropped, 0) == pdTRUE) {
+      pb_model_free(dropped);
+    }
+    if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
+      log_warn("[PB_RUNTIME] model queue full after drop; free new");
+      pb_model_free(model);
+      return false;
+    }
+  }
+  return true;
+}
+
 bool pb_runtime_enqueue_frame(uint8_t* data, size_t length) {
   /* 入队即解析：队列里直接存 pb_model，出队不再二次解析。
    * 解析成功后原始缓冲立即释放（媒体已拷贝进模型）。 */
@@ -269,26 +302,21 @@ bool pb_runtime_enqueue_frame(uint8_t* data, size_t length) {
   }
   free(data);
 
-  /* pb_cancel 不走模型队列：清空旧链积压帧并直接通知 pb_runtime 任务，
-   * 抢占不等当前链播完。 */
+  /* pb_cancel：先置标志再入队（锁内原子，保证任务侧能看到"队列里必有
+   * cancel"），由 handle_pb_cancel 出队丢弃 cancel 及旧链积压帧。 */
   if (model.type == PB_MODEL_CANCEL) {
-    pb_runtime_discard_rx_queue();
-    notify_pending_cancel(model.req);
-    pb_model_free(model);
+    if (s_cancel_lock && xSemaphoreTake(s_cancel_lock, portMAX_DELAY) == pdTRUE) {
+      s_pending_cancel.store(true, std::memory_order_release);
+      (void)enqueue_model(model);
+      xSemaphoreGive(s_cancel_lock);
+    } else {
+      s_pending_cancel.store(true, std::memory_order_release);
+      (void)enqueue_model(model);
+    }
     return true;
   }
 
-  if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
-    pb_model dropped{};
-    if (xQueueReceive(s_model_q, &dropped, 0) == pdTRUE) {
-      pb_model_free(dropped);
-    }
-    if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
-      log_warn("[PB_RUNTIME] model queue full after drop; free new len=%u", (unsigned)length);
-      pb_model_free(model);
-      return true;  // 已自行释放，调用方无需再 free
-    }
-  }
+  (void)enqueue_model(model);
   log_info("[PB_ENQ] pb_q_in len=%u q=%u", (unsigned)length,
            (unsigned)uxQueueMessagesWaiting(s_model_q));
   return true;
