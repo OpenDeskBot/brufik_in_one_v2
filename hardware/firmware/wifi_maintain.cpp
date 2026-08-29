@@ -29,16 +29,17 @@ void wifi_register_event_handlers_once(void) {
   }
   g_wifi_handlers_registered = true;
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-    (void)info;
 #if defined(ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
     if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
       g_wifi_event_disconnected = true;
+      g_wifi_last_disconnect_reason = info.wifi_sta_disconnected.reason;
     } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
       g_wifi_event_got_ip = true;
     }
 #elif defined(SYSTEM_EVENT_STA_DISCONNECTED)
     if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
       g_wifi_event_disconnected = true;
+      g_wifi_last_disconnect_reason = info.disconnected.reason;
     } else if (event == SYSTEM_EVENT_STA_GOT_IP) {
       g_wifi_event_got_ip = true;
     }
@@ -49,7 +50,7 @@ void wifi_register_event_handlers_once(void) {
 void wifi_handle_events_in_main_context(void) {
   if (g_wifi_event_disconnected) {
     g_wifi_event_disconnected = false;
-    Serial.println("[wifi] event: disconnected");
+    Serial.printf("[wifi] event: disconnected reason=%u\r\n", (unsigned)g_wifi_last_disconnect_reason);
     wifi_notify_link_down();
   }
   if (g_wifi_event_got_ip) {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 #include <Arduino.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -33,6 +35,7 @@ extern unsigned long g_wifi_last_reconnect_ms;
 extern unsigned long g_wifi_quick_reconnect_start_ms;
 extern volatile bool g_wifi_event_disconnected;
 extern volatile bool g_wifi_event_got_ip;
+extern volatile uint8_t g_wifi_last_disconnect_reason;
 
 void wifi_build_ap_ssid(void);
 bool wifi_link_up(void);

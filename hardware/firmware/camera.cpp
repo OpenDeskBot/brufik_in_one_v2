@@ -8,7 +8,9 @@
 #include "ws_transport.h"
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include "esp_camera.h"
+#include "esp_heap_caps.h"
 #include <atomic>
 #include <stdlib.h>
 #include <string.h>
@@ -47,6 +49,8 @@ static uint32_t s_last_fb_null_log_ms = 0;
 static uint32_t s_seq = 0;
 static uint32_t s_fb_null_count = 0;
 static TaskHandle_t s_task = nullptr;
+static uint32_t s_last_enq_fail_log_ms = 0;
+static bool s_ws_was_ready = false;
 
 static constexpr uint32_t kCameraTaskStack = 16 * 1024;
 static constexpr UBaseType_t kCameraTaskPrio = 3;
@@ -213,24 +217,28 @@ static void task_loop_camera(void* /*arg*/) {
     const uint32_t interval = s_interval_ms.load(std::memory_order_relaxed);
     /* WS 未就绪时不抓不压：避免断线期间 JPEG 编码继续吃内部 heap，拖垮重连。 */
     if (!ws_transport_ok() || !ws_transport_ready()) {
+      if (s_ws_was_ready) {
+        s_ws_was_ready = false;
+        log_warn("[CAMERA] ws down -> upload paused");
+      }
       vTaskDelay(pdMS_TO_TICKS(interval > 0 ? interval : 1000u));
       continue;
     }
-    /* ===== TEMP: 摄像头 JPEG 上行暂时禁用（排查 WS sendBIN fail；服务端将收不到
-     * 帧，人脸追踪不可用）。恢复时删除 #if 0 / #endif 即可。 ===== */
-#if 0
+    if (!s_ws_was_ready) {
+      s_ws_was_ready = true;
+      log_warn("[CAMERA] ws up -> upload resumed");
+    }
     uint8_t* packed = nullptr;
     size_t packed_len = 0;
     if (camera_try_capture_packed(&packed, &packed_len)) {
       if (!ws_transport_enqueue_camera(packed, packed_len)) {
         const uint32_t now = millis();
-        if (last_enq_fail_log_ms == 0 || (uint32_t)(now - last_enq_fail_log_ms) >= 5000u) {
-          last_enq_fail_log_ms = now;
+        if (s_last_enq_fail_log_ms == 0 || (uint32_t)(now - s_last_enq_fail_log_ms) >= 5000u) {
+          s_last_enq_fail_log_ms = now;
           log_warn("[CAMERA] enqueue failed len=%u", (unsigned)packed_len);
         }
       }
     }
-#endif
     vTaskDelay(pdMS_TO_TICKS(interval > 0 ? interval : 1000u));
   }
 }
@@ -388,8 +396,11 @@ bool camera_try_capture_packed(uint8_t** packed, size_t* packed_len) {
   *packed_len = out_len;
   const uint32_t total_ms = millis() - total_t0;
   if (seq <= 1u || (seq % 30u) == 0u) {
-    log_warn("[CAMERA] frame seq=%u jpeg=%uB fb_get_ms=%u jpg_ms=%u total_ms=%u", (unsigned)seq,
-             (unsigned)len, (unsigned)fb_get_ms, (unsigned)jpg_ms, (unsigned)total_ms);
+    log_warn("[CAMERA] frame seq=%u jpeg=%uB fb_get_ms=%u jpg_ms=%u total_ms=%u free_int=%u "
+             "free_total=%u rssi=%d",
+             (unsigned)seq, (unsigned)len, (unsigned)fb_get_ms, (unsigned)jpg_ms, (unsigned)total_ms,
+             (unsigned)esp_get_free_internal_heap_size(), (unsigned)esp_get_free_heap_size(),
+             WiFi.RSSI());
   }
   return true;
 }

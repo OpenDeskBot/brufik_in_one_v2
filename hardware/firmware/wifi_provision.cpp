@@ -25,6 +25,7 @@ unsigned long g_wifi_last_reconnect_ms = 0;
 unsigned long g_wifi_quick_reconnect_start_ms = 0;
 volatile bool g_wifi_event_disconnected = false;
 volatile bool g_wifi_event_got_ip = false;
+volatile uint8_t g_wifi_last_disconnect_reason = 0;
 
 void wifi_build_ap_ssid(void) {
   strncpy(g_wifi_ap_ssid, get_device_id(), sizeof(g_wifi_ap_ssid) - 1);

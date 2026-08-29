@@ -411,8 +411,9 @@ bool ws_transport_drain_tx(void) {
       }
       return sent_any;
     }
-    // log_warn("[PB_LAT] tx_send type=%u len=%u send_ms=%u", (unsigned)item.type, (unsigned)plen,
-    //          (unsigned)send_ms);
+    if (item.type == WsTxType::kCamera) {
+      log_warn("[WS_TX] camera sent len=%u send_ms=%u", (unsigned)plen, (unsigned)send_ms);
+    }
     ws_tx_free_item(&item);
     sent_any = true;
   }
