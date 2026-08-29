@@ -1,5 +1,4 @@
-#ifndef AUDIO_FRONTEND_ESP_SR_H
-#define AUDIO_FRONTEND_ESP_SR_H
+#pragma once
 
 #include <stddef.h>
 #include <stdint.h>
@@ -75,6 +74,3 @@ void audio_frontend_submit_playback_reference(
 
 /** Consume a debounced ESP-SR VAD transition for USB side-band signalling. */
 bool audio_frontend_take_vad_event(AudioFrontendVadEvent* event);
-
-
-#endif
