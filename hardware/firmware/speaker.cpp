@@ -1,6 +1,6 @@
 #include "speaker.h"
 
-#include "mic.h"
+#include "audio_frontend_esp_sr.h"
 #include "pb_model.h"
 #include "utils/opus_codec.h"
 #include "utils/utils.h"
@@ -34,8 +34,6 @@ static std::atomic<bool> s_stream_active{false};
 static std::atomic<bool> s_need_cancel{false};
 /** pb_runtime 查询：当前任务是否已执行完毕（入队时 false，见到 kEndOfTask 后 true）。 */
 static std::atomic<bool> s_task_done{true};
-/** 仅 task_loop_speaker 访问。 */
-static bool s_mic_speak_held = false;
 static uint32_t s_i2s_rate = SAMPLE_RATE;
 /** 当前逻辑声道数；物理线格式固定 stereo-both（NS4168），mono 源由 play() 插值。 */
 static uint8_t s_i2s_channels = 1;
@@ -127,7 +125,7 @@ static bool enqueue(Job& j) {
   return xQueueSend(s_queue, &j, portMAX_DELAY) == pdTRUE;
 }
 
-/** 停流并放麦；force 时即使未 begin 也清 I2S/麦（WAV 收尾/abort）。 */
+/** 停流；force 时即使未 begin 也清 I2S（WAV 收尾/abort）。 */
 static void stop_output(bool graceful, uint8_t channels, bool force);
 
 static void finish_cancel() {
@@ -156,37 +154,8 @@ static bool poll_cancel() {
   return true;
 }
 
-static size_t mean_abs(const int16_t* data, size_t length) {
-  if (!data || length == 0) {
-    return 0;
-  }
-  uint64_t sum = 0;
-  for (size_t i = 0; i < length; ++i) {
-    sum += static_cast<uint32_t>(abs(data[i]));
-  }
-  return static_cast<size_t>(sum / length);
-}
-
-static bool audible(const int16_t* data, size_t length, float vol) {
-  const size_t m = mean_abs(data, length);
-  return static_cast<size_t>(static_cast<float>(m) * vol) >= (size_t)DESKBOT_SPEAKER_AUDIBLE_MEAN_ABS;
-}
-
-static void release_mic(bool immediate) {
-  if (!s_mic_speak_held) {
-    s_is_speaking.store(false, std::memory_order_release);
-    return;
-  }
-  if (!immediate) {
-    vTaskDelay(pdMS_TO_TICKS(DESKBOT_TAIL_SUPPRESS_MS));
-  }
-  mic_set_speaker_state(kMicSpeakEnd);
-  s_mic_speak_held = false;
-  s_is_speaking.store(false, std::memory_order_release);
-}
-
 /**
- * 写 I2S：按 s_volume 缩放（可就地改 PCM）；可听则挡麦（SpeakStart）。
+ * 写 I2S：按 s_volume 缩放（可就地改 PCM）。
  * 分块写出以便响应 need_cancel。返回 false 表示中途被取消。
  */
 static bool play(int16_t* data, size_t length) {
@@ -198,12 +167,8 @@ static bool play(int16_t* data, size_t length) {
   }
   const float vol = s_volume.load(std::memory_order_relaxed);
 
-  /* 已挡麦则跳过 mean_abs；半双工：首段可听再 SpeakStart。 */
-  if (!s_mic_speak_held && audible(data, length, vol)) {
-    s_is_speaking.store(true, std::memory_order_release);
-    mic_set_speaker_state(kMicSpeakStart);
-    s_mic_speak_held = true;
-  }
+  /* 全双工（AEC）：播放不再挡麦，仅标记"正在播音"。 */
+  s_is_speaking.store(true, std::memory_order_release);
 
   if (vol != 1.0f) {
     /* Q15 定点乘，避免每样本 float。speaker_set_volume 已夹到 [0,1]。 */
@@ -230,18 +195,28 @@ static bool play(int16_t* data, size_t length) {
         stereo_scratch[2 * i] = data[off + i];
         stereo_scratch[2 * i + 1] = data[off + i];
       }
+      /* AEC 参考：实际写入喇叭的 PCM（stereo-both 的源信号）。 */
+      if (audio_frontend_ready()) {
+        audio_frontend_submit_playback_reference(data + off, n, s_i2s_rate, 1);
+      }
       const size_t want = n * 2 * sizeof(int16_t);
       const size_t bw =
           s_i2s.write(reinterpret_cast<const uint8_t*>(stereo_scratch), want);
       if (bw != want) {
+        /* 参考样本未真正到喇叭：作废参考时间线，防 AEC 向错信号收敛。 */
+        audio_frontend_abort_playback_reference();
         log_warn("[SPEAKER] i2s_write short bw=%u want=%u", (unsigned)bw, (unsigned)want);
         return false;
       }
     } else {
+      if (audio_frontend_ready()) {
+        audio_frontend_submit_playback_reference(data + off, n, s_i2s_rate, 2);
+      }
       const size_t want = n * sizeof(int16_t);
       const size_t bw =
           s_i2s.write(reinterpret_cast<const uint8_t*>(data + off), want);
       if (bw != want) {
+        audio_frontend_abort_playback_reference();
         log_warn("[SPEAKER] i2s_write short bw=%u want=%u", (unsigned)bw, (unsigned)want);
         return false;
       }
@@ -273,7 +248,9 @@ static void stop_output(bool graceful, uint8_t channels, bool force) {
   }
   i2s_idle(/*drain=*/graceful, channels);
   s_stream_active.store(false, std::memory_order_release);
-  release_mic(/*immediate=*/!graceful);
+  s_is_speaking.store(false, std::memory_order_release);
+  /* AEC 参考时间线收尾：让声学尾音自然衰减。 */
+  audio_frontend_set_playback_active(false);
 }
 
 static void end_stream(bool graceful, uint8_t channels) {
@@ -321,6 +298,7 @@ static bool play_wav(uint8_t* data, size_t len) {
   }
 
   speaker_set_clk(rate, static_cast<uint8_t>(channels));
+  audio_frontend_set_playback_active(true);
   const bool ok = play(reinterpret_cast<int16_t*>(data + data_off), data_size / 2);
   stop_output(/*graceful=*/ok, static_cast<uint8_t>(channels), /*force=*/true);
   return ok;
@@ -380,6 +358,7 @@ static bool play_pb_audio_owned(pb_audio* audio) {
     }
     speaker_set_clk(audio->sr, audio->ch);
     s_stream_active.store(true, std::memory_order_release);
+    audio_frontend_set_playback_active(true);
   }
 
   const bool ok = play(pcm_owned, samples);
@@ -409,6 +388,7 @@ static void execute_job(Job& job) {
       } else {
         speaker_set_clk(job.rate, job.channels);
         s_stream_active.store(true, std::memory_order_release);
+        audio_frontend_set_playback_active(true);
       }
       break;
     case JobType::kChunk:
@@ -439,12 +419,6 @@ static void task_loop_speaker(void*) {
   for (;;) {
     (void)poll_cancel();
     if (xQueueReceive(s_queue, &job, kIdleTimeout) != pdTRUE) {
-      /* 空闲超时：队列已空。若 mic gate 仍被持有（缺失 kEnd / 异常中断），
-       * 主动释放，避免麦克风永久死锁。 */
-      if (s_mic_speak_held) {
-        log_warn("[SPEAKER] idle timeout, force releasing mic gate");
-        release_mic(/*immediate=*/false);
-      }
       continue;
     }
     if (job.type == JobType::kCancel) {

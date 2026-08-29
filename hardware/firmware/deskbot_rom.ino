@@ -12,6 +12,7 @@
 #include "head.h"
 #include "cmd.h"
 #include "led.h"
+#include "audio_frontend_esp_sr.h"
 #include "logger.h"
 #include "task_trace.h"
 #include "utils/utils.h"
@@ -64,6 +65,8 @@ void setup() {
   setup_led();
   setup_mic();
   setup_speaker();
+  /* ESP-SR AFE（AEC/NS/AGC/VAD）：失败不致命，mic 自动退回原始帧。 */
+  audio_frontend_setup();
 
   log_info("[BOOT] device_id=%s version=%s", get_device_id(), VERSION);
 

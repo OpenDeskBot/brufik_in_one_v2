@@ -1,6 +1,6 @@
 #include "mic.h"
 
-#include "speaker.h"
+#include "audio_frontend_esp_sr.h"
 #include "deskbot_config.h"
 #include "logger.h"
 #include "utils/utils.h"
@@ -30,7 +30,6 @@ I2SClass s_i2s(I2S_NUM_0);
 
 TaskHandle_t s_task = nullptr;
 
-std::atomic<MicSpeakerState> s_state_speaker{kMicSpeakEnd};
 std::atomic<MicWsState> s_state_ws{kMicWsError};
 
 uint8_t s_batch_bin[kUplinkBatchMaxBin];
@@ -51,7 +50,6 @@ uint32_t s_stat_encode_ok = 0;
 uint32_t s_stat_enq_ok = 0;
 uint32_t s_stat_enq_fail = 0;
 uint32_t s_stat_gate_ws = 0;
-uint32_t s_stat_gate_spk = 0;
 uint32_t s_stat_batch_drop = 0;
 unsigned long s_stat_log_ms = 0;
 
@@ -270,7 +268,6 @@ void task_loop_mic(void* /*arg*/) {
   MicFrame frame;
   /* 上一帧是否在采：用于开门沿重置 encoder/段计时，避免每帧都 reset。 */
   bool s_was_open = false;
-  MicSpeakerState s_prev_spk = s_state_speaker.load(std::memory_order_relaxed);
   MicWsState s_prev_ws = s_state_ws.load(std::memory_order_relaxed);
 
   for (;;) {
@@ -278,17 +275,12 @@ void task_loop_mic(void* /*arg*/) {
         s_i2s.readBytes(reinterpret_cast<char*>(frame.pcm), kMicFrameSamples * sizeof(int16_t));
     const bool short_rd = bytes_read < kMicFrameSamples * sizeof(int16_t);
 
-    const MicSpeakerState spk = s_state_speaker.load(std::memory_order_acquire);
     const MicWsState ws = s_state_ws.load(std::memory_order_acquire);
 
     if (ws != s_prev_ws) {
       log_warn("[MIC] gate ws %s → %s", s_prev_ws == kMicWsOk ? "ok" : "error",
                ws == kMicWsOk ? "ok" : "error");
       s_prev_ws = ws;
-    }
-    if (spk != s_prev_spk && ws == kMicWsOk) {
-      log_warn("[MIC] gate speak %s → %s", s_prev_spk == kMicSpeakEnd ? "end" : "start",
-               spk == kMicSpeakEnd ? "end" : "start");
     }
 
     const unsigned long now = millis();
@@ -300,7 +292,6 @@ void task_loop_mic(void* /*arg*/) {
       s_stat_enq_fail = 0;
       s_stat_batch_drop = 0;
       s_stat_gate_ws = 0;
-      s_stat_gate_spk = 0;
       s_stat_log_ms = now;
     }
 
@@ -314,6 +305,17 @@ void task_loop_mic(void* /*arg*/) {
       continue;
     }
 
+    /* ESP-SR AFE（AEC/NS/AGC/VAD）：原始帧持续入 AFE（与上行门控无关，保 AEC 收敛），
+     * 处理帧供后续门控/编码；AFE 未就绪或输出未就绪时退回原始帧（raw fallback）。 */
+    int16_t afe_frame[kMicFrameSamples];
+    int16_t* up_pcm = frame.pcm;
+    if (audio_frontend_ready()) {
+      if (audio_frontend_submit_mic(frame.pcm, kMicFrameSamples) &&
+          audio_frontend_take_output_frame(afe_frame, pdMS_TO_TICKS(20))) {
+        up_pcm = afe_frame;
+      }
+    }
+
     /* ws 不可用：清空积累 + 丢掉当次帧（条件靠前）。 */
     if (ws == kMicWsError) {
       ++s_stat_gate_ws;
@@ -321,24 +323,10 @@ void task_loop_mic(void* /*arg*/) {
       s_samples_sent = 0;
       s_segment_start_ms = 0;
       s_was_open = false;
-      s_prev_spk = spk;
       continue;
     }
 
-    /* speak_start：边沿冲出不足 5 帧并 flush:1；之后各帧只丢弃当次、不再重复 flush。 */
-    if (spk == kMicSpeakStart) {
-      ++s_stat_gate_spk;
-      if (s_prev_spk == kMicSpeakEnd) {
-        (void)send_to_ws(nullptr, /*flush=*/true);
-      }
-      s_was_open = false;
-      s_segment_start_ms = 0;
-      s_prev_spk = spk;
-      continue;
-    }
-    s_prev_spk = spk;
-
-    /* speak_end && ws_ok：正常采上行。 */
+    /* 全双工（AEC）：不再因 speaker 播放而挡麦，ws_ok 即采上行。 */
     if (!s_was_open) {
       enhance_voice_reset();
       if (s_opus_encoder) {
@@ -347,11 +335,11 @@ void task_loop_mic(void* /*arg*/) {
       s_samples_sent = 0;
       s_segment_start_ms = millis();
       s_was_open = true;
-      log_warn("[MIC] uplink open (ws_ok, speak_end)");
+      log_warn("[MIC] uplink open (ws_ok)");
     }
 
-    enhance_voice(frame.pcm, kMicFrameSamples);
-    (void)send_to_ws(frame.pcm, /*flush=*/false);
+    enhance_voice(up_pcm, kMicFrameSamples);
+    (void)send_to_ws(up_pcm, /*flush=*/false);
 
     if (s_segment_start_ms != 0 && (millis() - s_segment_start_ms) >= kSegmentFlushMs) {
       (void)send_to_ws(nullptr, /*flush=*/true);
@@ -360,10 +348,6 @@ void task_loop_mic(void* /*arg*/) {
 }
 
 }  // namespace
-
-void mic_set_speaker_state(MicSpeakerState s) {
-  s_state_speaker.store(s, std::memory_order_release);
-}
 
 void mic_set_ws_state(MicWsState s) {
   s_state_ws.store(s, std::memory_order_release);
@@ -374,8 +358,7 @@ uint32_t mic_uplink_samples_sent(void) {
 }
 
 bool mic_capture_allowed(void) {
-  return s_state_speaker.load(std::memory_order_relaxed) == kMicSpeakEnd &&
-         s_state_ws.load(std::memory_order_relaxed) == kMicWsOk;
+  return s_state_ws.load(std::memory_order_relaxed) == kMicWsOk;
 }
 
 void enhance_voice_reset(void) {
