@@ -299,7 +299,7 @@ class DeviceWsService(metaclass=SingletonMeta):
     ) -> int:
         """发送 PbSeq 到设备。
 
-        wait=True 时阻塞到设备播完（设备回 pb_ack 后解除）。
+        wait=True 时阻塞到设备播完（设备回 pb_end 后解除）。
         返回 0=失败（无连接或被丢弃），1=入队成功。
         """
         if not device_id:
@@ -417,7 +417,13 @@ class DeviceWsService(metaclass=SingletonMeta):
                                 level=seq_level, sr=seq_sr, fmt=seq_fmt, ch=seq_ch,
                             ):
                                 return
-                        ack_type = await self._wait_ack(entry, req)
+                        is_last_window = batch_end >= n
+                        if is_last_window:
+                            logger.info(
+                                "[pb TX] %s 末窗口已下发 req=%s last_idx=%d 等待 pb_end",
+                                device_id, req, entries[batch_end - 1].idx,
+                            )
+                        ack_type = await self._wait_ack(entry, req, want_end=is_last_window)
                         if ack_type == "pb_cancel":
                             cancel_block = PbBlock(type=PbType.CANCEL, req=req, idx=0)
                             await self._do_send_to_device(device_id, cancel_block)
@@ -450,14 +456,27 @@ class DeviceWsService(metaclass=SingletonMeta):
             except TimeoutError:
                 return _IDLE  # type: ignore[return-value]
 
-    async def _wait_ack(self, entry: _DeviceEntry, req: str) -> str | None:
+    async def _wait_ack(self, entry: _DeviceEntry, req: str, *, want_end: bool = False) -> str | None:
+        """等待匹配 req 的 pb_ack（消费 ack_queue）。
+
+        - ``pb_cancel``（_enqueue 抢占哨兵，无 req）优先返回；
+        - 非匹配 req 的 ack 一律跳过；
+        - ``want_end=False``（非末窗口）：任意同 req ack 即放行（兼容旧行为）；
+        - ``want_end=True``（末窗口）：必须等到 ``ack_type == "pb_end"``，
+          期间 ``pb_chunk`` 等同 req ack 静默消费。
+        """
         while True:
             ack = await entry.ack_queue.get()
             if ack.get("type") == "pb_cancel":
                 return "pb_cancel"
             if ack.get("req") != req:
                 continue
-            return ack.get("type")
+            ack_type = ack.get("ack_type") or ack.get("type")
+            if not want_end:
+                return ack_type
+            if ack_type == "pb_end":
+                return "pb_end"
+            # 末窗口：其余 ack（pb_chunk 等）继续等待 pb_end
 
     # ======================================================================
     # pb downlink（下层队列：帧打包 + 二进制校验 + 串行 ws.send）

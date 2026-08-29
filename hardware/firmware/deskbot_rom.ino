@@ -134,7 +134,7 @@ void setup() {
   log_info("%s is Ready. http://%s", PRODUCT_NAME, WiFi.localIP().toString().c_str());
   log_warn("[BOOT] ready device=%s ws=%s wifi_ip=%s",
            get_device_id(), ws_url, WiFi.localIP().toString().c_str());
-  log_set_level(LOG_LEVEL_WARN);
+  log_set_level(LOG_LEVEL_INFO);
 }
 
 void loop() {
