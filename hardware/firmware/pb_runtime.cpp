@@ -275,22 +275,6 @@ bool task_setup_pb_runtime(void) {
   return true;
 }
 
-/* 模型入队；满则丢最旧。失败时内部已释放 model。 */
-static bool enqueue_model(pb_model& model) {
-  if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
-    pb_model dropped{};
-    if (xQueueReceive(s_model_q, &dropped, 0) == pdTRUE) {
-      pb_model_free(dropped);
-    }
-    if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
-      log_warn("[PB_RUNTIME] model queue full after drop; free new");
-      pb_model_free(model);
-      return false;
-    }
-  }
-  return true;
-}
-
 bool pb_runtime_enqueue_frame(uint8_t* data, size_t length) {
   /* 入队即解析：队列里直接存 pb_model，出队不再二次解析。
    * 解析成功后原始缓冲立即释放（媒体已拷贝进模型）。 */
@@ -307,16 +291,35 @@ bool pb_runtime_enqueue_frame(uint8_t* data, size_t length) {
   if (model.type == PB_MODEL_CANCEL) {
     if (s_cancel_lock && xSemaphoreTake(s_cancel_lock, portMAX_DELAY) == pdTRUE) {
       s_pending_cancel.store(true, std::memory_order_release);
-      (void)enqueue_model(model);
+      /* 入队；满则丢最旧（与置标志在锁内原子）。 */
+      if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
+        pb_model dropped{};
+        if (xQueueReceive(s_model_q, &dropped, 0) == pdTRUE) {
+          pb_model_free(dropped);
+        }
+        if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
+          log_warn("[PB_RUNTIME] model queue full after drop; free new");
+          pb_model_free(model);
+        }
+      }
       xSemaphoreGive(s_cancel_lock);
-    } else {
-      s_pending_cancel.store(true, std::memory_order_release);
-      (void)enqueue_model(model);
+      return true;
     }
-    return true;
+    /* 锁不可用（创建失败）：仅置标志，与入队不原子（极端回退）。 */
+    s_pending_cancel.store(true, std::memory_order_release);
   }
 
-  (void)enqueue_model(model);
+  /* 入队；满则丢最旧（失败时内部已释放 model）。 */
+  if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
+    pb_model dropped{};
+    if (xQueueReceive(s_model_q, &dropped, 0) == pdTRUE) {
+      pb_model_free(dropped);
+    }
+    if (xQueueSend(s_model_q, &model, 0) != pdTRUE) {
+      log_warn("[PB_RUNTIME] model queue full after drop; free new");
+      pb_model_free(model);
+    }
+  }
   log_info("[PB_ENQ] pb_q_in len=%u q=%u", (unsigned)length,
            (unsigned)uxQueueMessagesWaiting(s_model_q));
   return true;
