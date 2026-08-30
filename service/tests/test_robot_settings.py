@@ -411,6 +411,8 @@ def test_robot_settings_page_renders(temp_db):
     assert "/api/robot-settings" in html
     assert "cap-opt-test" in html  # 候选行 TTS 测试按钮
     assert "cap-voice" in html     # TTS 音色选择器
+    assert "openAsrCfg" in html    # ASR 候选行配置按钮 + 对话框
+    assert "/api/robot-settings/asr/config-info" in html
 
 
 # ------------------------------------------------------------------ TTS 测试（test-info / test）

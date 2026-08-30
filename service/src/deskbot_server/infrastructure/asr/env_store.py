@@ -76,9 +76,8 @@ def save_doubao_asr_env(payload: dict[str, str]) -> None:
     """
     existing = read_env_file()
     updates: dict[str, str] = {}
-    for env_key in DOUBAO_ASR_ENV_KEYS:
-        payload_key = _PAYLOAD_FIELD_BY_ENV_KEY[env_key]
-        raw = str(payload.get(payload_key) or "").strip()
+    for field, env_key in _PAYLOAD_FIELD_BY_ENV_KEY.items():
+        raw = str(payload.get(field) or "").strip()
         if env_key == "DOUBAO_ASR_ACCESS_TOKEN" and _is_masked_secret(raw):
             raw = ""
         if not raw:

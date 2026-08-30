@@ -27,15 +27,8 @@ from deskbot_server.config import load_config, save_config
 from deskbot_server.controller.runtime import get_runtime
 from deskbot_server.dao.device_mapper import set_asr_provider
 from deskbot_server.dao.llm_config_store import get_active_llm_model, set_active_llm_model
-from deskbot_server.infrastructure.asr.audio_norm import (
-    DEFAULT_PCM_SAMPLE_RATE,
-    normalize_test_audio,
-)
-from deskbot_server.infrastructure.asr.doubao import (
-    DoubaoAsrConfig,
-    load_doubao_asr_config,
-    transcribe_doubao_detailed,
-)
+from deskbot_server.infrastructure.asr.audio_norm import DEFAULT_PCM_SAMPLE_RATE, normalize_test_audio
+from deskbot_server.infrastructure.asr.doubao import DoubaoAsrConfig, transcribe_doubao_detailed
 from deskbot_server.infrastructure.asr.env_store import (
     _is_masked_secret,
     _mask_secret,
@@ -43,11 +36,7 @@ from deskbot_server.infrastructure.asr.env_store import (
     save_doubao_asr_env,
 )
 from deskbot_server.infrastructure.asr.funasr_adapter import TRANSCRIBE_TIMEOUT_S
-from deskbot_server.infrastructure.asr.protocol import (
-    AsrProtocolError,
-    extract_error,
-    parse_transcribe_response,
-)
+from deskbot_server.infrastructure.asr.protocol import AsrProtocolError, extract_error, parse_transcribe_response
 from deskbot_server.infrastructure.asr.resolve import resolve_asr_provider
 from deskbot_server.infrastructure.llm.env_store import clear_llm_env
 from deskbot_server.infrastructure.llm.runtime import (

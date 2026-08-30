@@ -91,7 +91,7 @@
       </div>
       <label v-for="c in asr.candidates" :key="c.id" class="cap-opt" :class="{on: selected.asr===c.id}">
         <input type="radio" name="asr" :value="c.id" v-model="selected.asr" :disabled="noDevice">
-        <span>
+        <span class="cap-opt-main">
           <b>[[ c.name ]]
             <span v-if="c.experimental" class="cap-badge exp">实验性</span>
             <span v-if="c.requires_service" class="cap-serv" :class="svcOn(c.requires_service)?'on':'off'">
@@ -100,6 +100,9 @@
           </b>
           <small>[[ c.description ]]</small>
         </span>
+        <button type="button" class="btn ghost btn-sm cap-opt-test" @click.stop="openAsrCfg(c.id)">
+          配置
+        </button>
       </label>
       <div v-if="noDevice" class="cap-warn">⚠ 未选择当前设备，请在「我的设备」中选择后再配置 ASR。</div>
       <div v-if="asr.warning" class="cap-warn">⚠ [[ asr.warning ]]</div>
@@ -273,6 +276,95 @@
       </div>
     </div>
   </div>
+
+  <!-- ASR 配置/测试对话框 -->
+  <div class="rts-modal" v-if="asrCfg">
+    <div class="rts-modal-box">
+      <div class="rts-modal-head">
+        <b>配置 ASR · [[ curName({current: asrCfg.provider, candidates: asr.candidates}) ]]</b>
+        <button type="button" class="btn ghost btn-sm" @click="closeAsrCfg">关闭</button>
+      </div>
+      <div class="rts-modal-body">
+        <div v-if="asrCfg.err" class="rts-fail" style="margin-bottom:10px">[[ asrCfg.err ]]</div>
+
+        <!-- 豆包：配置表单（写 .env，掩码/空值不覆盖已有） -->
+        <template v-if="asrCfg.provider==='doubao'">
+          <div class="rts-field">
+            <h4>应用 ID（DOUBAO_ASR_APP_ID）</h4>
+            <input v-model="asrCfg.form.app_id" placeholder="火山引擎控制台 → 创建应用并开通一句话识别">
+          </div>
+          <div class="rts-field">
+            <h4>应用令牌（DOUBAO_ASR_ACCESS_TOKEN）</h4>
+            <input v-model="asrCfg.form.access_token" type="password" placeholder="Authorization: Bearer; {token}">
+          </div>
+          <div class="rts-field">
+            <h4>Cluster ID（DOUBAO_ASR_CLUSTER）</h4>
+            <input v-model="asrCfg.form.cluster" placeholder="控制台开通服务后显示的集群 ID">
+          </div>
+          <div class="rts-field">
+            <h4>端点 URL（DOUBAO_ASR_URL）</h4>
+            <input v-model="asrCfg.form.url" placeholder="https://openspeech.bytedance.com/api/v1/asr">
+          </div>
+          <div class="rts-field">
+            <h4>用户标识（DOUBAO_ASR_UID）</h4>
+            <input v-model="asrCfg.form.uid" placeholder="deskbot">
+          </div>
+          <div class="rts-field">
+            <h4>识别流程（DOUBAO_ASR_WORKFLOW）</h4>
+            <input v-model="asrCfg.form.workflow" placeholder="留空用标准版（含标点）">
+          </div>
+          <div class="rts-actions">
+            <button type="button" class="btn" :disabled="asrCfg.saveBusy" @click="saveAsrCfg">
+              [[ asrCfg.saveBusy ? '保存中…' : '保存配置' ]]
+            </button>
+            <span class="rts-hint">留空字段保留已保存值；令牌为脱敏占位时不覆盖。</span>
+          </div>
+        </template>
+        <template v-else>
+          <p class="cap-meta" style="margin:0 0 12px">funasr 引擎：[[ (asrCfg.info && asrCfg.info.funasr_url) || '-' ]]</p>
+        </template>
+
+        <div style="border-top:1px solid var(--line);margin:14px 0 12px"></div>
+        <div class="rts-field">
+          <h4>测试音频</h4>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim)">
+            <input type="checkbox" v-model="asrCfg.useDefault" :disabled="!asrCfg.defaultOk" @change="syncAsrAudio">
+            使用默认音频
+          </label>
+          <p v-if="asrCfg.info && asrCfg.info.default_audio" class="rts-hint" style="margin:6px 0">
+            <code style="font-family:var(--mono)">[[ asrCfg.info.default_audio.path ]]</code>
+            <template v-if="asrCfg.info.default_audio.exists">
+              · [[ asrCfg.info.default_audio.sample_rate ]]Hz · [[ asrCfg.info.default_audio.channels ]]ch · [[ asrCfg.info.default_audio.duration_s ]]s
+            </template>
+            <template v-else>（文件缺失，请选择本地音频）</template>
+          </p>
+          <input type="file" accept=".wav,.pcm,audio/wav,audio/x-wav" @change="onAsrFile" :disabled="asrCfg.useDefault">
+          <audio v-if="asrCfg.audioUrl" class="rts-audio" controls :src="asrCfg.audioUrl"></audio>
+          <small class="rts-hint" style="display:block;margin-top:4px">
+            支持 WAV / PCM（自动归一化到 16kHz 单声道，上限 60s / 16MB）；播放试听仅支持 WAV 格式
+          </small>
+        </div>
+        <div class="rts-actions">
+          <button type="button" class="btn" :disabled="asrCfg.busy" @click="runAsrTest">
+            [[ asrCfg.busy ? '测试中…' : '开始测试' ]]
+          </button>
+          <span v-if="asrCfg.busy" class="rts-hint">上传音频并调用识别服务，可能需要数秒</span>
+        </div>
+        <template v-if="asrCfg.result">
+          <div :class="asrCfg.result.success ? 'rts-ok' : 'rts-fail'" style="margin-top:10px">
+            <template v-if="asrCfg.result.success">✓ 识别成功</template>
+            <template v-else>✗ 识别失败</template>
+            · HTTP [[ asrCfg.result.http_code ]] · [[ asrCfg.result.elapsed_ms ]]ms
+            <template v-if="asrCfg.result.business_code !== null && asrCfg.result.business_code !== undefined">
+              · 业务码 [[ asrCfg.result.business_code ]]
+            </template>
+          </div>
+          <div v-if="asrCfg.result.success" class="rts-meta">[[ asrCfg.result.text ]]</div>
+          <div v-else-if="asrCfg.result.error" class="rts-fail" style="margin-top:8px">[[ asrCfg.result.error ]]</div>
+        </template>
+      </div>
+    </div>
+  </div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -296,12 +388,14 @@ createApp({
       ttsTest: null,        // 测试对话框状态（null=关闭）
       ttsTestResult: null,  // 最近一次测试结果（{ok, error, elapsed_ms, sample_rate, segments}）
       ttsTestUrl: '',       // 测试音频 data URL（audio_base64 透传）
+      asrCfg: null,         // ASR 配置/测试对话框状态（null=关闭）
     };
   },
   computed:{
     asr(){ return (this.status && this.status.capabilities.asr) || { candidates: [], current: null, warning: null }; },
     llm(){ return (this.status && this.status.capabilities.llm) || { candidates: [], current: null, warning: null, device_override: { active: false } }; },
     tts(){ return (this.status && this.status.capabilities.tts) || { candidates: [], current: null, warning: null }; },
+    face(){ return (this.status && this.status.capabilities.face) || { candidates: [], current: null, warning: null }; },
     noDevice(){ return !(this.status && this.status.device_id); },
     envNotice(){
       if(!this.status) return '';
@@ -492,6 +586,103 @@ createApp({
       }catch(e){
         this.ttsTestResult = { ok: false, error: String(e.message || e) };
       }finally{ t.busy = false; }
+    },
+    async openAsrCfg(provider){
+      // 拉取 config-info：默认音频 + funasr 端点 + 豆包 env 当前值（token 掩码回填密码框）
+      if(!provider) return;
+      this.asrCfg = {
+        provider: provider,
+        busy: false,
+        saveBusy: false,
+        err: '',
+        info: null,
+        form: { app_id: '', access_token: '', cluster: '', url: '', uid: '', workflow: '' },
+        file: null,
+        useDefault: true,
+        defaultOk: false,
+        result: null,
+        audioUrl: '/api/robot-settings/asr/default-audio',  // 默认音频播放源
+        _objUrl: '',                                       // 用户文件的 object URL（关闭时 revoke）
+      };
+      try{
+        const d = await this.api('/api/robot-settings/asr/config-info');
+        this.asrCfg.info = d;
+        this.asrCfg.defaultOk = !!(d.default_audio && d.default_audio.exists);
+        const doubao = d.doubao || {};
+        this.asrCfg.form = {
+          app_id: doubao.app_id || '',
+          access_token: doubao.access_token || '',
+          cluster: doubao.cluster || '',
+          url: doubao.url || '',
+          uid: doubao.uid || '',
+          workflow: doubao.workflow || '',
+        };
+      }catch(e){ this.asrCfg.err = '配置信息加载失败：' + e.message; }
+    },
+    closeAsrCfg(){
+      if(this.asrCfg && this.asrCfg._objUrl) URL.revokeObjectURL(this.asrCfg._objUrl);
+      this.asrCfg = null;
+    },
+    syncAsrAudio(){
+      // 勾选状态变化时同步播放器源：默认音频端点 ↔ 用户文件 object URL
+      const t = this.asrCfg;
+      if(!t) return;
+      if(t.useDefault){
+        if(t._objUrl){ URL.revokeObjectURL(t._objUrl); t._objUrl = ''; }
+        t.audioUrl = '/api/robot-settings/asr/default-audio';
+      }else if(t.file){
+        t.audioUrl = t._objUrl || (t._objUrl = URL.createObjectURL(t.file));
+      }else{
+        t.audioUrl = '';
+      }
+    },
+    async saveAsrCfg(){
+      const t = this.asrCfg;
+      if(!t || t.saveBusy) return;
+      t.saveBusy = true; t.err = '';
+      try{
+        const d = await this.api('/api/robot-settings/asr/config', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(t.form),
+        });
+        t.info = d;
+        this.msg = '豆包 ASR 配置已保存到 .env 并生效';
+      }catch(e){ t.err = '保存失败：' + e.message; }
+      finally{ t.saveBusy = false; }
+    },
+    onAsrFile(e){
+      const t = this.asrCfg;
+      t.file = e.target.files[0] || null;
+      t.useDefault = !t.file;
+      this.syncAsrAudio();  // 用户选择的音频 → object URL 播放
+    },
+    async runAsrTest(){
+      const t = this.asrCfg;
+      if(!t || t.busy) return;
+      if(!t.useDefault && !t.file){ t.err = '请选择音频文件或勾选「使用默认音频」'; return; }
+      t.busy = true; t.err = ''; t.result = null;
+      try{
+        const fd = new FormData();
+        fd.append('provider', t.provider);
+        fd.append('use_default', t.useDefault ? '1' : '0');
+        if(!t.useDefault) fd.append('audio', t.file);
+        if(t.provider === 'doubao'){
+          for(const k of ['app_id', 'access_token', 'cluster', 'url', 'uid', 'workflow']){
+            fd.append('doubao_' + k, t.form[k] || '');
+          }
+        }
+        const d = await this.api('/api/robot-settings/asr/test', { method: 'POST', body: fd });
+        t.result = {
+          success: !!d.success,
+          http_code: d.http_code,
+          elapsed_ms: d.elapsed_ms || 0,
+          text: d.text || '',
+          error: d.error || '',
+          business_code: d.business_code,
+        };
+        if(d.success && d.text) this.msg = 'ASR 测试成功：' + d.text.slice(0, 30);
+      }catch(e){ t.err = '测试失败：' + e.message; }
+      finally{ t.busy = false; }
     },
   },
   mounted(){ this.load(); this.loadTtsMeta(); },
