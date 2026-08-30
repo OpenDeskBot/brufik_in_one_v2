@@ -2,7 +2,7 @@
 
 新增服务必须在 manifest 声明 type（见 ServiceType），并实现对应契约端点。
 测试按钮（POST /api/services/{name}/test）按本契约构造标准样本请求并校验响应；
-manifest 可加 test 覆盖段（见 manifest.TestSpec）声明真实测试端点（如 tts-engine
+manifest 可加 test 覆盖段（见 manifest.TestSpec）声明真实测试端点（如 moss-tts-nano
 的 /api/generate multipart 接口），resolve_test_spec() 合并二者并生成可复制的
 curl 命令（管理后台「测试」对话框展示，终端直接粘贴即可测试）。
 """

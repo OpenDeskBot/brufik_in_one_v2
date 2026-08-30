@@ -4,16 +4,20 @@
   ``resolve_asr_adapter`` 每次调用动态解析（见 infrastructure/asr/resolve.py）
 - LLM：设备级覆盖（llm_models.json active 模型）优先于系统默认（config.yaml llm 段），
   系统级受 .env 覆盖（env 优先），apply_llm 会清掉协议类覆盖
-- TTS：config.yaml 真源，写 config → 后台重建 adapter（走 to_thread）→ 成功才
-  rebind 到 TtsService 单例；构造失败回滚 config，单例保持旧能力
+- TTS：config.yaml 真源（默认 moss-tts-nano 独立进程），写 config → 后台重建
+  adapter（走 to_thread）→ 成功才 rebind 到 TtsService 单例；构造失败回滚
+  config，单例保持旧能力
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
+import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,8 +39,14 @@ from deskbot_server.infrastructure.llm.runtime import (
 from deskbot_server.infrastructure.tts.factory import build_tts_adapter
 from deskbot_server.model.settings import AppSettings
 from deskbot_server.service.tts_service import TtsService
+from deskbot_server.utils.audio import pcm_to_wav_bytes
 
 logger = logging.getLogger("deskbot-server")
+
+# 服务根目录（service/），用于定位 externals 下各服务的音色/样本文件
+SERVICE_ROOT = Path(__file__).resolve().parents[3]
+MOSS_VOICES_FILE = SERVICE_ROOT / "externals" / "moss-tts-nano" / "checkout" / "assets" / "demo.jsonl"
+TTS_TEST_DEFAULT_TEXT = "你好，这是语音合成测试。"
 
 # 本地 llm-engine（Cactus Needle 2）端点；服务端不校验 Authorization、不支持 stream
 LLM_ENGINE_BASE_URL = "http://127.0.0.1:9104/v1"
@@ -84,8 +94,13 @@ LLM_CANDIDATES = [
         experimental=True,
     ),
 ]
-# 本期仅豆包；本地 tts-engine（MOSS-TTS-Nano）接入后在此注册候选即可
 TTS_CANDIDATES = [
+    CapabilityCandidate(
+        "moss-tts-nano",
+        "本地 moss-tts-nano",
+        "独立 MOSS-TTS-Nano 进程（HTTP 9101，默认），需先安装并启动该服务",
+        requires_service="moss-tts-nano",
+    ),
     CapabilityCandidate("doubao", "豆包语音合成", "火山云端 TTS；需要 DOUBAO_TTS_* 环境变量凭证"),
 ]
 
@@ -134,8 +149,11 @@ class RobotCapabilityService:
         return {"current": current, "candidates": [c.to_dict() for c in ASR_CANDIDATES], "warning": warning}
 
     def _tts_status(self, cfg: dict[str, Any]) -> dict[str, Any]:
-        current = str((cfg.get("tts") or {}).get("provider") or "doubao")
-        return {"current": current, "candidates": [c.to_dict() for c in TTS_CANDIDATES], "warning": None}
+        current = str((cfg.get("tts") or {}).get("provider") or "moss-tts-nano")
+        warning = None
+        if current == "moss-tts-nano" and not self._service_running("moss-tts-nano"):
+            warning = "moss-tts-nano 未在运行，语音合成将失败；请先在「独立服务管理」中启动"
+        return {"current": current, "candidates": [c.to_dict() for c in TTS_CANDIDATES], "warning": warning}
 
     def _llm_status(self, cfg: dict[str, Any], device_id: str | None) -> dict[str, Any]:
         override = None
@@ -200,7 +218,7 @@ class RobotCapabilityService:
             manager = None
         out: dict[str, dict[str, Any]] = {}
         if manager is not None:
-            for name in ("funasr", "llm-engine", "tts-engine"):
+            for name in ("funasr", "llm-engine", "moss-tts-nano"):
                 snap = manager.snapshot(name)
                 if snap is not None:
                     out[name] = snap.to_dict()
@@ -233,19 +251,24 @@ class RobotCapabilityService:
 
     # ---------- TTS 切换 ----------
 
-    async def apply_tts(self, provider: str, device_id: str | None = None) -> dict[str, Any]:
+    async def apply_tts(self, provider: str, device_id: str | None = None, demo_id: str | None = None) -> dict[str, Any]:
         _candidate("tts", provider)
         async with self._tts_lock:
             cfg = self._load_cfg()
-            old = str((cfg.get("tts") or {}).get("provider") or "doubao")
-            if provider == old:
+            old = str((cfg.get("tts") or {}).get("provider") or "moss-tts-nano")
+            demo_id = (demo_id or "").strip() or None
+            if provider == old and demo_id is None:
                 return self.get_status(device_id)  # 幂等
             if os.environ.get("TTS_PROVIDER"):
                 raise CapabilityError(
                     "检测到环境变量 TTS_PROVIDER 覆盖 config.yaml，页面切换不会生效，请先清除该环境变量"
                 )
             new_cfg = copy.deepcopy(cfg)
-            new_cfg.setdefault("tts", {})["provider"] = provider
+            tts = new_cfg.setdefault("tts", {})
+            tts["provider"] = provider
+            if demo_id:
+                # 音色仅 moss-tts-nano 有意义（demo-N，行序）；切 doubao 不动 demo_id
+                tts["demo_id"] = demo_id
             save_config(new_cfg, self._config_path)
             try:
                 settings = AppSettings.from_config(new_cfg)
@@ -259,6 +282,78 @@ class RobotCapabilityService:
             TtsService().bind(adapter)
             logger.info("[robot-settings] TTS 切换生效 provider=%s", provider)
             return self.get_status(device_id)
+
+    # ---------- TTS 测试（不落盘、不 rebind 单例） ----------
+
+    def tts_test_info(self) -> dict[str, Any]:
+        """测试对话框元信息：默认文本、moss 音色列表（demo.jsonl 行序 demo-N）、
+        当前 config 默认 demo_id、豆包 .env 音色名。"""
+        voices: list[dict[str, str]] = []
+        try:
+            if MOSS_VOICES_FILE.is_file():
+                for i, line in enumerate(MOSS_VOICES_FILE.read_text(encoding="utf-8").splitlines()):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        name = str(json.loads(line).get("name") or f"demo-{i + 1}")
+                    except Exception:
+                        name = f"demo-{i + 1}"
+                    voices.append({"id": f"demo-{i + 1}", "name": name})
+        except Exception:
+            logger.exception("[robot-settings] 读取 moss 音色文件失败")
+        cfg = self._load_cfg()
+        return {
+            "text": TTS_TEST_DEFAULT_TEXT,
+            "voices": voices,
+            "demo_id": str((cfg.get("tts") or {}).get("demo_id") or "demo-1"),
+            "doubao_speaker": str(os.environ.get("DOUBAO_TTS_SPEAKER") or "").strip(),
+        }
+
+    async def tts_test(
+        self, provider: str, text: str, demo_id: str | None = None
+    ) -> dict[str, Any]:
+        """按指定 provider 合成测试（临时 adapter，不改 config、不 rebind 单例）。
+
+        返回 WAV base64 + 采样率 + 音素分片概要；moss 用 demo_id 选音色，
+        doubao 音色由 .env DOUBAO_TTS_SPEAKER 决定（demo_id 忽略）。
+        """
+        _candidate("tts", provider)
+        text = (text or "").strip()
+        if not text:
+            raise CapabilityError("请输入测试文本")
+        cfg = copy.deepcopy(self._load_cfg())
+        tts = cfg.setdefault("tts", {})
+        tts["provider"] = provider
+        if provider == "moss-tts-nano" and (demo_id or "").strip():
+            tts["demo_id"] = (demo_id or "").strip()
+        settings = AppSettings.from_config(cfg)
+        adapter = build_tts_adapter(settings)
+        t0 = time.monotonic()
+        sr, segs = await adapter.synthesize_phoneme_segments(text)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        pcm = b"".join(bytes(s.pcm or b"") for s in segs)
+        if not pcm:
+            raise CapabilityError(f"{provider} 合成无 PCM 输出")
+        wav = pcm_to_wav_bytes(pcm, sr)
+        logger.info(
+            "[robot-settings] TTS 测试 provider=%s demo_id=%s elapsed_ms=%d pcm=%d text=%r",
+            provider,
+            demo_id,
+            elapsed_ms,
+            len(pcm),
+            text[:40],
+        )
+        return {
+            "provider": provider,
+            "sample_rate": int(sr),
+            "wav_base64": base64.b64encode(wav).decode("ascii"),
+            "pcm_total_bytes": len(pcm),
+            "segments": [
+                {"phoneme": s.phoneme, "ms": s.ms, "pcm_bytes": len(s.pcm or b"")} for s in segs
+            ],
+            "elapsed_ms": elapsed_ms,
+        }
 
     # ---------- LLM 切换 ----------
 

@@ -528,7 +528,7 @@ def debug_simulation(request: Request, user: RequireUser):
 
 @router.post("/api/tts/phoneme_tts")
 def api_tts_phoneme_tts(request: Request, user: RequireUser):
-    """豆包 TTS + 音素分片，供仿真调试等页面使用。"""
+    """TTS 合成 + 音素分片（按当前 tts.provider），供仿真调试等页面使用。"""
     from deskbot_server.infrastructure.tts.factory import build_tts_adapter
     from deskbot_server.model.settings import AppSettings
 
@@ -537,7 +537,8 @@ def api_tts_phoneme_tts(request: Request, user: RequireUser):
     if not text:
         return jsonify({"ok": False, "error": "空文本"}), 400
     cfg = load_config()
-    sr_cfg = int((cfg.get("tts") or {}).get("sample_rate", 24000))
+    provider = str((cfg.get("tts") or {}).get("provider") or "moss-tts-nano")
+    sr_cfg = int((cfg.get("tts") or {}).get("sample_rate", 48000))
     try:
         settings = AppSettings.from_config(cfg)
         adapter = build_tts_adapter(settings)
@@ -550,12 +551,12 @@ def api_tts_phoneme_tts(request: Request, user: RequireUser):
         chunk = bytes(seg.pcm or b"")
         pcm.extend(chunk)
         display.append({"phoneme_id": seg.phoneme_id, "phoneme": seg.phoneme, "ms": seg.ms, "pcm_bytes": len(chunk)})
-    sr = int(sr or sr_cfg or 24000)
+    sr = int(sr or sr_cfg or 48000)
     wav = pcm_to_wav_bytes(bytes(pcm), sr)
     return jsonify(
         {
             "ok": True,
-            "provider": "doubao",
+            "provider": provider,
             "sample_rate": sr,
             "segments": display,
             "wav_base64": base64.b64encode(wav).decode("ascii"),
@@ -1089,7 +1090,7 @@ def health(request: Request):
     from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
 
     tts_cfg = load_doubao_tts_config()
-    tts_provider = str((cfg.get("tts") or {}).get("provider") or "doubao").strip().lower()
+    tts_provider = str((cfg.get("tts") or {}).get("provider") or "moss-tts-nano").strip().lower()
     tts_configured = bool(str(tts_cfg.api_key or "").strip())
 
     return jsonify(

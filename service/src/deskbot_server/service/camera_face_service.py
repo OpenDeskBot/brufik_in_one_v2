@@ -1,4 +1,4 @@
-"""摄像头人脸服务：多进程识别 + 视频流订阅 + 跟踪/推流。"""
+"""摄像头人脸服务：人脸识别（HTTP 外部服务或进程内池）+ 视频流订阅 + 跟踪/推流。"""
 
 from __future__ import annotations
 
@@ -43,6 +43,11 @@ class CameraFaceRuntime:
     face_embedding_enabled: bool = True
     identity_similarity_threshold: float = 0.40
     identity_geometry_threshold: float = 0.88
+    # 推理提供方：http=外部 insightface-engine 独立进程（默认，多 worker 并行）；
+    # internal=进程内多进程池（HTTP 调用失败自动回落，亦可手动切换）
+    provider: str = "http"
+    external_url: str = "http://127.0.0.1:9103"
+    external_timeout_s: float = 10.0
 
 
 def build_camera_face_runtime(config: dict[str, Any]) -> CameraFaceRuntime:
@@ -90,6 +95,13 @@ def build_camera_face_runtime(config: dict[str, Any]) -> CameraFaceRuntime:
     ist_geo = float(raw.get("identity_similarity_threshold_geometry", 0.88))
     ist_geo = max(0.75, min(0.99, ist_geo))
 
+    provider = str(raw.get("provider") or "http").strip().lower()
+    if provider not in ("http", "internal"):
+        logger.warning("[camera_face] 未知 provider=%s，回落 http", provider)
+        provider = "http"
+    external_url = str(raw.get("external_url") or "http://127.0.0.1:9103").strip() or "http://127.0.0.1:9103"
+    external_timeout_s = max(1.0, float(raw.get("external_timeout_s") or 10.0))
+
     ud = try_build_undistorter(raw)
     logger.info(
         "[camera_face] frame=%dx%d num_faces=%d min_det=%.2f min_presence=%.2f "
@@ -103,6 +115,7 @@ def build_camera_face_runtime(config: dict[str, Any]) -> CameraFaceRuntime:
         track_max_lost,
         "开启" if ud is not None else "关闭",
     )
+    logger.info("[camera_face] provider=%s external_url=%s", provider, external_url)
     return CameraFaceRuntime(
         undistorter=ud,
         min_face_detection_confidence=md,
@@ -115,6 +128,9 @@ def build_camera_face_runtime(config: dict[str, Any]) -> CameraFaceRuntime:
         face_embedding_enabled=face_embedding_enabled,
         identity_similarity_threshold=ist,
         identity_geometry_threshold=ist_geo,
+        provider=provider,
+        external_url=external_url,
+        external_timeout_s=external_timeout_s,
     )
 
 
@@ -224,7 +240,7 @@ def _mp_recognize(image: bytes, opts: dict[str, Any]) -> list[dict[str, Any]]:
 class CameraFaceService(metaclass=SingletonMeta):
     """设备 JPEG 帧处理入口（全局一套 runtime）。
 
-    - ``recognize``：多进程识别 → landmarks / embedding
+    - ``recognize``：人脸识别 → landmarks / embedding（provider=http 走外部服务，失败回落进程内池）
     - ``register_face_embedding``：档案写入
     - ``process``：跟踪、缓存、交互反馈；有订阅时 ``try_emit`` 推流
     """
@@ -237,7 +253,10 @@ class CameraFaceService(metaclass=SingletonMeta):
         self._frame_count: dict[str, int] = {}
         self._video_subs: dict[str, tuple[str | None, VideoStreamCallback]] = {}
         self._video_subs_lock = asyncio.Lock()
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop: asyncio.EventLoop | None = None
+        # provider=http 时的外部服务客户端；调用失败回落进程内池（首次失败 warning，之后 debug）
+        self._fr_client: FrHttpClient | None = None
+        self._http_fallback_logged = False
 
     # ----- 进程池生命周期 -----
 
@@ -269,6 +288,16 @@ class CameraFaceService(metaclass=SingletonMeta):
     def configure(self, runtime: CameraFaceRuntime) -> None:
         self._runtime = runtime
         self._recognize_opts = _opts_from_runtime(runtime)
+        if runtime.provider == "http":
+            try:
+                from deskbot_server.infrastructure.face.fr_http_client import FrHttpClient
+
+                self._fr_client = FrHttpClient(runtime.external_url, timeout_s=runtime.external_timeout_s)
+            except Exception:
+                logger.exception("[camera_face] FrHttpClient 初始化失败，回落 internal")
+                self._fr_client = None
+        else:
+            self._fr_client = None
 
     def is_configured(self) -> bool:
         return self._runtime is not None
@@ -288,7 +317,20 @@ class CameraFaceService(metaclass=SingletonMeta):
     # ----- 核心：多进程识别 -----
 
     async def recognize(self, image: bytes) -> list[dict[str, Any]]:
-        """多进程人脸识别，返回 ``[{landmarks, embedding, image_w, image_h}, ...]``。"""
+        """人脸识别，返回 ``[{landmarks, embedding, image_w, image_h}, ...]``。
+
+        provider=http 时调用外部 insightface-engine（/detect，多 worker 并行）；
+        调用失败（不可达/超时/响应异常）自动回落进程内池并告警。
+        """
+        if self._fr_client is not None:
+            try:
+                return await self._fr_client.detect(image)
+            except Exception as exc:
+                if self._http_fallback_logged:
+                    logger.debug("[camera_face] provider=http 调用失败，回落进程内池: %s", exc)
+                else:
+                    self._http_fallback_logged = True
+                    logger.warning("[camera_face] provider=http 调用失败，回落进程内池: %s", exc)
         opts = self._recognize_opts
         if opts is None:
             opts = _opts_from_runtime(self.runtime)

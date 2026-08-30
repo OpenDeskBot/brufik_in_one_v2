@@ -1,6 +1,9 @@
 # insightface-engine 独立配置：完全自治，不读主服务 config.yaml，也不读 env
 # 本文件是主服务 config.yaml 的 camera_face 段快照（改这里不影响主服务）。
 # 字段语义与 deskbot_server.vision 保持一致；缺字段时用代码内置默认值。
+# 并行推理进程数：每个 worker 独立加载一份 MediaPipe + InsightFace 模型（内存 ~N 倍），
+# 多核服务器按核数配置即可并行处理请求；0 或缺失时取 min(4, CPU 核数)
+workers: 4
 min_face_detection_confidence: 0.15
 min_face_presence_confidence: 0.15
 num_faces: 5

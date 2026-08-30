@@ -7,10 +7,10 @@ port: 9101
 description: MOSS-TTS-Nano 本地语音合成（0.1B · CPU/ONNX · 支持音色克隆 · 20 语种）
 install:
   # 注意：install/uninstall 命令在 service 根目录执行，须用相对根目录的路径
-  - bash externals/tts-engine/install.sh
+  - bash externals/moss-tts-nano/install.sh
 uninstall:
   # 删除独立 venv 与源码 checkout（数据目录由管理器自动清理）
-  - rm -rf externals/tts-engine/.venv externals/tts-engine/checkout
+  - rm -rf externals/moss-tts-nano/.venv externals/moss-tts-nano/checkout
 start:
   # 独立 venv 内的 CLI；首次启动会自动下载 ONNX 模型（约数百 MB，国内网络可设
   # HF_ENDPOINT=https://hf-mirror.com 环境变量加速）
@@ -23,7 +23,7 @@ start:
     - 127.0.0.1
     - --port
     - "9101"
-  workdir: ./externals/tts-engine
+  workdir: ./externals/moss-tts-nano
   # 国内网络直连 HF 不通，默认走 hf-mirror 镜像；HF_HUB_DISABLE_XET=1 禁用
   # huggingface_hub 的 xet 存储（镜像不支持，会 401）；海外用户可去掉镜像
   env:

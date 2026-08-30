@@ -127,7 +127,7 @@ class _ContractServer:
                 # 故意缺 tts 契约期望的 audio_base64/sample_rate，用于缺字段校验测试
                 payload = {"text": "只回了文本"}
             elif self.path == "/generate":
-                # tts-engine 真实接口：multipart form，校验 text/demo_id 字段存在；
+                # moss-tts-nano 真实接口：multipart form，校验 text/demo_id 字段存在；
                 # audio_base64 给 1600 字符（>1000 触发大字段透传）
                 self.server_state.last_generate_body = body
                 if b'name="text"' in body and b'name="demo_id"' in body:
@@ -647,7 +647,7 @@ def test_test_service_tts_custom_voice(tmp_path, contract_server):
 def test_real_manifests_have_type_port():
     for dirname, expected_name, stype, port in (
         ("funasr", "funasr", "asr", 9102),
-        ("tts-engine", "moss-tts-nano", "tts", 9101),
+        ("moss-tts-nano", "moss-tts-nano", "tts", 9101),
         ("vpr-engine", "wespeaker-resnet34", "vpr", 9104),
     ):
         m = ServiceManifest.load(SERVICE_ROOT / "externals" / dirname / "service.yaml")

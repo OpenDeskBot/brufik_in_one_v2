@@ -1,7 +1,7 @@
 """网页外部进程服务管理：页面与 REST API。
 
 管理对象是 service/externals/ 下声明式 manifest 定义的外部服务
-（如 tts-engine），支持安装/启动/停止/重启/状态/日志/默认启动。
+（如 moss-tts-nano），支持安装/启动/停止/重启/状态/日志/默认启动。
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@
 
 1. `cp .env.example .env`，填写 `ARK_API_KEY` / `ARK_MODEL`（火山方舟 LLM）
 2. 在 `service/` 目录执行 `./start.sh`（或已装依赖时 `SKIP_SETUP=1 ./start.sh`）
-3. 浏览器打开 `http://127.0.0.1:5050/` 注册账号；Web / HTTP 走登录会话，调试 WS 订阅用「调试台」签发的 `debug_token`
+3. 浏览器打开 `http://127.0.0.1:9000/` 注册账号；Web / HTTP 走登录会话，调试 WS 订阅用「调试台」签发的 `debug_token`
 4. 模拟设备 WS 使用 `?device_id=deskbot_dev`（仅需 device_id，见 [tools/README.md](tools/README.md)）
 
 ## 提交前检查

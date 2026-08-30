@@ -68,12 +68,40 @@ def api_robot_settings_apply_llm(request: Request, user: RequireUser):
 async def api_robot_settings_apply_tts(request: Request, user: RequireUser):
     body = get_json(request) or {}
     try:
-        status = await _svc().apply_tts(str(body.get("provider") or ""), get_current_device_id(request))
+        status = await _svc().apply_tts(
+            str(body.get("provider") or ""),
+            get_current_device_id(request),
+            demo_id=str(body.get("demo_id") or "").strip() or None,
+        )
         return jsonify({"ok": True, **status})
     except CapabilityError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@router.get("/api/robot-settings/tts/test-info")
+def api_robot_settings_tts_test_info(request: Request, user: RequireUser):
+    try:
+        return jsonify({"ok": True, **_svc().tts_test_info()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@router.post("/api/robot-settings/tts/test")
+async def api_robot_settings_tts_test(request: Request, user: RequireUser):
+    body = get_json(request) or {}
+    try:
+        result = await _svc().tts_test(
+            str(body.get("provider") or ""),
+            str(body.get("text") or ""),
+            demo_id=str(body.get("demo_id") or "").strip() or None,
+        )
+        return jsonify({"ok": True, **result})
+    except CapabilityError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
 
 
 @router.post("/api/robot-settings/llm/clear-device-override")

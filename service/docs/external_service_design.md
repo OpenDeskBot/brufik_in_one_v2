@@ -19,16 +19,28 @@
 └──────────────────────┘
 ```
 
-### 1. 复用原代码，零修改换进程
+### 1. 复用原代码，零修改换进程（或 fork 独立）
 
-进程内直接 `import deskbot_server` 既有实现（insightface-engine 复用
-`CameraFaceDetector` / `face_identity` / `face_embedding`），主服务进程内实现保留。
+进程内直接 `import deskbot_server` 既有实现，主服务进程内实现保留。
 独立进程只是**运行形态**变化，不是重写——切换成本 = 1 个 manifest。
+已独立化的服务例外（见下）；新增外部服务若无独立化诉求，仍按本条"复用原代码"执行。
 
-> **例外：funasr 已 fork 独立**（v1.1.0 独立化，v1.2.0 主服务 internal 移除）。
-> `externals/funasr/` 完全自包含：独立 venv + 模型副本 + `deskbot_server/` 运行子集副本
-> （各文件头带同步标记；主服务已删 funasr.py/model_dir.py，副本为唯一来源）。
-> 新增外部服务若无独立化诉求，仍按本条"复用原代码"执行。
+> **fork 独立化路线**（funasr 与 insightface-engine 均走此路线）：
+> 服务目录内 `deskbot_server/` 运行子集副本（随仓库提交，各文件头带同步标记与分叉点），
+> server.py `sys.path` 指向本服务目录即可让 `import deskbot_server.*` 解析到副本；
+> 分叉点须在文件头标注（如 `utils/paths.py` 根目录锚点、`face_embedding.py` 本地模型优先），
+> 主服务改动后按 docs/external_services.md 对应节同步副本并更新日期。
+>
+> - **funasr**（v1.1.0 独立化，v1.2.0 主服务 internal 移除）：独立 venv + 模型副本；
+>   主服务已删 funasr.py/model_dir.py，副本为唯一来源
+> - **insightface-engine**（v1.1.0 独立化，主服务 internal 保留为回落）：
+>   独立 venv + 模型副本；主服务 `camera_face.provider=http`（默认）经 HTTP 调用，
+>   失败自动回落进程内池；`provider=internal` 可切回（见 external_services.md）
+
+> **insightface-engine 多 worker 并行**（config.yaml `workers`，默认 min(4, CPU 核数)，`--workers` 可覆盖）：
+> uvicorn `--workers` 模式，父进程绑定 socket，每个 worker 是独立进程、各自加载一份
+> MediaPipe + InsightFace 模型（内存 ~N 倍），请求按 socket 分发到各 worker 并行推理；
+> `asyncio.Lock` 只在单 worker 内串行化，多核部署吞吐 ≈ N 倍。
 
 ### 2. 双引擎 + 优雅降级
 

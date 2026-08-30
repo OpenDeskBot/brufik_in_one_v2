@@ -105,7 +105,7 @@ def bound_asr():
 def test_capability_catalogs_structure():
     assert [c.id for c in ASR_CANDIDATES] == ["funasr", "doubao"]
     assert [c.id for c in LLM_CANDIDATES] == ["ark", "local"]
-    assert [c.id for c in TTS_CANDIDATES] == ["doubao"]
+    assert [c.id for c in TTS_CANDIDATES] == ["moss-tts-nano", "doubao"]
 
     ark = LLM_CANDIDATES[0]
     local = LLM_CANDIDATES[1]
@@ -113,6 +113,7 @@ def test_capability_catalogs_structure():
     assert local.experimental is True
     assert local.requires_service == "llm-engine"
     assert ASR_CANDIDATES[0].requires_service == "funasr"
+    assert TTS_CANDIDATES[0].requires_service == "moss-tts-nano"
     for cap in (*ASR_CANDIDATES, *LLM_CANDIDATES, *TTS_CANDIDATES):
         assert cap.id and cap.name and cap.description
 
@@ -376,7 +377,7 @@ def test_api_robot_settings_endpoints(temp_db):
     payload = resp.get_json()
     assert payload["ok"] is True
     assert payload["capabilities"]["asr"]["current"] in ("funasr", "doubao")
-    assert payload["capabilities"]["tts"]["current"] == "doubao"
+    assert payload["capabilities"]["tts"]["current"] in ("moss-tts-nano", "doubao")
     assert payload["capabilities"]["llm"]["current"] in ("ark", "local", "device", "custom")
 
     # 非法 provider → 400
@@ -408,3 +409,181 @@ def test_robot_settings_page_renders(temp_db):
     assert "大脑 LLM" in html
     assert "语音合成 TTS" in html
     assert "/api/robot-settings" in html
+    assert "cap-opt-test" in html  # 候选行 TTS 测试按钮
+    assert "cap-voice" in html     # TTS 音色选择器
+
+
+# ------------------------------------------------------------------ TTS 测试（test-info / test）
+
+import base64
+import io
+import json
+import re
+import threading
+import wave
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import numpy as np
+
+
+class _FakeTtsEngine:
+    """极简 moss-tts-nano 模拟：POST /api/generate（multipart → stereo WAV base64）。"""
+
+    def __init__(self, port: int) -> None:
+        self.port = port
+        self.last_text: str | None = None
+        self.last_demo_id: str | None = None
+        self._server = None
+        self._thread: threading.Thread | None = None
+
+    class _Handler(BaseHTTPRequestHandler):
+        engine = None  # 由 start 注入
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            fields = _parse_form(body, self.headers.get("Content-Type", ""))
+            self.engine.last_text = fields.get("text", "")
+            self.engine.last_demo_id = fields.get("demo_id", "")
+            payload = json.dumps(
+                {"audio_base64": base64.b64encode(_stereo_wav_bytes()).decode("ascii"), "sample_rate": 48000}
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+
+    def start(self) -> None:
+        self._Handler.engine = self
+        self._server = HTTPServer(("127.0.0.1", self.port), self._Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+
+
+def _parse_form(body: bytes, content_type: str) -> dict[str, str]:
+    boundary = content_type.split("boundary=", 1)[1].strip('"')
+    fields: dict[str, str] = {}
+    for part in body.split(f"--{boundary}".encode()):
+        if b"Content-Disposition" not in part:
+            continue
+        head, _, value = part.partition(b"\r\n\r\n")
+        m = re.search(rb'name="([^"]+)"', head)
+        if m:
+            fields[m.group(1).decode()] = value.rstrip(b"\r\n").decode("utf-8")
+    return fields
+
+
+def _stereo_wav_bytes(n_samples: int = 4800) -> bytes:
+    sr = 48000
+    t = np.arange(n_samples) / sr
+    tone = (np.sin(2 * np.pi * 440 * t) * 8000).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(np.column_stack([tone, tone]).tobytes())
+    return buf.getvalue()
+
+
+@pytest.fixture()
+def fake_tts_engine():
+    engine = _FakeTtsEngine(port=9205)
+    engine.start()
+    try:
+        yield engine
+    finally:
+        engine.stop()
+
+
+def test_tts_test_info(tmp_path, monkeypatch):
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
+    monkeypatch.delenv("DOUBAO_TTS_SPEAKER", raising=False)
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    svc = RobotCapabilityService(config_path=p)
+    info = svc.tts_test_info()
+    assert info["text"] == "你好，这是语音合成测试。"
+    assert info["voices"], "moss-tts-nano 音色列表应从 demo.jsonl 枚举"
+    assert info["voices"][0]["id"] == "demo-1"
+    assert info["voices"][0]["name"]
+    assert info["demo_id"] == "demo-1"
+    assert info["doubao_speaker"] == ""
+
+
+def test_tts_test_moss_synthesize(fake_tts_engine, tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text(
+        yaml.safe_dump(
+            {
+                "tts": {
+                    "provider": "moss-tts-nano",
+                    "sample_rate": 48000,
+                    "base_url": "http://127.0.0.1:9205",
+                }
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    svc = RobotCapabilityService(config_path=p)
+    result = asyncio.run(svc.tts_test("moss-tts-nano", "你好，测试", demo_id="demo-3"))
+    assert result["provider"] == "moss-tts-nano"
+    assert result["sample_rate"] == 48000
+    assert result["wav_base64"]
+    assert result["pcm_total_bytes"] == 4800 * 2  # mono 100ms @ 48k
+    assert result["segments"] and any(s["phoneme"] for s in result["segments"])
+    assert fake_tts_engine.last_text == "你好，测试"
+    assert fake_tts_engine.last_demo_id == "demo-3"
+
+
+def test_apply_tts_writes_provider_and_demo_id(tmp_path, monkeypatch):
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    svc = RobotCapabilityService(config_path=p)
+    asyncio.run(svc.apply_tts("moss-tts-nano", demo_id="demo-3"))
+    cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
+    assert cfg["tts"]["provider"] == "moss-tts-nano"
+    assert cfg["tts"]["demo_id"] == "demo-3"
+
+
+def test_apply_tts_doubao_keeps_demo_id(tmp_path, monkeypatch):
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
+    p = tmp_path / "config.yaml"
+    p.write_text(
+        yaml.safe_dump(
+            {"tts": {"provider": "moss-tts-nano", "demo_id": "demo-2"}}, allow_unicode=True, sort_keys=False
+        ),
+        encoding="utf-8",
+    )
+    svc = RobotCapabilityService(config_path=p)
+    asyncio.run(svc.apply_tts("doubao"))
+    cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
+    assert cfg["tts"]["provider"] == "doubao"
+    assert cfg["tts"]["demo_id"] == "demo-2"  # 音色仅 moss 有意义，切豆包不动
+
+
+def test_tts_test_invalid_provider(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    svc = RobotCapabilityService(config_path=p)
+    with pytest.raises(CapabilityError):
+        asyncio.run(svc.tts_test("bogus", "你好"))
+
+
+def test_tts_test_empty_text(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    svc = RobotCapabilityService(config_path=p)
+    with pytest.raises(CapabilityError, match="请输入测试文本"):
+        asyncio.run(svc.tts_test("moss-tts-nano", "   "))

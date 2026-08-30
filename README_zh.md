@@ -73,7 +73,7 @@ chmod +x start.sh
 
 | 服务 | 地址 |
 |------|------|
-| Web 控制台 | `http://<本机IP>:5050/` |
+| Web 控制台 | `http://<本机IP>:9000/` |
 | 设备 WebSocket | `ws://<本机IP>:9000/asr_chat?device_id=<设备ID>` |
 
 另开一个终端，用模拟客户端发一段 16kHz 单声道 WAV，体验「识别 → LLM → TTS → pb 下行」全流程：

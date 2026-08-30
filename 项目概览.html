@@ -382,7 +382,7 @@
 
 <section id="sv-console">
   <h2>🖥️ Web 控制台 <span class="tag sv">SERVICE</span></h2>
-  <p class="lead">Flask 独立进程（端口 5050），邮箱+密码登录，SQLite 存储，给用户做设备绑定、用量监控、记忆/人脸管理与调试。</p>
+  <p class="lead">FastAPI 内置控制台（端口 9000），邮箱+密码登录，SQLite 存储，给用户做设备绑定、用量监控、记忆/人脸管理与调试。</p>
   <div class="grid g3">
     <div class="card"><h4>📊 仪表盘 / 用量</h4><p>近 7 天 ASR/人脸/LLM/TTS 用量；按 API Key / 设备 / 日期细分。</p></div>
     <div class="card"><h4>📱 我的设备</h4><p>注册/绑定 <code>device_id</code>，切换当前设备。</p></div>
@@ -425,7 +425,7 @@
         <dt>进入</dt><dd><code>cd service</code></dd>
         <dt>配置</dt><dd>复制 <code>.env.example</code>，填 <code>LLM_API_KEY</code></dd>
         <dt>启动</dt><dd><code>./start.sh</code>（拉起 TTS + 主服务 + 控制台）</dd>
-        <dt>控制台</dt><dd><code>http://&lt;IP&gt;:5050/</code></dd>
+        <dt>控制台</dt><dd><code>http://&lt;IP&gt;:9000/</code></dd>
         <dt>设备 WS</dt><dd><code>ws://&lt;IP&gt;:9000/asr_chat</code></dd>
       </div>
     </div>

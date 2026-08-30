@@ -560,7 +560,7 @@ class ExternalServiceManager:
     def _tts_voices(self, manifest) -> tuple[list[dict], str]:
         """枚举 tts 音色：manifest test.voices_file（demo.jsonl 逐行 JSON 的 name，行序=demo-N）。
 
-        相对服务源目录（如 externals/tts-engine/checkout/assets/demo.jsonl → checkout/assets/demo.jsonl）。
+        相对服务源目录（如 externals/moss-tts-nano/checkout/assets/demo.jsonl → checkout/assets/demo.jsonl）。
         返回 (voices, default_id)；文件缺失/解析失败返回 ([], "")。
         """
         test = manifest.test

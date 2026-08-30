@@ -27,9 +27,9 @@ name: moss-tts-nano           # 唯一名：小写字母/数字/-/_（建议用�
 version: "2026.4.10"          # 展示用版本
 description: ...              # 后台展示描述
 install:                      # 安装命令（service root 下执行，须幂等；可多条）
-  - bash externals/tts-engine/install.sh
+  - bash externals/moss-tts-nano/install.sh
 uninstall:                    # 可选；无则只清状态与数据目录（同样在 service root 执行）
-  - rm -rf externals/tts-engine/.venv externals/tts-engine/checkout
+  - rm -rf externals/moss-tts-nano/.venv externals/moss-tts-nano/checkout
 start:
   command:                    # 启动命令（相对 workdir 或绝对路径）
     - .venv/bin/moss-tts-nano
@@ -40,8 +40,8 @@ start:
     - 127.0.0.1
     - --port
     - "9101"
-  workdir: ./externals/tts-engine
-  # 附加环境变量（合并进主服务环境）；tts-engine 示例：国内网络走 hf-mirror 镜像，
+  workdir: ./externals/moss-tts-nano
+  # 附加环境变量（合并进主服务环境）；moss-tts-nano 示例：国内网络走 hf-mirror 镜像，
   # HF_HUB_DISABLE_XET=1 禁用 huggingface_hub 的 xet 存储（镜像不支持会 401）
   env:
     HF_ENDPOINT: "https://hf-mirror.com"
@@ -99,7 +99,7 @@ body 与 curl 同步重建），改文本/音色后点「执行测试」用当�
 
 ### manifest `test` 覆盖段（可选）
 
-现成服务（如 tts-engine）通常没有实现通用契约端点（`/synthesize` 等），可在
+现成服务（如 moss-tts-nano）通常没有实现通用契约端点（`/synthesize` 等），可在
 service.yaml 加 `test` 段声明真实测试端点，测试按钮与 curl 命令按它发送：
 
 ```yaml
@@ -173,9 +173,29 @@ deskbot_server/
 装配：`main.build_runtime` 创建 manager 并 `discover()`；`main()` 启动看门狗并异步拉起
 auto_start 服务；FastAPI lifespan 关闭时 `shutdown()` 优雅回收全部子进程。
 
-单个服务的设计模式（以 insightface-engine 为例：复用原代码换进程、配置自治、
-后台测试对话框交互规范、新增服务落地清单与踩坑）见
+单个服务的设计模式（配置自治、后台测试对话框交互规范、新增服务落地清单与踩坑）见
 [external_service_design.md](./external_service_design.md)。
+
+## insightface-engine：InsightFace 人脸检测与识别（独立化，v1.1.0）
+
+`externals/insightface-engine/` 以独立进程提供 MediaPipe 检测 + InsightFace 512 维
+embedding：**完全自包含**——独立 venv（`.venv`，`install.sh` 幂等）、服务目录内模型副本
+（`models/mediapipe/face_landmarker.task` 3.6M + `models/buffalo_s/w600k_mbf.onnx` 13M；
+install 双路径：主服务 `models/` 或 `~/.insightface` 缓存有源则 copy，无源则下载）、
+`deskbot_server/` 运行子集副本（随仓库提交，各文件头带同步标记；分叉点：`utils/paths.py`
+根目录、`vision/face_embedding.py` 本地模型优先），**运行期零依赖主服务**；**配置完全自治**——
+只读同目录 `config.yaml`（含 `workers` 字段，默认 min(4, CPU 核数)，uvicorn 多 worker
+并行推理，每 worker 独立加载一份模型，内存 ~N 倍）。
+
+- 契约 fr：`POST /detect`（body=JPEG bytes）→ `{"faces": [{landmarks, embedding,
+  descriptor_kind, image_w, image_h}, ...]}`；`POST /embedding`（JSON `jpeg_base64` +
+  `landmarks`）→ `{"embedding", "descriptor_kind"}`；`GET /health`；端口 9103
+- **主服务集成**：`camera_face.provider=http`（config.yaml 默认）→ `FrHttpClient`
+  （`infrastructure/face/fr_http_client.py`，镜像 funasr_adapter：urllib + to_thread）
+  调 `/detect`；调用失败（不可达/超时/响应异常）自动回落进程内池并告警
+  （首次 warning 之后 debug）；`provider=internal` 可手动切回进程内多进程池
+- 主服务进程内实现（`CameraFaceService` + ProcessPoolExecutor）保留作回落/对照，
+  依赖不卸载（与 funasr 的"internal 移除"不同——主服务自身还在用同一套 vision 代码）
 
 ## vpr-engine：WeSpeaker ResNet34 声纹识别
 
@@ -194,7 +214,7 @@ auto_start 服务；FastAPI lifespan 关闭时 `shutdown()` 优雅回收全部�
 - 注意：torch 推理串行化由 server 内锁保证；`/compare` 的 `match` 判定阈值由调用方
   业务层决定（同人典型相似度 ~0.7+，跨人 <0.5，仅供参考）
 
-## tts-engine 已知适配（install.sh 自动处理）
+## moss-tts-nano 已知适配（install.sh 自动处理）
 
 - **模型下载**：首次启动经 hf-mirror 镜像下载约 740MB ONNX 模型（`HF_ENDPOINT` +
   `HF_HUB_DISABLE_XET` 已写入 manifest env）；海外环境可去掉镜像
@@ -246,9 +266,11 @@ install.sh **不会**在安装期从主服务源码生成副本（避免覆盖�
 ## 接入业务（示例：TTS 与 ASR 云端 provider）
 
 外部服务只解决"进程怎么活"，业务接入走既有 port/adapter 模式：
-`TtsPort`（`ports/tts.py`）保持不变，新增 HTTP 适配器调用外部服务的 `/api/generate*`
-端点，在 `bootstrap` 装配时按 `config.yaml` 的 `tts.provider` 切换。当前 `provider: doubao`
-为进程内实现，`provider: external` 预留。
+`TtsPort`（`ports/tts.py`）保持不变，`MossTtsAdapter`（`infrastructure/tts/moss_adapter.py`）
+调用 moss-tts-nano 的 `/api/generate`（multipart，text + demo_id），口型音素由
+`utils/phoneme_duration.py` 按文本+总时长补充；在 `bootstrap` 装配时按 `config.yaml` 的
+`tts.provider` 切换。默认 `provider: moss-tts-nano`（独立进程）；`doubao`（火山云端，
+`infrastructure/tts/doubao_phoneme.py`）为备选。
 
 ASR 同构：设备级两态——`funasr`（独立进程，协议见
 [asr_protocol.md](./asr_protocol.md)）/ `doubao`（火山云端一句话识别，
@@ -257,6 +279,8 @@ FunASR 已移除（v1.2.0）；provider 存 device 表（v1.3.0 起），非 con
 云端 provider 不建 externals 目录（无本地进程），直连云 API。
 
 外部服务只解决"进程怎么活"，业务接入走既有 port/adapter 模式：
-`TtsPort`（`ports/tts.py`）保持不变，新增 HTTP 适配器调用外部服务的 `/api/generate*`
-端点，在 `bootstrap` 装配时按 `config.yaml` 的 `tts.provider` 切换。当前 `provider: doubao`
-为进程内实现，`provider: external` 预留。
+`TtsPort`（`ports/tts.py`）保持不变，`MossTtsAdapter`（`infrastructure/tts/moss_adapter.py`）
+调用 moss-tts-nano 的 `/api/generate`（multipart，text + demo_id），口型音素由
+`utils/phoneme_duration.py` 按文本+总时长补充；在 `bootstrap` 装配时按 `config.yaml` 的
+`tts.provider` 切换。默认 `provider: moss-tts-nano`（独立进程）；`doubao`（火山云端，
+`infrastructure/tts/doubao_phoneme.py`）为备选。

@@ -37,7 +37,7 @@ FAST_START=1 ./start.sh
 
 | 服务 | 地址 | 用途 |
 |------|------|------|
-| **Web 控制台** | `http://<本机IP>:5050/` | 注册登录、设备绑定、定时任务、记忆等 |
+| **Web 控制台** | `http://<本机IP>:9000/` | 注册登录、设备绑定、定时任务、记忆等 |
 | **设备 WebSocket** | `ws://<本机IP>:9000/asr_chat?device_id=<id>` | ESP32 语音对话主链路（仅需 `device_id`，无 API Key / PIN） |
 
 Web / HTTP 接口与调试订阅使用**控制台登录会话**；调试 WebSocket（`/camera_view`、`/device_pipeline` 订阅侧）在「调试台」页面签发 `debug_token`。本地联调脚本可读取 `data/.free_api_key`（若存在）。
@@ -48,7 +48,7 @@ Web / HTTP 接口与调试订阅使用**控制台登录会话**；调试 WebSock
 
 ### 1. 打开控制台
 
-浏览器访问 `http://<本机IP>:5050/` → **注册**账号 → 登录进入工作台。
+浏览器访问 `http://<本机IP>:9000/` → **注册**账号 → 登录进入工作台。
 
 ### 2. 鉴权方式（Web / HTTP / 调试订阅）
 
@@ -110,7 +110,7 @@ WAV 须 **16 kHz / mono / s16le**。麦克风实时测试见 [tools/README.md](t
 └───────────────────────┘                    └─────────────────────────┘
 ```
 
-TTS 使用火山引擎豆包（`tts.provider: doubao`），凭证配置见 `.env` 与调试台「TTS 调试」。
+TTS 默认使用独立进程 MOSS-TTS-Nano（`tts.provider: moss-tts-nano`，需先在「独立服务管理」安装启动 moss-tts-nano）；也可切换火山引擎豆包（`doubao`），凭证配置见 `.env` 与调试台「TTS 调试」。
 
 ### 上行（设备 → 服务端）
 

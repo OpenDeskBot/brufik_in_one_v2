@@ -10,7 +10,7 @@
 #   PYTHON_BIN=             显式指定 Python 可执行文件（跳过自动查找）
 #   SKIP_SETUP=1            跳过 venv/依赖安装，仅启动服务
 #   FAST_START=1            跳过 pip 安装（venv 须已完整）；未设置时若依赖已就绪也会自动跳过
-#   DESKBOT_START_WEB=1     同时启动 Flask 调试台（默认 1，DESKBOT_WEB_PORT=5050）
+#   DESKBOT_START_WEB=1     同时启动独立 Web 控制台进程（默认 0，DESKBOT_WEB_PORT=9000）
 #   DESKBOT_START_WEB=0     不启动调试台
 #   SKIP_MODEL_DOWNLOAD=1   跳过人脸 / Silero VAD 模型自动下载
 #   SKIP_SYSTEM_CHECK=1     跳过 ffmpeg 等系统依赖警告
@@ -172,7 +172,7 @@ run_services() {
   trap 'trap - INT TERM EXIT; kill 0 2>/dev/null || true' INT TERM EXIT
 
   if [[ "${DESKBOT_START_WEB:-0}" == "1" ]]; then
-    local web_port="${DESKBOT_WEB_PORT:-5050}"
+    local web_port="${DESKBOT_WEB_PORT:-9000}"
     echo "[web] 额外启动独立 Web 进程 0.0.0.0:${web_port}（主服务 :9000 已内置 FastAPI 控制台；通常无需再开）"
     (
       cd "$ROOT"
@@ -180,7 +180,7 @@ run_services() {
       [[ -f .env ]] && set -a && source .env && set +a
       web_py="$(platform_venv_python "$ROOT")"
       export DESKBOT_WEB_HOST="0.0.0.0"
-      export DESKBOT_WEB_PORT="${DESKBOT_WEB_PORT:-5050}"
+      export DESKBOT_WEB_PORT="${DESKBOT_WEB_PORT:-9000}"
       exec "$web_py" -m deskbot_server.web
     ) &
   else

@@ -32,5 +32,5 @@ if __name__ == "__main__":
     import uvicorn
 
     host = (os.environ.get("DESKBOT_WEB_HOST") or "0.0.0.0").strip()
-    port = int(os.environ.get("DESKBOT_WEB_PORT") or "5050")
+    port = int(os.environ.get("DESKBOT_WEB_PORT") or "9000")
     uvicorn.run(app, host=host, port=port, log_level="info")

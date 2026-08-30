@@ -8,12 +8,12 @@
 
 | 服务 | 默认地址 | 实现位置 | 说明 |
 |------|----------|----------|------|
-| Web 控制台 | `http://<host>:5050` | `deskbot_server.web` | FastAPI 页面、用户登录、设备/记忆/模型管理、调试页、代理到设备服务 |
+| Web 控制台 | `http://<host>:9000` | `deskbot_server.web` | FastAPI 页面、用户登录、设备/记忆/模型管理、调试页、代理到设备服务 |
 | deskbot 设备服务 | `ws://<host>:9000` / `http://<host>:9000` | `deskbot_server.controller` / `deskbot_server.ws` | ESP32 主链路、调试订阅、设备下发、轻量 HTTP API |
 
 ## 鉴权约定
 
-### Web 控制台 `:5050`
+### Web 控制台 `:9000`
 
 | 范围 | 鉴权 |
 |------|------|
@@ -34,7 +34,7 @@
 
 常见错误：设备缺 `device_id` 为 WS close `1008 device_id_required`；未登录访问 Web API 为 `401`；操作未绑定设备为 `403 forbidden_device`。
 
-## Web 控制台页面与表单 `:5050`
+## Web 控制台页面与表单 `:9000`
 
 ### 公开与账号
 
@@ -85,7 +85,7 @@
 | GET | `/debug/llm` | LLM 试聊与 system prompt |
 | GET | `/debug/simulation` | 模拟对话/显示调试 |
 
-## Web 控制台 JSON API `:5050`
+## Web 控制台 JSON API `:9000`
 
 ### 2C 高级设置
 

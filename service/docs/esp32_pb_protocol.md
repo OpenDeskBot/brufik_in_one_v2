@@ -38,7 +38,7 @@ ws://<host>:9000/asr_chat?device_id=deskbot_abc123
 
 ### 0.4 Web / 调试鉴权（仅控制台与调试）
 
-Web 控制台（`:5050`）注册登录后，会话 cookie 即 Web / HTTP 鉴权；`/camera_view` 与 `/device_pipeline` 订阅侧使用 `debug_token`（`GET /api/debug/ws_token` 签发，URL 参数名 `debug_token` / `debugtoken` / `ws_token`）。设备主链路不涉及任何 Key。
+Web 控制台（`:9000`）注册登录后，会话 cookie 即 Web / HTTP 鉴权；`/camera_view` 与 `/device_pipeline` 订阅侧使用 `debug_token`（`GET /api/debug/ws_token` 签发，URL 参数名 `debug_token` / `debugtoken` / `ws_token`）。设备主链路不涉及任何 Key。
 
 ### 0.5 固件最小接入示例
 

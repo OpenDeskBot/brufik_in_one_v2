@@ -467,7 +467,7 @@ cd service
 
 或在 `iotctl/` 下执行 `bash install.sh`（独立 venv，适合纯 CLI）。
 
-修改 `iotctl` / `miot_*.py` 后需 **重启** deskbot web（5050）与主服务，否则仍可能跑旧代码。
+修改 `iotctl` / `miot_*.py` 后需 **重启** deskbot web（9000）与主服务，否则仍可能跑旧代码。
 
 ---
 

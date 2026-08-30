@@ -17,11 +17,11 @@ cp .env.example .env   # 必填 ARK_API_KEY / ARK_MODEL（火山方舟）
 | 端口 | 服务 |
 |------|------|
 | **9000** | WebSocket + HTTP API（设备主链路） |
-| **5050** | FastAPI Web 控制台（`DESKBOT_START_WEB=1`，`start.sh` 默认开启） |
+| **9000** | FastAPI Web 控制台（默认合并进主服务；`DESKBOT_START_WEB=1` 时另起独立进程） |
 
 ---
 
-## Web 控制台（`:5050`）
+## Web 控制台（`:9000`）
 
 邮箱注册 / 登录后可用：
 
@@ -108,7 +108,7 @@ cp .env.example .env   # 必填 ARK_API_KEY / ARK_MODEL（火山方舟）
 ## 配置
 
 - **`.env`**：`ARK_API_KEY` / `ARK_MODEL`（火山方舟 LLM，必填；兼容旧版 `LLM_API_KEY` / `DASHSCOPE_API_KEY`）、`DOUBAO_TTS_*`（豆包 TTS）、`ASR_MODEL_DIR`、`DESKBOT_WEB_PUBLIC_HOST`（多网卡时填局域网 IP）、`DESKBOT_WEB_SECRET_KEY`（生产必设）
-- **`config.yaml`**：`audio.input_codec`、`llm.model_name`、`tts.provider`（`doubao`）、`server.asr_chat_device_pb_only`、`debug.asr_auto_reply`
+- **`config.yaml`**：`audio.input_codec`、`llm.model_name`、`tts.provider`（`moss-tts-nano` 默认 / `doubao`）、`server.asr_chat_device_pb_only`、`debug.asr_auto_reply`
 
 架构概要：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 

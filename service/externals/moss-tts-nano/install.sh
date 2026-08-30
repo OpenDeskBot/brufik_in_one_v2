@@ -11,13 +11,13 @@
 #   - 模型在首次 serve 时自动下载；可用 HF_ENDPOINT 环境变量换镜像
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"   # service/externals/tts-engine
+ROOT="$(cd "$(dirname "$0")" && pwd)"   # service/externals/moss-tts-nano
 CHECKOUT="$ROOT/checkout"
 VENV="$ROOT/.venv"
 GIT_URL="https://github.com/OpenMOSS/MOSS-TTS-Nano.git"
 
-info()  { printf '[tts-engine] %s\n' "$*"; }
-fail()  { printf '[tts-engine] 错误: %s\n' "$*" >&2; exit 1; }
+info()  { printf '[moss-tts-nano] %s\n' "$*"; }
+fail()  { printf '[moss-tts-nano] 错误: %s\n' "$*" >&2; exit 1; }
 
 ensure_uv() {
   if command -v uv >/dev/null 2>&1; then UV=uv; return; fi

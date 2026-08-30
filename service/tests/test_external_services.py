@@ -17,7 +17,7 @@ from deskbot_server.service.external.manager import ExternalServiceManager, Serv
 from deskbot_server.service.external.manifest import ManifestError, ServiceManifest, discover_manifests
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]  # service/
-REAL_MANIFEST = SERVICE_ROOT / "externals" / "tts-engine" / "service.yaml"
+REAL_MANIFEST = SERVICE_ROOT / "externals" / "moss-tts-nano" / "service.yaml"
 
 FAKE_SERVICE_PY = textwrap.dedent(
     """
@@ -123,17 +123,17 @@ async def _wait_state(mgr: ExternalServiceManager, name: str, state: ServiceStat
 
 
 def test_manifest_load_real():
-    """真实 tts-engine manifest 能解析，且契约字段符合预期。"""
+    """真实 moss-tts-nano manifest 能解析，且契约字段符合预期。"""
     m = ServiceManifest.load(REAL_MANIFEST)
     assert m.name == "moss-tts-nano"
-    assert m.install == ["bash externals/tts-engine/install.sh"]
+    assert m.install == ["bash externals/moss-tts-nano/install.sh"]
     assert m.uninstall and "rm -rf" in m.uninstall[0]
     assert m.command[0].endswith("moss-tts-nano")
     assert m.command[1] == "serve" and "--backend" in m.command and "onnx" in m.command
     assert m.healthcheck is not None
     assert m.healthcheck.type == "http"
     assert m.healthcheck.url == "http://127.0.0.1:9101/health"
-    assert m.resolve_workdir(SERVICE_ROOT) == SERVICE_ROOT / "externals" / "tts-engine"
+    assert m.resolve_workdir(SERVICE_ROOT) == SERVICE_ROOT / "externals" / "moss-tts-nano"
     assert m.test is not None and m.test.voices_file == "checkout/assets/demo.jsonl"
 
 
