@@ -37,9 +37,19 @@
         <span class="tb-sub">CONSOLE</span>
       </a>
       <span class="tb-div"></span>
-      <span class="tb-link" id="tbLink"><span class="led off"></span><span id="tbLinkText">检查中…</span></span>
+      <div class="tb-devwrap" id="tbDevWrap">
+        <div class="tb-devsel" id="tbDevSel" title="切换当前设备">
+          <span class="led" id="tbDevLed"></span><span id="tbDevLabel">检查中…</span><span class="caret">▾</span>
+        </div>
+        <div class="tb-devpanel" id="tbDevPanel">
+          <div class="tb-devhead">已绑定设备 · 点击切换</div>
+          <div id="tbDevList"><div class="tb-dev-empty">检查中…</div></div>
+        </div>
+      </div>
     </div>
     <div class="tb-r">
+      <button type="button" class="btn ghost" id="tbDevManage" style="padding:7px 12px">管理</button>
+      <button type="button" class="btn ghost" id="tbDevBind" style="padding:7px 12px">＋ 绑定新设备</button>
       <span class="tb-clock" id="tbClock">--:--:--</span>
       <form method="post" action="{{ url_for('auth.logout') }}">
         <button type="submit" class="btn ghost" style="padding:7px 12px">退出</button>
@@ -82,6 +92,38 @@
     </main>
   </div>
 </div>
+
+<!-- 顶栏设备管理对话框 -->
+<div class="modal-overlay" id="tbManageModal" hidden>
+  <div class="modal-panel">
+    <div class="modal-hd"><b>设备管理</b><button type="button" class="close">✕</button></div>
+    <div class="modal-bd">
+      <table class="devtable">
+        <thead>
+          <tr><th>设备 ID</th><th>是否在线</th><th>最近同步时间</th><th>操作</th></tr>
+        </thead>
+        <tbody id="tbManageTbody"></tbody>
+      </table>
+      <div class="modal-msg" id="tbManageMsg"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 顶栏绑定新设备对话框 -->
+<div class="modal-overlay" id="tbBindModal" hidden>
+  <div class="modal-panel small">
+    <div class="modal-hd"><b>绑定新设备</b><button type="button" class="close">✕</button></div>
+    <div class="modal-bd">
+      <input class="tinput" id="tbBindInput" placeholder="设备 ID，例如 brfk_aabbccddeeff1234" autocomplete="off">
+      <p class="bind-hint">设备开机联网后，屏幕上会显示它的 device_id。设备须在线且未被其他账号绑定才能绑定成功。</p>
+      <div class="modal-msg" id="tbBindMsg"></div>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="btn ghost" id="tbBindCancel">取消</button>
+      <button type="button" class="btn primary" id="tbBindOk">绑定</button>
+    </div>
+  </div>
+</div>
 <script>
   (function(){
     var el=document.getElementById('tbClock'); if(!el) return;
@@ -90,20 +132,130 @@
     tick(); setInterval(tick,1000);
   })();
   (function(){
-    // 顶栏 LINK 状态反映当前设备真实在线情况，而不是恒亮的假状态
-    var link=document.getElementById('tbLink'), text=document.getElementById('tbLinkText');
-    if(!link || !text) return;
-    var setState=function(cls, label){
-      link.querySelector('.led').className='led'+(cls?' '+cls:'');
-      text.textContent=label;
-    };
-    fetch('/app/api/devices').then(function(r){return r.json();}).then(function(d){
-      var devices=d.devices||[];
-      if(!devices.length){ setState('off','未绑定设备'); return; }
-      var current=devices.find(function(x){return x.is_current;});
-      if(!current){ setState('off','未选择设备'); return; }
-      setState(current.online ? '' : 'off', current.online ? 'LINK·OK' : 'LINK·离线');
-    }).catch(function(){ setState('off','状态未知'); });
+    // 顶栏设备选择器：下拉显示设备列表（在线状态 + 最近访问），点击即切换当前设备；
+    // 管理对话框可删除（解绑）设备，绑定对话框负责新增设备。
+    var wrap=document.getElementById('tbDevWrap');
+    if(!wrap) return;
+    var led=document.getElementById('tbDevLed'), label=document.getElementById('tbDevLabel');
+    var panel=document.getElementById('tbDevPanel'), list=document.getElementById('tbDevList');
+    var manageBtn=document.getElementById('tbDevManage'), bindBtn=document.getElementById('tbDevBind');
+    var manageModal=document.getElementById('tbManageModal'), bindModal=document.getElementById('tbBindModal');
+    var manageMsg=document.getElementById('tbManageMsg'), bindMsg=document.getElementById('tbBindMsg');
+    var bindInput=document.getElementById('tbBindInput'), bindOk=document.getElementById('tbBindOk');
+    var state={devices:[],current:''};
+    var esc=function(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});};
+    var short=function(t){ return (t==='—'||!t)?'—':String(t).slice(5,16); }; // YYYY-MM-DD HH:MM:SS → MM-DD HH:MM
+
+    function currentDevice(){
+      for(var i=0;i<state.devices.length;i++) if(state.devices[i].device_id===state.current) return state.devices[i];
+      return null;
+    }
+    function renderTrigger(){
+      if(!state.devices.length){ led.className='led off'; label.textContent='未绑定设备'; return; }
+      var cur=currentDevice();
+      if(!cur){ led.className='led off'; label.textContent='未选择设备'; return; }
+      led.className=cur.online?'led':'led off';
+      label.textContent=cur.online ? cur.device_id+' · LINK·OK' : cur.device_id+' · 离线';
+    }
+    function renderList(){
+      if(!state.devices.length){ list.innerHTML='<div class="tb-dev-empty">还没有绑定设备，点击右侧「＋ 绑定新设备」</div>'; return; }
+      list.innerHTML=state.devices.map(function(d){
+        var offCls=d.online?'':' off';
+        return '<div class="tb-devrow" data-id="'+esc(d.device_id)+'">'
+          +'<span class="led'+offCls+'"></span>'
+          +'<span class="did">'+esc(d.device_id)+'</span>'
+          +(d.device_id===state.current?'<span class="tag">当前</span>':'')
+          +'<span class="meta"><b class="'+offCls.trim()+'">'+(d.online?'在线':'离线')+'</b><small>访问 '+esc(short(d.last_seen))+'</small></span>'
+          +'</div>';
+      }).join('');
+      var rows=list.querySelectorAll('.tb-devrow');
+      for(var i=0;i<rows.length;i++){
+        rows[i].addEventListener('click', function(){ select(this.getAttribute('data-id')); });
+      }
+    }
+    function renderManage(){
+      var tbody=document.getElementById('tbManageTbody');
+      if(!tbody) return;
+      if(!state.devices.length){
+        tbody.innerHTML='<tr><td colspan="4" class="empty">还没有绑定设备</td></tr>';
+        return;
+      }
+      tbody.innerHTML=state.devices.map(function(d){
+        return '<tr>'
+          +'<td class="did">'+esc(d.device_id)+'</td>'
+          +'<td><span class="led'+(d.online?'':' off')+'"></span>'+(d.online?'在线':'离线')+'</td>'
+          +'<td class="st">'+esc(d.last_sync)+'</td>'
+          +'<td><button type="button" class="btn danger" data-del="'+esc(d.device_id)+'">删除</button></td>'
+          +'</tr>';
+      }).join('');
+      var btns=tbody.querySelectorAll('[data-del]');
+      for(var i=0;i<btns.length;i++){
+        btns[i].addEventListener('click', function(){
+          removeDevice(this.getAttribute('data-del'));
+        });
+      }
+    }
+    function load(){
+      fetch('/app/api/devices').then(function(r){return r.json();}).then(function(d){
+        if(d.ok){ state.devices=d.devices||[]; state.current=d.current_device_id||''; }
+        renderTrigger(); renderList(); renderManage();
+      }).catch(function(){ led.className='led off'; label.textContent='状态未知'; });
+    }
+    function select(id){
+      if(id===state.current) return;
+      fetch('/app/api/devices/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:id})})
+        .then(function(r){return r.json();}).then(function(d){
+          if(d.ok){ wrap.classList.remove('open'); load(); }
+        }).catch(function(){});
+    }
+    function removeDevice(id){
+      if(!confirm('确定删除（解绑）设备 '+id+'？解绑后当前账号将无法再看到这台设备。')) return;
+      fetch('/app/api/devices/'+encodeURIComponent(id),{method:'DELETE'}).then(function(r){return r.json();}).then(function(d){
+        if(d.ok){
+          if(manageMsg){ manageMsg.className='modal-msg ok'; manageMsg.textContent='已解绑 '+id; }
+          load();
+        }else{
+          if(manageMsg){ manageMsg.className='modal-msg err'; manageMsg.textContent=d.error||'删除失败'; }
+        }
+      }).catch(function(){
+        if(manageMsg){ manageMsg.className='modal-msg err'; manageMsg.textContent='网络错误，请重试'; }
+      });
+    }
+    function doBind(){
+      var id=bindInput.value.trim();
+      if(!id){ bindMsg.className='modal-msg err'; bindMsg.textContent='请输入 device_id'; return; }
+      bindOk.disabled=true;
+      fetch('/app/api/devices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:id})})
+        .then(function(r){return r.json();}).then(function(d){
+          if(d.ok){
+            bindModal.hidden=true; bindMsg.textContent=''; bindInput.value='';
+            load();
+          }else{
+            bindMsg.className='modal-msg err'; bindMsg.textContent=d.error||'绑定失败';
+          }
+        }).catch(function(){
+          bindMsg.className='modal-msg err'; bindMsg.textContent='网络错误，请重试';
+        }).finally(function(){ bindOk.disabled=false; });
+    }
+    // 下拉开关：点触发器展开/收起，点外部收起
+    document.getElementById('tbDevSel').addEventListener('click', function(e){
+      e.stopPropagation();
+      wrap.classList.toggle('open');
+    });
+    document.addEventListener('click', function(){ wrap.classList.remove('open'); });
+    // 管理对话框
+    manageBtn.addEventListener('click', function(){ renderManage(); manageModal.hidden=false; });
+    manageModal.addEventListener('click', function(e){ if(e.target===manageModal) manageModal.hidden=true; });
+    manageModal.querySelector('.close').addEventListener('click', function(){ manageModal.hidden=true; });
+    // 绑定对话框
+    bindBtn.addEventListener('click', function(){ bindMsg.textContent=''; bindModal.hidden=false; bindInput.focus(); });
+    bindModal.addEventListener('click', function(e){ if(e.target===bindModal) bindModal.hidden=true; });
+    bindModal.querySelector('.close').addEventListener('click', function(){ bindModal.hidden=true; });
+    bindModal.querySelector('#tbBindCancel').addEventListener('click', function(){ bindModal.hidden=true; });
+    bindOk.addEventListener('click', doBind);
+    bindInput.addEventListener('keydown', function(e){ if(e.key==='Enter') doBind(); });
+    load();
+    setInterval(load, 15000); // 周期刷新在线状态与最近时间
   })();
   (function(){
     var box=document.getElementById('globalSetup'); if(!box) return;

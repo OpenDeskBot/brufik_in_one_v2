@@ -126,8 +126,28 @@ def _fetch_upstream_devices(*, user_id: str | None = None, timeout: float = 1.5)
     return [d for d in devices if isinstance(d, dict)]
 
 
+def _fmt_ts(ts) -> str:
+    """把 epoch 秒时间戳格式化为北京时间字符串；空值返回 '—'。"""
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return "—"
+    if not ts:
+        return "—"
+    if ZoneInfo is not None:
+        dt = _dt.datetime.fromtimestamp(ts, ZoneInfo("Asia/Shanghai"))
+    else:
+        dt = _dt.datetime.fromtimestamp(ts, _dt.timezone(_dt.timedelta(hours=8)))
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def fetch_live_device_details(*, user_id: str | None = None, timeout: float = 1.5) -> dict[str, dict]:
-    """查询 deskbot-server 内存注册表，返回 device_id -> {online, last_seen}。"""
+    """查询 deskbot-server 内存注册表，返回 device_id -> {online, last_seen, last_sync}。
+
+    last_seen 为最近访问时间；last_sync 为最近同步时间（最近一次 pb_ack 确认）。
+    同进程读注册表（last_seen_ts / last_pb_ack_ts 时间戳），跨进程走上游
+    /api/devices（last_seen 已是字符串），两种格式都兼容。
+    """
     out: dict[str, dict] = {}
     rows = _fetch_registry_devices(user_id=user_id)
     if rows is None:
@@ -136,7 +156,13 @@ def fetch_live_device_details(*, user_id: str | None = None, timeout: float = 1.
         did = str(row.get("device_id") or "").strip()
         if not did:
             continue
-        out[did] = {"online": bool(row.get("online")), "last_seen": str(row.get("last_seen") or "—")}
+        ts = row.get("last_seen_ts")
+        last_seen = _fmt_ts(ts) if ts else str(row.get("last_seen") or "—")
+        out[did] = {
+            "online": bool(row.get("online")),
+            "last_seen": last_seen,
+            "last_sync": _fmt_ts(row.get("last_pb_ack_ts")),
+        }
     return out
 
 

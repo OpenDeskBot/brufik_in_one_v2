@@ -138,6 +138,7 @@ def api_list_devices(request: Request, user: RequireUser):
                     "claimed_at": d.claimed_at.isoformat() if d.claimed_at else None,
                     "online": live_map.get(d.device_id, {}).get("online", False),
                     "last_seen": live_map.get(d.device_id, {}).get("last_seen", "—"),
+                    "last_sync": live_map.get(d.device_id, {}).get("last_sync", "—"),
                     "is_current": d.device_id == current,
                 }
                 for d in devices

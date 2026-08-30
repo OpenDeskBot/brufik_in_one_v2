@@ -684,6 +684,7 @@ class DeviceWsService(metaclass=SingletonMeta):
             "last_status": entry.last_status,
             "event_count": entry.event_count,
             "last_pb_ack": entry.last_pb_ack,
+            "last_pb_ack_ts": entry.last_pb_ack_ts,
         }
 
     # ======================================================================
