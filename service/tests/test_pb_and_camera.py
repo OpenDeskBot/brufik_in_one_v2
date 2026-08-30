@@ -154,26 +154,24 @@ def test_analyze_face_detections_multi():
 
 
 def test_face_tracker_profile_hysteresis():
-    import os
+    import math
 
-    import numpy as np
-    import pytest
+    from deskbot_server.vision.face_identity import is_embedding_vector
 
-    from deskbot_server.vision.face_embedding import is_embedding_vector
-    from deskbot_server.vision.face_identity import attach_descriptor, compute_face_descriptor
-
-    if not os.path.isdir(os.path.expanduser("~/.insightface/models/buffalo_s")):
-        pytest.skip("InsightFace buffalo_s 模型未下载，跳过 embedding 测试")
-
+    # 主服务不推理：descriptor 由外部服务 /detect 算好随 faces 返回，这里用常量向量模拟
     landmarks = _sample_landmarks(nose=(120.0, 115.0))
-    face = {"landmarks": landmarks, "image_w": 320, "image_h": 240}
-    bgr = np.zeros((240, 320, 3), dtype=np.uint8)
-    attach_descriptor(face, bgr_image=bgr)
-    desc = face.get("embedding") or face.get("face_descriptor") or compute_face_descriptor(landmarks)
-    assert desc is not None
-    if not is_embedding_vector(desc):
-        pytest.skip("embedding 未启用，跳过")
-    thr = 0.40 if is_embedding_vector(desc) else 0.82
+    emb = [1.0 / math.sqrt(512)] * 512
+    face = {
+        "landmarks": landmarks,
+        "embedding": emb,
+        "face_descriptor": emb,
+        "descriptor_kind": "embedding",
+        "image_w": 320,
+        "image_h": 240,
+    }
+    desc = emb
+    assert is_embedding_vector(desc)
+    thr = 0.40
     profiles: list = [{"id": 1, "name": "小明", "descriptor": list(desc), "descriptor_kind": "embedding"}]
     tracker = FaceTracker(identity_similarity_threshold=thr, max_dist_px=90.0)
     tracker._profiles = profiles
@@ -181,8 +179,14 @@ def test_face_tracker_profile_hysteresis():
     assert tagged[0].get("id") == 1
     assert tagged[0].get("person_name") == "小明"
     # 鼻尖大幅移动仍应同一 face_id
-    moved_face = {"landmarks": _sample_landmarks(nose=(80.0, 108.0)), "image_w": 320, "image_h": 240}
-    attach_descriptor(moved_face, bgr_image=bgr)
+    moved_face = {
+        "landmarks": _sample_landmarks(nose=(80.0, 108.0)),
+        "embedding": emb,
+        "face_descriptor": emb,
+        "descriptor_kind": "embedding",
+        "image_w": 320,
+        "image_h": 240,
+    }
     id1 = tagged[0]["face_id"]
     tagged2 = tracker.assign_ids([moved_face])
     assert tagged2[0]["face_id"] == id1
@@ -190,10 +194,20 @@ def test_face_tracker_profile_hysteresis():
 
 
 def test_face_tracker_assigns_stable_ids():
+    import math
+
     landmarks = _sample_landmarks(nose=(120.0, 115.0))
+    emb = [1.0 / math.sqrt(512)] * 512  # 模拟外部服务返回的 embedding
     tracker = FaceTracker(max_dist_px=30.0, max_lost_frames=3)
-    frame1 = [{"landmarks": landmarks}]
-    frame2 = [{"landmarks": _sample_landmarks(nose=(105.0, 102.0))}]
+    frame1 = [{"landmarks": landmarks, "embedding": emb, "face_descriptor": emb, "descriptor_kind": "embedding"}]
+    frame2 = [
+        {
+            "landmarks": _sample_landmarks(nose=(105.0, 102.0)),
+            "embedding": emb,
+            "face_descriptor": emb,
+            "descriptor_kind": "embedding",
+        }
+    ]
     id1 = tracker.assign_ids(frame1)[0]["face_id"]
     id2 = tracker.assign_ids(frame2)[0]["face_id"]
     assert id1 == id2
@@ -209,25 +223,19 @@ def test_compute_frontal_angle():
 
 def test_resolve_descriptor_from_payload_landmarks():
     from deskbot_server.service.application.face_snapshot_cache import resolve_descriptor_from_payload
-    from deskbot_server.vision.camera_face_tune import set_face_embedding_enabled
 
     landmarks = _sample_landmarks()
-    set_face_embedding_enabled(False)
-    try:
-        desc = resolve_descriptor_from_payload({"landmarks": landmarks})
-    finally:
-        set_face_embedding_enabled(None)
+    desc = resolve_descriptor_from_payload({"landmarks": landmarks})
     assert desc is not None
     assert len(desc) >= 4
 
 
-def test_deduplicate_overlapping_faces():
-    from deskbot_server.vision.face_identity import deduplicate_overlapping_faces
+def test_resolve_descriptor_from_payload_vector():
+    from deskbot_server.service.application.face_snapshot_cache import resolve_descriptor_from_payload
 
-    good = {"landmarks": _sample_landmarks(), "image_w": 320, "image_h": 240}
-    dup = {"landmarks": _sample_landmarks(nose=(122.0, 101.0)), "image_w": 320, "image_h": 240}
-    out = deduplicate_overlapping_faces([good, dup])
-    assert len(out) == 1
+    emb = [0.01] * 512
+    desc = resolve_descriptor_from_payload({"embedding": emb, "descriptor_kind": "embedding"})
+    assert desc == emb
 
 
 def test_face_descriptor_similarity():

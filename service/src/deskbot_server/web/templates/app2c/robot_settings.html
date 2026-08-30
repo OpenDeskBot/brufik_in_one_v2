@@ -173,7 +173,7 @@
           测试
         </button>
       </label>
-      <!-- 音色设置：选中 moss 时可选 demo-N；豆包音色由 .env 决定 -->
+      <!-- 音色设置：moss 选 demo-N；豆包选火山音色预设（config 落 doubao_speaker，优先于 .env） -->
       <div v-if="selected.tts==='moss-tts-nano'" class="cap-voice">
         <span class="cap-voice-label">音色</span>
         <select v-model="ttsVoice" :disabled="!ttsVoices.length">
@@ -184,7 +184,10 @@
       </div>
       <div v-else-if="selected.tts==='doubao'" class="cap-voice">
         <span class="cap-voice-label">音色</span>
-        <span class="cap-hint">豆包音色由 .env DOUBAO_TTS_SPEAKER 配置：[[ doubaoSpeaker || '（未配置）' ]]</span>
+        <select v-model="doubaoVoice" :disabled="!doubaoVoiceOptions.length">
+          <option v-for="v in doubaoVoiceOptions" :key="v.id" :value="v.id">[[ v.label ]]（[[ v.id ]]）</option>
+        </select>
+        <small class="cap-hint">应用时随 provider 一起写入 config.yaml（tts.doubao_speaker，优先于 .env）</small>
       </div>
       <div v-if="tts.warning" class="cap-warn">⚠ [[ tts.warning ]]</div>
       <div class="cap-foot">
@@ -197,10 +200,39 @@
       <p class="cap-hint">先点候选行「测试」试听，再「应用」生效；moss-tts-nano 为本地离线合成，
       豆包需要 DOUBAO_TTS_* 环境变量凭证。</p>
     </div>
+
+    <!-- ===== 人脸识别 ===== -->
+    <div class="cap-card">
+      <div class="cap-head">
+        <div class="cap-ico">👤</div>
+        <div><b>人脸识别</b><small>FACE RECOGNITION</small></div>
+      </div>
+      <label v-for="c in face.candidates" :key="c.id" class="cap-opt" :class="{on: selected.face===c.id}">
+        <input type="radio" name="face" :value="c.id" v-model="selected.face">
+        <span class="cap-opt-main">
+          <b>[[ c.name ]]
+            <span v-if="c.requires_service" class="cap-serv" :class="svcOn(c.requires_service)?'on':'off'">
+              ● [[ svcOn(c.requires_service)?'运行中':'未运行' ]]
+            </span>
+          </b>
+          <small>[[ c.description ]]</small>
+        </span>
+      </label>
+      <div v-if="face.warning" class="cap-warn">⚠ [[ face.warning ]]</div>
+      <div class="cap-foot">
+        <span class="cap-cur">当前：<b>[[ curName(face) ]]</b></span>
+        <button type="button" class="btn cap-apply" :disabled="selected.face===null || selected.face===face.current"
+                @click="applyFace">
+          [[ faceBusy ? '保存中…' : '应用' ]]
+        </button>
+      </div>
+      <p class="cap-hint">「无」关闭人脸识别（不检测、不跟踪、不注册档案，推流画面照常）；
+      「独立服务」需 insightface-engine 已安装并运行（多 worker 并行）。</p>
+    </div>
   </div>
 
   <p class="cap-hint" style="margin-top:14px">
-    ASR 为设备级配置（device 表，立即生效）；LLM 为系统默认 + 设备覆盖；TTS 写入
+    ASR 为设备级配置（device 表，立即生效）；LLM 为系统默认 + 设备覆盖；TTS / 人脸识别写入
     <code>config.yaml</code>（重启后保持；YAML 注释不保留）。依赖的外部服务请先在
     <a href="{{ url_for('services.page') }}" style="color:var(--accent)">独立服务管理</a> 中安装并启动。
   </p>
@@ -219,11 +251,11 @@
         </div>
         <div class="rts-field">
           <h4>音色</h4>
-          <select v-if="ttsTest.provider==='moss-tts-nano' && ttsTest.voices.length" v-model="ttsTest.voice">
+          <select v-if="ttsTest.voices.length" v-model="ttsTest.voice">
             <option v-for="v in ttsTest.voices" :key="v.id" :value="v.id">[[ v.id ]] · [[ v.name ]]</option>
           </select>
           <span v-else-if="ttsTest.provider==='moss-tts-nano'" class="rts-hint">音色文件缺失（externals/moss-tts-nano/checkout/assets/demo.jsonl），将使用 demo-1。</span>
-          <span v-else class="rts-hint">豆包音色由 .env DOUBAO_TTS_SPEAKER 配置：[[ ttsTest.doubao_speaker || '（未配置）' ]]</span>
+          <span v-else class="rts-hint">豆包音色预设加载失败，将使用当前配置音色。</span>
         </div>
         <div class="rts-actions">
           <button type="button" class="btn" :disabled="ttsTest.busy" @click="runTtsTest">
@@ -251,14 +283,16 @@ createApp({
   data(){
     return {
       status: null,
-      selected: { asr: null, llm: null, tts: null },
+      selected: { asr: null, llm: null, tts: null, face: null },
       busyLlm: false,
       err: '',
       msg: '',
+      faceBusy: false,      // 应用人脸识别中
       ttsBusy: false,       // 应用 TTS 中
       ttsVoices: [],        // moss 音色列表（[{id, name}]，来自 test-info）
-      ttsVoice: '',         // 卡片上选中的音色（demo-N，随应用写入 config）
-      doubaoSpeaker: '',    // .env DOUBAO_TTS_SPEAKER（展示用）
+      ttsVoice: '',         // 卡片上选中的 moss 音色（demo-N，随应用写入 config）
+      doubaoVoices: [],     // 豆包音色预设列表（[{id, label, resource_id}]，来自 test-info）
+      doubaoVoice: '',      // 卡片上选中的豆包音色（speaker ID，随应用写入 config）
       ttsTest: null,        // 测试对话框状态（null=关闭）
       ttsTestResult: null,  // 最近一次测试结果（{ok, error, elapsed_ms, sample_rate, segments}）
       ttsTestUrl: '',       // 测试音频 data URL（audio_base64 透传）
@@ -279,6 +313,14 @@ createApp({
     ttsDesc(){
       const c = this.tts.candidates.find(x => x.id === this.tts.current);
       return c ? c.description : '';
+    },
+    doubaoVoiceOptions(){
+      // 预设列表 + 当前音色（若为自定义 ID 则置顶展示，保证 select 能显示）
+      const opts = this.doubaoVoices.slice();
+      if(this.doubaoVoice && !opts.find(v => v.id === this.doubaoVoice)){
+        opts.unshift({ id: this.doubaoVoice, label: '当前自定义（' + this.doubaoVoice + '）' });
+      }
+      return opts;
     },
   },
   methods:{
@@ -307,15 +349,17 @@ createApp({
         if(this.selected.asr === null) this.selected.asr = this.asr.current;
         if(this.selected.llm === null && this.llm.current !== 'device') this.selected.llm = this.llm.current;
         if(this.selected.tts === null) this.selected.tts = this.tts.current;
+        if(this.selected.face === null) this.selected.face = this.face.current;
       }catch(e){ this.err = '加载失败：' + e.message; }
     },
     async loadTtsMeta(){
-      // 音色列表 / 默认音色 / 豆包 speaker：一次拉取，供卡片音色选择器与测试对话框共用
+      // 音色列表 / 默认音色：一次拉取，供卡片音色选择器与测试对话框共用
       try{
         const d = await this.api('/api/robot-settings/tts/test-info');
         this.ttsVoices = d.voices || [];
         if(d.demo_id) this.ttsVoice = d.demo_id;
-        this.doubaoSpeaker = d.doubao_speaker || '';
+        this.doubaoVoices = d.doubao_voices || [];
+        if(d.doubao_speaker) this.doubaoVoice = d.doubao_speaker;
       }catch(e){ /* 音色加载失败不阻塞页面 */ }
     },
     async applyAsr(){
@@ -365,20 +409,39 @@ createApp({
       this.err = ''; this.msg = '';
       this.ttsBusy = true;
       try{
+        const isMoss = this.selected.tts === 'moss-tts-nano';
+        const voice = isMoss ? this.ttsVoice : this.doubaoVoice;
         const body = { provider: this.selected.tts };
-        if(this.selected.tts === 'moss-tts-nano' && this.ttsVoice) body.demo_id = this.ttsVoice;
+        if(voice) body.voice_id = voice;
         const d = await this.api('/api/robot-settings/tts', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
         this.status = d;
         this.msg = 'TTS 已切换为「' + this.curName(this.tts) + '」并生效'
-          + (this.selected.tts === 'moss-tts-nano' && this.ttsVoice ? '（音色 ' + this.ttsVoice + '）' : '');
+          + (voice ? '（音色 ' + voice + '）' : '');
         if(d.capabilities && d.capabilities.tts.warning) this.err = d.capabilities.tts.warning;
       }catch(e){
         this.err = '切换失败：' + e.message;
         await this.load();
       }finally{ this.ttsBusy = false; }
+    },
+    async applyFace(){
+      if(this.selected.face === null || this.faceBusy) return;
+      this.err = ''; this.msg = '';
+      this.faceBusy = true;
+      try{
+        const d = await this.api('/api/robot-settings/face', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: this.selected.face }),
+        });
+        this.status = d;
+        this.msg = '人脸识别已设为「' + this.curName(this.face) + '」并生效';
+        if(d.capabilities && d.capabilities.face.warning) this.err = d.capabilities.face.warning;
+      }catch(e){
+        this.err = '切换失败：' + e.message;
+        await this.load();
+      }finally{ this.faceBusy = false; }
     },
     async openTtsTest(provider){
       provider = provider || this.selected.tts;
@@ -387,9 +450,8 @@ createApp({
         open: true,
         provider: provider,
         text: '你好，这是语音合成测试。',
-        voice: this.ttsVoice,
+        voice: provider === 'moss-tts-nano' ? this.ttsVoice : this.doubaoVoice,
         voices: [],
-        doubao_speaker: this.doubaoSpeaker,
         busy: false,
         err: '',
       };
@@ -398,10 +460,14 @@ createApp({
       try{
         const d = await this.api('/api/robot-settings/tts/test-info');
         if(d.text) this.ttsTest.text = d.text;
-        this.ttsTest.voices = d.voices || [];
-        if(!this.ttsTest.voice && d.demo_id) this.ttsTest.voice = d.demo_id;
+        if(provider === 'moss-tts-nano'){
+          this.ttsTest.voices = d.voices || [];
+          if(!this.ttsTest.voice && d.demo_id) this.ttsTest.voice = d.demo_id;
+        }else{
+          this.ttsTest.voices = (d.doubao_voices || []).map(v => ({ id: v.id, name: v.label }));
+          if(!this.ttsTest.voice && d.doubao_speaker) this.ttsTest.voice = d.doubao_speaker;
+        }
         if(!this.ttsTest.voice && this.ttsTest.voices.length) this.ttsTest.voice = this.ttsTest.voices[0].id;
-        this.ttsTest.doubao_speaker = d.doubao_speaker || this.ttsTest.doubao_speaker;
       }catch(e){ this.ttsTest.err = '测试信息加载失败：' + e.message; }
     },
     closeTtsTest(){ this.ttsTest = null; this.ttsTestResult = null; this.ttsTestUrl = ''; },
@@ -411,7 +477,7 @@ createApp({
       t.busy = true; t.err = ''; this.ttsTestResult = null; this.ttsTestUrl = '';
       try{
         const body = { provider: t.provider, text: t.text };
-        if(t.provider === 'moss-tts-nano' && t.voice) body.demo_id = t.voice;
+        if(t.voice) body.voice_id = t.voice;
         const d = await this.api('/api/robot-settings/tts/test', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),

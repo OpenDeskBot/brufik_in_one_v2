@@ -10,7 +10,6 @@ from typing import Any
 
 from deskbot_server.vision.face_identity import (
     compute_face_descriptor,
-    descriptor_from_jpeg_base64,
     is_embedding_vector,
 )
 
@@ -84,30 +83,21 @@ def list_recognized_faces(device_id: str, *, limit: int = 5) -> list[dict[str, A
 
 
 def resolve_descriptor_from_payload(payload: dict[str, Any]) -> list[float] | None:
-    """从注册请求提取 embedding：优先 payload 向量，否则 ``jpeg_base64`` + landmarks。"""
-    from deskbot_server.vision.camera_face_tune import get_face_embedding_enabled
+    """从注册请求提取 descriptor：优先 payload 向量（embedding 或几何），否则 landmarks 几何特征。
 
+    主服务不推理（外部服务 /detect 已算好 embedding），jpeg 现场算分支已移除——
+    注册 payload 来自快照（自带 embedding）；无向量时用 landmarks 几何特征兜底。
+    """
     landmarks = payload.get("landmarks") if isinstance(payload.get("landmarks"), list) else []
-    embedding_enabled = get_face_embedding_enabled()
-
     for key in ("embedding", "face_descriptor", "descriptor"):
         raw_desc = payload.get(key)
         if isinstance(raw_desc, list) and len(raw_desc) >= 4:
             try:
                 vec = [float(x) for x in raw_desc]
-                if is_embedding_vector(vec):
-                    return vec
-                if not embedding_enabled:
+                if is_embedding_vector(vec) or len(vec) >= 4:
                     return vec
             except (TypeError, ValueError):
                 pass
-
-    jpeg_b64 = payload.get("jpeg_base64") or payload.get("frame_jpeg_base64")
-    if embedding_enabled and landmarks and isinstance(jpeg_b64, str) and jpeg_b64.strip():
-        emb = descriptor_from_jpeg_base64(jpeg_b64, landmarks)
-        if emb is not None:
-            return emb
-
-    if landmarks and not embedding_enabled:
+    if landmarks:
         return compute_face_descriptor(landmarks)
     return None

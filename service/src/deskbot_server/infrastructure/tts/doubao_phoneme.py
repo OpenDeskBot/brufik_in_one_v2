@@ -22,7 +22,7 @@ class DoubaoPhonemeTtsAdapter:
             sr = int(self._settings.tts.sample_rate or 24000)
             return sr, []
 
-        cfg = load_doubao_tts_config()
+        cfg = load_doubao_tts_config(self._settings.tts.extra)
         result = await synthesize_doubao_tts(clean, cfg)
         pcm = bytes(result.pcm or b"")
         sr = int(result.sample_rate or cfg.sample_rate or 24000)

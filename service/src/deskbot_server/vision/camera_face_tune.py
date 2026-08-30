@@ -12,7 +12,6 @@ _eye_yaw_range_deg: float | None = None
 _horizontal_fov_deg: float | None = None
 _frontal_angle_threshold_deg: float | None = None
 _identity_similarity_threshold: float | None = None
-_face_embedding_enabled: bool | None = None
 
 
 def get_frontal_threshold(default: float = 0.4) -> float:
@@ -64,13 +63,8 @@ def apply_camera_face_tune(cfg: dict) -> None:
     set_eye_yaw_range_deg(float(cfg.get("eye_yaw_range_deg", 50.0)))
     set_horizontal_fov_deg(float(cfg.get("horizontal_fov_deg", 120.0)))
     set_frontal_angle_threshold_deg(float(cfg.get("frontal_angle_threshold_deg", 15.0)))
-    fe = cfg.get("face_embedding_enabled")
-    if fe is None:
-        set_face_embedding_enabled(True)
-    else:
-        set_face_embedding_enabled(bool(fe))
-    ist_default = 0.40 if get_face_embedding_enabled() else 0.82
-    set_identity_similarity_threshold(float(cfg.get("identity_similarity_threshold", ist_default)))
+    # 主服务不推理 embedding（外部服务自带），阈值默认按 embedding 语义 0.40
+    set_identity_similarity_threshold(float(cfg.get("identity_similarity_threshold", 0.40)))
 
 
 def set_gaze_yaw_threshold_deg(value: float | None) -> None:
@@ -121,16 +115,3 @@ def set_identity_similarity_threshold(value: float | None) -> None:
     global _identity_similarity_threshold
     with _lock:
         _identity_similarity_threshold = None if value is None else float(value)
-
-
-def get_face_embedding_enabled(default: bool = True) -> bool:
-    with _lock:
-        if _face_embedding_enabled is not None:
-            return bool(_face_embedding_enabled)
-        return bool(default)
-
-
-def set_face_embedding_enabled(value: bool | None) -> None:
-    global _face_embedding_enabled
-    with _lock:
-        _face_embedding_enabled = None if value is None else bool(value)

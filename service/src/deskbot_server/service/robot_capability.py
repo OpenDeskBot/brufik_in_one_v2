@@ -17,6 +17,7 @@ import copy
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,27 @@ from deskbot_server.config import load_config, save_config
 from deskbot_server.controller.runtime import get_runtime
 from deskbot_server.dao.device_mapper import set_asr_provider
 from deskbot_server.dao.llm_config_store import get_active_llm_model, set_active_llm_model
+from deskbot_server.infrastructure.asr.audio_norm import (
+    DEFAULT_PCM_SAMPLE_RATE,
+    normalize_test_audio,
+)
+from deskbot_server.infrastructure.asr.doubao import (
+    DoubaoAsrConfig,
+    load_doubao_asr_config,
+    transcribe_doubao_detailed,
+)
+from deskbot_server.infrastructure.asr.env_store import (
+    _is_masked_secret,
+    _mask_secret,
+    load_doubao_asr_env,
+    save_doubao_asr_env,
+)
+from deskbot_server.infrastructure.asr.funasr_adapter import TRANSCRIBE_TIMEOUT_S
+from deskbot_server.infrastructure.asr.protocol import (
+    AsrProtocolError,
+    extract_error,
+    parse_transcribe_response,
+)
 from deskbot_server.infrastructure.asr.resolve import resolve_asr_provider
 from deskbot_server.infrastructure.llm.env_store import clear_llm_env
 from deskbot_server.infrastructure.llm.runtime import (
@@ -37,7 +59,9 @@ from deskbot_server.infrastructure.llm.runtime import (
     resolve_system_llm_config,
 )
 from deskbot_server.infrastructure.tts.factory import build_tts_adapter
+from deskbot_server.infrastructure.tts.speakers import list_doubao_tts_consumer_speaker_presets
 from deskbot_server.model.settings import AppSettings
+from deskbot_server.service.camera_face_service import CameraFaceService, build_camera_face_runtime
 from deskbot_server.service.tts_service import TtsService
 from deskbot_server.utils.audio import pcm_to_wav_bytes
 
@@ -54,6 +78,10 @@ LLM_ENGINE_MODEL = "cactus-needle-2"
 
 # 页面提示用环境变量清单（存在即表示 config.yaml 被覆盖；ASR 已设备级化，不在其中）
 ENV_OVERRIDE_KEYS = ("TTS_PROVIDER", "LLM_PROTOCOL", "LLM_MODEL", "LLM_BASE_URL")
+
+# ASR 测试默认音频样本（与 external/manager.DEFAULT_ASR_TEST_AUDIO 同路径）
+DEFAULT_ASR_TEST_AUDIO = SERVICE_ROOT / "data" / "test" / "asr.wav"
+DOUBAO_ASR_FIELDS = ("app_id", "access_token", "cluster", "url", "uid", "workflow")
 
 
 class CapabilityError(RuntimeError):
@@ -103,8 +131,17 @@ TTS_CANDIDATES = [
     ),
     CapabilityCandidate("doubao", "豆包语音合成", "火山云端 TTS；需要 DOUBAO_TTS_* 环境变量凭证"),
 ]
+FACE_CANDIDATES = [
+    CapabilityCandidate("none", "不识别", "关闭人脸识别：不检测人脸、不跟踪、不注册档案（推流画面照常）"),
+    CapabilityCandidate(
+        "insightface",
+        "独立服务 insightface",
+        "InsightFace + MediaPipe 独立进程（HTTP 9103，多 worker 并行），需先安装并启动该服务",
+        requires_service="insightface-engine",
+    ),
+]
 
-_CANDIDATES = {"asr": ASR_CANDIDATES, "llm": LLM_CANDIDATES, "tts": TTS_CANDIDATES}
+_CANDIDATES = {"asr": ASR_CANDIDATES, "llm": LLM_CANDIDATES, "tts": TTS_CANDIDATES, "face": FACE_CANDIDATES}
 
 
 def _candidate(cap: str, provider: str) -> CapabilityCandidate:
@@ -119,8 +156,9 @@ class RobotCapabilityService:
 
     def __init__(self, config_path: str | Path | None = None) -> None:
         self._config_path = config_path
-        # TTS 切换仍需锁（config 落盘 + adapter 重建）；ASR 为设备表写入，无需锁
+        # TTS/人脸切换仍需锁（config 落盘 + 重建）；ASR 为设备表写入，无需锁
         self._tts_lock = asyncio.Lock()
+        self._face_lock = threading.Lock()  # apply_face 为同步方法，用线程锁
 
     # ---------- 状态读取 ----------
 
@@ -135,6 +173,7 @@ class RobotCapabilityService:
                 "asr": self._asr_status(device_id),
                 "llm": self._llm_status(cfg, device_id),
                 "tts": self._tts_status(cfg),
+                "face": self._face_status(cfg),
             },
             "services": self._service_snapshots(),
             "env_overrides": {key: bool(os.environ.get(key)) for key in ENV_OVERRIDE_KEYS},
@@ -154,6 +193,14 @@ class RobotCapabilityService:
         if current == "moss-tts-nano" and not self._service_running("moss-tts-nano"):
             warning = "moss-tts-nano 未在运行，语音合成将失败；请先在「独立服务管理」中启动"
         return {"current": current, "candidates": [c.to_dict() for c in TTS_CANDIDATES], "warning": warning}
+
+    def _face_status(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        """人脸识别为 config.yaml 真源（camera_face.mode: none | insightface）。"""
+        current = str((cfg.get("camera_face") or {}).get("mode") or "insightface")
+        warning = None
+        if current == "insightface" and not self._service_running("insightface-engine"):
+            warning = "insightface-engine 未在运行，人脸识别将失败；请先在「独立服务管理」中启动"
+        return {"current": current, "candidates": [c.to_dict() for c in FACE_CANDIDATES], "warning": warning}
 
     def _llm_status(self, cfg: dict[str, Any], device_id: str | None) -> dict[str, Any]:
         override = None
@@ -249,15 +296,198 @@ class RobotCapabilityService:
         set_asr_provider(device_id, "funasr")
         return self.get_status(device_id)
 
+    # ---------- ASR 配置 / 测试（对话框） ----------
+
+    def asr_config_info(self) -> dict[str, Any]:
+        """ASR 配置对话框元信息：默认音频样本、funasr 端点、豆包 env 当前值（token 掩码）。"""
+        audio: dict[str, Any] = {"path": "data/test/asr.wav", "exists": False}
+        if DEFAULT_ASR_TEST_AUDIO.is_file():
+            audio = {
+                "path": "data/test/asr.wav",
+                "exists": True,
+                "size": DEFAULT_ASR_TEST_AUDIO.stat().st_size,
+            }
+            try:
+                import wave
+
+                with wave.open(str(DEFAULT_ASR_TEST_AUDIO), "rb") as wav:
+                    audio["sample_rate"] = wav.getframerate()
+                    audio["channels"] = wav.getnchannels()
+                    audio["duration_s"] = round(wav.getnframes() / max(1, wav.getframerate()), 2)
+            except Exception:
+                pass  # 元信息展示失败不阻塞测试
+        env = load_doubao_asr_env()
+        cfg = self._load_cfg()
+        return {
+            "default_audio": audio,
+            "funasr_url": str((cfg.get("asr") or {}).get("external_url") or "http://127.0.0.1:9102"),
+            "doubao": {
+                "app_id": env["DOUBAO_ASR_APP_ID"],
+                "access_token": _mask_secret(env["DOUBAO_ASR_ACCESS_TOKEN"]),
+                "access_token_set": bool((env["DOUBAO_ASR_ACCESS_TOKEN"] or "").strip()),
+                "cluster": env["DOUBAO_ASR_CLUSTER"],
+                "url": env["DOUBAO_ASR_URL"],
+                "uid": env["DOUBAO_ASR_UID"],
+                "workflow": env["DOUBAO_ASR_WORKFLOW"],
+            },
+        }
+
+    def save_doubao_asr_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """保存豆包 ASR 配置到 .env（掩码/空值不覆盖已有），返回最新 info。"""
+        save_doubao_asr_env({k: str(payload.get(k) or "") for k in DOUBAO_ASR_FIELDS})
+        logger.info("[robot-settings] 豆包 ASR 配置已保存到 .env")
+        return self.asr_config_info()
+
+    async def asr_test(
+        self,
+        provider: str,
+        audio_bytes: bytes | None,
+        *,
+        use_default: bool = False,
+        doubao_overrides: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """按指定 provider 测试转写（不改配置、不落盘）。
+
+        音频源：上传 bytes > 默认样本（data/test/asr.wav）；都缺 → CapabilityError。
+        归一化为 16k 单声道 PCM；funasr 直连 external_url 抓 HTTP 状态码，
+        doubao 用覆盖字段（空/掩码回落 env）构造临时配置。
+        返回 ``{ok:true, success, provider, http_code, elapsed_ms, text, error, business_code,
+        used_default, sample_rate}``——失败也走 200 + success:false，便于前端渲染详情。
+        """
+        _candidate("asr", provider)
+        raw = audio_bytes
+        used_default = False
+        if not raw:
+            if not use_default or not DEFAULT_ASR_TEST_AUDIO.is_file():
+                raise CapabilityError("未提供测试音频：请选择本地音频文件或使用默认音频")
+            raw = DEFAULT_ASR_TEST_AUDIO.read_bytes()
+            used_default = True
+        try:
+            pcm, sample_rate = normalize_test_audio(raw)
+        except ValueError as exc:
+            raise CapabilityError(str(exc)) from exc
+
+        t0 = time.monotonic()
+        if provider == "funasr":
+            result = await self._funasr_test(pcm, sample_rate)
+        else:
+            result = await self._doubao_test(pcm, sample_rate, doubao_overrides or {})
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        result.update(
+            {
+                "ok": True,
+                "provider": provider,
+                "elapsed_ms": elapsed_ms,
+                "used_default": used_default,
+                "sample_rate": DEFAULT_PCM_SAMPLE_RATE,
+            }
+        )
+        logger.info(
+            "[robot-settings] ASR 测试 provider=%s success=%s http_code=%s elapsed_ms=%d audio_bytes=%d",
+            provider,
+            result.get("success"),
+            result.get("http_code"),
+            elapsed_ms,
+            len(raw),
+        )
+        return result
+
+    async def _funasr_test(self, pcm: bytes, sample_rate: int) -> dict[str, Any]:
+        """直连 funasr 引擎 /transcribe，捕获 HTTP 状态码与协议错误。"""
+        import urllib.error
+        import urllib.request
+
+        settings = AppSettings.from_config(self._load_cfg())
+        url = f"{settings.asr.external_url.rstrip('/')}/transcribe"
+        req = urllib.request.Request(
+            url,
+            data=pcm,
+            method="POST",
+            headers={"Content-Type": "application/octet-stream", "X-Sample-Rate": str(sample_rate)},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=TRANSCRIBE_TIMEOUT_S) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+                http_code = resp.getcode()
+        except urllib.error.HTTPError as exc:  # HTTPError 是 URLError 子类，须在前
+            try:
+                payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+            except Exception:
+                payload = None
+            http_code = exc.code
+        except (urllib.error.URLError, OSError) as exc:
+            return {
+                "success": False,
+                "http_code": 0,
+                "text": "",
+                "error": f"funasr 引擎不可达: {exc.reason if isinstance(exc, urllib.error.URLError) else exc}",
+                "business_code": None,
+            }
+        err = extract_error(payload) if isinstance(payload, dict) else None
+        if err:
+            code, message = err
+            return {"success": False, "http_code": http_code, "text": "", "error": message, "business_code": code}
+        try:
+            parsed = parse_transcribe_response(payload)
+        except AsrProtocolError as exc:
+            return {"success": False, "http_code": http_code, "text": "", "error": exc.message, "business_code": exc.code}
+        return {"success": True, "http_code": http_code, "text": parsed["text"], "error": "", "business_code": 0}
+
+    async def _doubao_test(
+        self, pcm: bytes, sample_rate: int, overrides: dict[str, str]
+    ) -> dict[str, Any]:
+        """用覆盖字段（空/掩码回落 env）构造临时配置测试豆包，错误进结果不抛。"""
+        env = load_doubao_asr_env()
+
+        def _pick(field: str) -> str:
+            val = (overrides.get(field) or "").strip()
+            if field == "access_token" and _is_masked_secret(val):
+                val = ""
+            if not val:
+                val = (env.get("DOUBAO_ASR_" + field.upper()) or "").strip()
+            return val
+
+        cfg = DoubaoAsrConfig(
+            app_id=_pick("app_id"),
+            access_token=_pick("access_token"),
+            cluster=_pick("cluster"),
+            url=_pick("url"),
+            uid=_pick("uid"),
+            workflow=_pick("workflow"),
+        )
+        try:
+            cfg.validate()
+        except RuntimeError as exc:
+            return {"success": False, "http_code": 0, "text": "", "error": str(exc), "business_code": None}
+        try:
+            detail = await transcribe_doubao_detailed(pcm, sample_rate, cfg)
+        except RuntimeError as exc:  # 配置缺失 / 超时上限
+            return {"success": False, "http_code": 0, "text": "", "error": str(exc), "business_code": None}
+        ok = detail["http_code"] == 200 and detail["business_code"] == 0 and bool(detail["text"])
+        return {
+            "success": ok,
+            "http_code": detail["http_code"],
+            "text": detail["text"] if ok else "",
+            "error": detail["message"] if not ok else "",
+            "business_code": detail["business_code"],
+        }
+
     # ---------- TTS 切换 ----------
 
-    async def apply_tts(self, provider: str, device_id: str | None = None, demo_id: str | None = None) -> dict[str, Any]:
+    async def apply_tts(
+        self, provider: str, device_id: str | None = None, voice_id: str | None = None
+    ) -> dict[str, Any]:
+        """切换 TTS provider，可选同时设置音色。
+
+        voice_id 按 provider 落不同键：moss-tts-nano → ``tts.demo_id``（demo-N 行序）；
+        doubao → ``tts.doubao_speaker``（火山音色 ID）。不带 voice_id 保留旧值。
+        """
         _candidate("tts", provider)
         async with self._tts_lock:
             cfg = self._load_cfg()
             old = str((cfg.get("tts") or {}).get("provider") or "moss-tts-nano")
-            demo_id = (demo_id or "").strip() or None
-            if provider == old and demo_id is None:
+            voice_id = (voice_id or "").strip() or None
+            if provider == old and voice_id is None:
                 return self.get_status(device_id)  # 幂等
             if os.environ.get("TTS_PROVIDER"):
                 raise CapabilityError(
@@ -266,9 +496,11 @@ class RobotCapabilityService:
             new_cfg = copy.deepcopy(cfg)
             tts = new_cfg.setdefault("tts", {})
             tts["provider"] = provider
-            if demo_id:
-                # 音色仅 moss-tts-nano 有意义（demo-N，行序）；切 doubao 不动 demo_id
-                tts["demo_id"] = demo_id
+            if voice_id:
+                if provider == "moss-tts-nano":
+                    tts["demo_id"] = voice_id
+                else:  # doubao
+                    tts["doubao_speaker"] = voice_id
             save_config(new_cfg, self._config_path)
             try:
                 settings = AppSettings.from_config(new_cfg)
@@ -283,11 +515,40 @@ class RobotCapabilityService:
             logger.info("[robot-settings] TTS 切换生效 provider=%s", provider)
             return self.get_status(device_id)
 
+    # ---------- 人脸识别 ----------
+
+    def apply_face(self, mode: str) -> dict[str, Any]:
+        """切换人脸识别能力：none=不识别；insightface=外部独立服务（config.yaml 真源）。
+
+        写 config → 重建 CameraFaceRuntime 并 re-configure CameraFaceService 单例；
+        重建失败回滚 config，单例保持旧能力。
+        """
+        _candidate("face", mode)
+        with self._face_lock:
+            cfg = self._load_cfg()
+            old = str((cfg.get("camera_face") or {}).get("mode") or "insightface")
+            if mode == old:
+                return self.get_status(None)  # 幂等
+            new_cfg = copy.deepcopy(cfg)
+            new_cfg.setdefault("camera_face", {})["mode"] = mode
+            save_config(new_cfg, self._config_path)
+            try:
+                runtime = build_camera_face_runtime(new_cfg)
+                CameraFaceService().configure(runtime)
+            except Exception as exc:
+                try:
+                    save_config(cfg, self._config_path)
+                except Exception:
+                    logger.exception("[robot-settings] 回滚 config 失败")
+                raise CapabilityError(f"切换失败，已回滚（仍为 {old}）：{exc}") from exc
+            logger.info("[robot-settings] 人脸识别切换生效 mode=%s", mode)
+            return self.get_status(None)
+
     # ---------- TTS 测试（不落盘、不 rebind 单例） ----------
 
     def tts_test_info(self) -> dict[str, Any]:
         """测试对话框元信息：默认文本、moss 音色列表（demo.jsonl 行序 demo-N）、
-        当前 config 默认 demo_id、豆包 .env 音色名。"""
+        豆包音色预设列表（data/doubao_tts_speakers.json 消费级）与当前音色。"""
         voices: list[dict[str, str]] = []
         try:
             if MOSS_VOICES_FILE.is_file():
@@ -303,20 +564,27 @@ class RobotCapabilityService:
         except Exception:
             logger.exception("[robot-settings] 读取 moss 音色文件失败")
         cfg = self._load_cfg()
+        tts = cfg.get("tts") or {}
+        doubao_speaker = str(tts.get("doubao_speaker") or os.environ.get("DOUBAO_TTS_SPEAKER") or "").strip()
+        doubao_voices = [
+            {"id": p["id"], "label": p["label"], "resource_id": p.get("resource_id") or ""}
+            for p in list_doubao_tts_consumer_speaker_presets()
+        ]
         return {
             "text": TTS_TEST_DEFAULT_TEXT,
             "voices": voices,
-            "demo_id": str((cfg.get("tts") or {}).get("demo_id") or "demo-1"),
-            "doubao_speaker": str(os.environ.get("DOUBAO_TTS_SPEAKER") or "").strip(),
+            "demo_id": str(tts.get("demo_id") or "demo-1"),
+            "doubao_voices": doubao_voices,
+            "doubao_speaker": doubao_speaker,
         }
 
     async def tts_test(
-        self, provider: str, text: str, demo_id: str | None = None
+        self, provider: str, text: str, voice_id: str | None = None
     ) -> dict[str, Any]:
         """按指定 provider 合成测试（临时 adapter，不改 config、不 rebind 单例）。
 
-        返回 WAV base64 + 采样率 + 音素分片概要；moss 用 demo_id 选音色，
-        doubao 音色由 .env DOUBAO_TTS_SPEAKER 决定（demo_id 忽略）。
+        返回 WAV base64 + 采样率 + 音素分片概要；voice_id 语义同 apply_tts：
+        moss → demo_id，doubao → doubao_speaker。
         """
         _candidate("tts", provider)
         text = (text or "").strip()
@@ -325,8 +593,11 @@ class RobotCapabilityService:
         cfg = copy.deepcopy(self._load_cfg())
         tts = cfg.setdefault("tts", {})
         tts["provider"] = provider
-        if provider == "moss-tts-nano" and (demo_id or "").strip():
-            tts["demo_id"] = (demo_id or "").strip()
+        if (voice_id or "").strip():
+            if provider == "moss-tts-nano":
+                tts["demo_id"] = (voice_id or "").strip()
+            else:  # doubao
+                tts["doubao_speaker"] = (voice_id or "").strip()
         settings = AppSettings.from_config(cfg)
         adapter = build_tts_adapter(settings)
         t0 = time.monotonic()
@@ -337,9 +608,9 @@ class RobotCapabilityService:
             raise CapabilityError(f"{provider} 合成无 PCM 输出")
         wav = pcm_to_wav_bytes(pcm, sr)
         logger.info(
-            "[robot-settings] TTS 测试 provider=%s demo_id=%s elapsed_ms=%d pcm=%d text=%r",
+            "[robot-settings] TTS 测试 provider=%s voice_id=%s elapsed_ms=%d pcm=%d text=%r",
             provider,
-            demo_id,
+            voice_id,
             elapsed_ms,
             len(pcm),
             text[:40],

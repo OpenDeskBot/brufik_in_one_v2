@@ -517,6 +517,9 @@ def test_tts_test_info(tmp_path, monkeypatch):
     assert info["voices"][0]["name"]
     assert info["demo_id"] == "demo-1"
     assert info["doubao_speaker"] == ""
+    assert info["doubao_voices"], "豆包音色预设应从 data/doubao_tts_speakers.json 枚举"
+    assert info["doubao_voices"][0]["id"]
+    assert info["doubao_voices"][0]["label"]
 
 
 def test_tts_test_moss_synthesize(fake_tts_engine, tmp_path):
@@ -536,7 +539,7 @@ def test_tts_test_moss_synthesize(fake_tts_engine, tmp_path):
         encoding="utf-8",
     )
     svc = RobotCapabilityService(config_path=p)
-    result = asyncio.run(svc.tts_test("moss-tts-nano", "你好，测试", demo_id="demo-3"))
+    result = asyncio.run(svc.tts_test("moss-tts-nano", "你好，测试", voice_id="demo-3"))
     assert result["provider"] == "moss-tts-nano"
     assert result["sample_rate"] == 48000
     assert result["wav_base64"]
@@ -551,10 +554,21 @@ def test_apply_tts_writes_provider_and_demo_id(tmp_path, monkeypatch):
     p = tmp_path / "config.yaml"
     p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
     svc = RobotCapabilityService(config_path=p)
-    asyncio.run(svc.apply_tts("moss-tts-nano", demo_id="demo-3"))
+    asyncio.run(svc.apply_tts("moss-tts-nano", voice_id="demo-3"))
     cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
     assert cfg["tts"]["provider"] == "moss-tts-nano"
     assert cfg["tts"]["demo_id"] == "demo-3"
+
+
+def test_apply_tts_doubao_writes_speaker(tmp_path, monkeypatch):
+    monkeypatch.delenv("TTS_PROVIDER", raising=False)
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    svc = RobotCapabilityService(config_path=p)
+    asyncio.run(svc.apply_tts("doubao", voice_id="zh_female_vv_uranus_bigtts"))
+    cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
+    assert cfg["tts"]["provider"] == "doubao"
+    assert cfg["tts"]["doubao_speaker"] == "zh_female_vv_uranus_bigtts"
 
 
 def test_apply_tts_doubao_keeps_demo_id(tmp_path, monkeypatch):
@@ -587,3 +601,60 @@ def test_tts_test_empty_text(tmp_path):
     svc = RobotCapabilityService(config_path=p)
     with pytest.raises(CapabilityError, match="请输入测试文本"):
         asyncio.run(svc.tts_test("moss-tts-nano", "   "))
+
+
+# ---------- 人脸识别（none / insightface） ----------
+
+
+def _face_svc(tmp_path, monkeypatch):
+    """隔离单例：fake configure（真实 configure 已在主服务运行验证），只验证 config 落盘与状态。"""
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(
+        "deskbot_server.service.robot_capability.CameraFaceService.configure",
+        lambda self, runtime: None,
+    )
+    return RobotCapabilityService(config_path=p)
+
+
+def test_face_status_default_insightface(tmp_path, monkeypatch):
+    svc = _face_svc(tmp_path, monkeypatch)
+    status = svc.get_status(None)
+    face = status["capabilities"]["face"]
+    assert face["current"] == "insightface"
+    assert [c["id"] for c in face["candidates"]] == ["none", "insightface"]
+
+
+def test_apply_face_none_writes_mode(tmp_path, monkeypatch):
+    svc = _face_svc(tmp_path, monkeypatch)
+    status = svc.apply_face("none")
+    cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["camera_face"]["mode"] == "none"
+    assert status["capabilities"]["face"]["current"] == "none"
+
+
+def test_apply_face_insightface_switches_back(tmp_path, monkeypatch):
+    svc = _face_svc(tmp_path, monkeypatch)
+    svc.apply_face("none")
+    status = svc.apply_face("insightface")
+    cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["camera_face"]["mode"] == "insightface"
+    assert status["capabilities"]["face"]["current"] == "insightface"
+
+
+def test_apply_face_idempotent_same_mode(tmp_path, monkeypatch):
+    svc = _face_svc(tmp_path, monkeypatch)
+    status = svc.apply_face("insightface")
+    assert status["capabilities"]["face"]["current"] == "insightface"
+
+
+def test_apply_face_unknown_mode_rejected(tmp_path, monkeypatch):
+    from deskbot_server.service.robot_capability import CapabilityError
+
+    svc = _face_svc(tmp_path, monkeypatch)
+    try:
+        svc.apply_face("bogus")
+    except CapabilityError as exc:
+        assert "未知的 FACE 能力" in str(exc)
+    else:
+        raise AssertionError("expected CapabilityError")

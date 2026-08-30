@@ -33,9 +33,9 @@
 >
 > - **funasr**（v1.1.0 独立化，v1.2.0 主服务 internal 移除）：独立 venv + 模型副本；
 >   主服务已删 funasr.py/model_dir.py，副本为唯一来源
-> - **insightface-engine**（v1.1.0 独立化，主服务 internal 保留为回落）：
->   独立 venv + 模型副本；主服务 `camera_face.provider=http`（默认）经 HTTP 调用，
->   失败自动回落进程内池；`provider=internal` 可切回（见 external_services.md）
+> - **insightface-engine**（v1.1.0 独立化，v1.2.0 主服务 internal 移除，同 funasr 路线）：
+>   独立 venv + 模型副本；主服务 `CameraFaceService.recognize` 只走 HTTP /detect，
+>   进程内推理（进程池/推理模块/venv 依赖）已全部删除（见 external_services.md）
 
 > **insightface-engine 多 worker 并行**（config.yaml `workers`，默认 min(4, CPU 核数)，`--workers` 可覆盖）：
 > uvicorn `--workers` 模式，父进程绑定 socket，每个 worker 是独立进程、各自加载一份

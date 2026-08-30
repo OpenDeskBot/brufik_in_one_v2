@@ -41,8 +41,6 @@ class ServerSettings:
     asr_chat_minimal_device_downlink: bool = False
     send_face_info_to_asr_chat: bool = False
     web_public_host: str = ""
-    # 0 = 启动时按 CPU 核数推导（见 core/concurrency.py）
-    max_concurrent_face_infer: int = 0
 
 
 @dataclass(frozen=True)
@@ -170,7 +168,6 @@ class AppSettings:
                 asr_chat_minimal_device_downlink=minimal,
                 send_face_info_to_asr_chat=face_info and not pb_only,
                 web_public_host=str(srv.get("web_public_host") or ""),
-                max_concurrent_face_infer=int(srv.get("max_concurrent_face_infer", 0)),
             ),
             audio=AudioSettings(
                 input_codec=str(audio.get("input_codec", "opus")),

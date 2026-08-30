@@ -71,8 +71,21 @@ async def api_robot_settings_apply_tts(request: Request, user: RequireUser):
         status = await _svc().apply_tts(
             str(body.get("provider") or ""),
             get_current_device_id(request),
-            demo_id=str(body.get("demo_id") or "").strip() or None,
+            voice_id=str(body.get("voice_id") or "").strip() or None,
         )
+        return jsonify({"ok": True, **status})
+    except CapabilityError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@router.post("/api/robot-settings/face")
+def api_robot_settings_apply_face(request: Request, user: RequireUser):
+    """人脸识别能力切换：none=不识别；insightface=外部独立服务（config.yaml 真源，保存即生效）。"""
+    body = get_json(request) or {}
+    try:
+        status = _svc().apply_face(str(body.get("mode") or ""))
         return jsonify({"ok": True, **status})
     except CapabilityError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -95,7 +108,7 @@ async def api_robot_settings_tts_test(request: Request, user: RequireUser):
         result = await _svc().tts_test(
             str(body.get("provider") or ""),
             str(body.get("text") or ""),
-            demo_id=str(body.get("demo_id") or "").strip() or None,
+            voice_id=str(body.get("voice_id") or "").strip() or None,
         )
         return jsonify({"ok": True, **result})
     except CapabilityError as exc:

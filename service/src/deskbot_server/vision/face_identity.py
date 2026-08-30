@@ -1,15 +1,33 @@
-"""人脸相似性特征与跨帧/跨次 re-id（InsightFace embedding 优先，几何特征回退）。"""
+"""人脸相似性特征纯函数：descriptor 判定 / 几何特征 / 相似度 / EMA / 阈值。
+
+v1.2.0 起主服务不再做人脸推理（只调外部 insightface-engine 的 /detect，
+进程内推理已移除），本模块只保留对「已有 descriptor」的纯函数运算
+（跟踪 / 注册 / 缓存链路用），不依赖任何推理模块：
+- ``is_embedding_vector`` / ``is_legacy_geometric_vector``：descriptor 类型判定
+  （原 face_embedding.py 的函数，随推理移除搬入本模块）
+- ``compute_face_descriptor``：landmarks 几何特征向量（纯数学）
+- ``descriptor_cosine_similarity`` / ``ema_update_descriptor`` / ``match_threshold_for_descriptor``
+
+推理相关（attach / dedup / 现场算 embedding）已随独立化移除——
+外部服务 /detect 返回的 faces 自带 embedding（或几何 descriptor）。
+"""
 
 from __future__ import annotations
 
-import base64
-import io
 import math
 from typing import Any
 
-from deskbot_server.vision.camera_face_tune import get_face_embedding_enabled
-from deskbot_server.vision.face_embedding import is_embedding_vector, is_legacy_geometric_vector
-from deskbot_server.vision.geometry import compute_eye_iris_offsets, eye_centers_from_landmarks, kps5_from_landmarks
+from deskbot_server.vision.geometry import compute_eye_iris_offsets, kps5_from_landmarks
+
+FACE_EMBEDDING_DIM = 512
+
+
+def is_embedding_vector(desc: list[float] | None) -> bool:
+    return isinstance(desc, list) and len(desc) >= 64
+
+
+def is_legacy_geometric_vector(desc: list[float] | None) -> bool:
+    return isinstance(desc, list) and 4 <= len(desc) < 64
 
 
 def compute_face_descriptor(landmarks: list) -> list[float] | None:
@@ -87,17 +105,6 @@ def ema_update_descriptor(prev: list[float] | None, sample: list[float], *, alph
     return [round(x / norm, 6) for x in merged]
 
 
-def descriptor_dim_label(desc: list[float] | None) -> str:
-    if not isinstance(desc, list):
-        return "—"
-    n = len(desc)
-    if is_embedding_vector(desc):
-        return f"embedding/{n}"
-    if is_legacy_geometric_vector(desc):
-        return f"geometry/{n}"
-    return f"vec/{n}"
-
-
 def match_threshold_for_descriptor(
     desc: list[float], *, embedding_threshold: float, geometry_threshold: float
 ) -> float:
@@ -105,192 +112,3 @@ def match_threshold_for_descriptor(
     if is_embedding_vector(desc):
         return max(0.25, min(0.99, float(embedding_threshold)))
     return max(0.75, min(0.99, float(geometry_threshold)))
-
-
-def attach_descriptor(face: dict[str, Any], *, bgr_image: Any = None) -> list[float] | None:
-    """为单张检出脸附加 ``embedding`` / ``face_descriptor``（embedding 或几何）。"""
-    existing = face.get("embedding") or face.get("face_descriptor")
-    if isinstance(existing, list) and existing and bgr_image is None:
-        face["face_descriptor"] = existing
-        face["embedding"] = existing
-        return existing
-
-    landmarks = face.get("landmarks") or []
-    desc: list[float] | None = None
-    kind = "geometry"
-
-    if get_face_embedding_enabled() and bgr_image is not None:
-        from deskbot_server.vision.face_embedding import compute_face_embedding
-
-        desc = compute_face_embedding(bgr_image, landmarks)
-        if desc is not None:
-            kind = "embedding"
-
-    if desc is None:
-        desc = compute_face_descriptor(landmarks)
-        kind = "geometry"
-
-    if desc is not None:
-        face["embedding"] = desc
-        face["face_descriptor"] = desc
-        face["descriptor_kind"] = kind
-    return desc
-
-
-def attach_descriptors_to_faces(faces: list[dict[str, Any]], *, bgr_image: Any = None) -> None:
-    for face in faces or []:
-        if isinstance(face, dict):
-            attach_descriptor(face, bgr_image=bgr_image)
-
-
-def descriptor_from_jpeg_bytes(jpeg_bytes: bytes, landmarks: list) -> list[float] | None:
-    if not get_face_embedding_enabled() or not jpeg_bytes:
-        return None
-    try:
-        import numpy as np
-        from PIL import Image  # type: ignore
-
-        from deskbot_server.vision.face_embedding import compute_face_embedding, rgb_to_bgr
-
-        with Image.open(io.BytesIO(jpeg_bytes)) as im:
-            rgb = np.array(im.convert("RGB"), dtype=np.uint8)
-        return compute_face_embedding(rgb_to_bgr(rgb), landmarks)
-    except Exception:
-        return None
-
-
-def descriptor_from_jpeg_base64(b64: str, landmarks: list) -> list[float] | None:
-    raw = (b64 or "").strip()
-    if not raw:
-        return None
-    if "," in raw:
-        raw = raw.split(",", 1)[1]
-    try:
-        return descriptor_from_jpeg_bytes(base64.b64decode(raw), landmarks)
-    except Exception:
-        return None
-
-
-def _landmarks_bbox(face: dict[str, Any]) -> tuple[float, float, float, float] | None:
-    """返回 (min_x, min_y, max_x, max_y)。"""
-    xs: list[float] = []
-    ys: list[float] = []
-    for p in face.get("landmarks") or []:
-        if not isinstance(p, dict) or "x" not in p or "y" not in p:
-            continue
-        try:
-            xs.append(float(p["x"]))
-            ys.append(float(p["y"]))
-        except (TypeError, ValueError):
-            continue
-    if not xs:
-        return None
-    return min(xs), min(ys), max(xs), max(ys)
-
-
-def _bbox_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
-    ax0, ay0, ax1, ay1 = a
-    bx0, by0, bx1, by1 = b
-    ix0 = max(ax0, bx0)
-    iy0 = max(ay0, by0)
-    ix1 = min(ax1, bx1)
-    iy1 = min(ay1, by1)
-    iw = max(0.0, ix1 - ix0)
-    ih = max(0.0, iy1 - iy0)
-    inter = iw * ih
-    if inter <= 0:
-        return 0.0
-    area_a = max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0)
-    area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
-    union = area_a + area_b - inter
-    if union <= 0:
-        return 0.0
-    return inter / union
-
-
-def _eye_distance(face: dict[str, Any]) -> float | None:
-    left, right = eye_centers_from_landmarks(face.get("landmarks") or [])
-    if not (left and right):
-        return None
-    return math.hypot(right[0] - left[0], right[1] - left[1])
-
-
-def _nose_xy(face: dict[str, Any]) -> tuple[float, float] | None:
-    for p in face.get("landmarks") or []:
-        if isinstance(p, dict) and p.get("name") == "nose":
-            try:
-                return float(p["x"]), float(p["y"])
-            except (TypeError, ValueError, KeyError):
-                return None
-    return None
-
-
-def face_quality_score(face: dict[str, Any]) -> float:
-    from deskbot_server.vision.geometry import compute_face_score
-
-    w = int(face.get("image_w") or 320)
-    h = int(face.get("image_h") or 240)
-    return compute_face_score(face.get("landmarks") or [], image_w=w, image_h=h)
-
-
-def deduplicate_overlapping_faces(
-    faces: list[dict[str, Any]],
-    *,
-    iou_threshold: float = 0.35,
-    descriptor_sim_threshold: float = 0.92,
-    embedding_sim_threshold: float = 0.55,
-    nose_dist_ratio: float = 0.4,
-) -> list[dict[str, Any]]:
-    """去掉同一帧内重叠/重复的检出（MediaPipe 偶发一张脸多个框）。
-
-    按 ``face_quality_score`` 从高到低贪心保留；若与已保留框 IoU 过高、
-    特征余弦相似度过高、或鼻尖距离 < 眼距×ratio，则视为同一张脸并丢弃。
-    """
-    if len(faces) <= 1:
-        return list(faces or [])
-
-    candidates: list[tuple[float, dict[str, Any], tuple[float, float, float, float], list[float]]] = []
-    for face in faces:
-        if not isinstance(face, dict):
-            continue
-        bbox = _landmarks_bbox(face)
-        if bbox is None:
-            continue
-        desc = attach_descriptor(face) or []
-        q = face_quality_score(face)
-        candidates.append((q, face, bbox, desc))
-
-    if not candidates:
-        return []
-
-    candidates.sort(key=lambda x: -x[0])
-
-    kept: list[dict[str, Any]] = []
-    kept_meta: list[
-        tuple[tuple[float, float, float, float], list[float], tuple[float, float] | None, float | None]
-    ] = []
-
-    for q, face, bbox, desc in candidates:
-        is_dup = False
-        nose = _nose_xy(face)
-        eye_d = _eye_distance(face)
-        for kbbox, kdesc, knose, keye in kept_meta:
-            if _bbox_iou(bbox, kbbox) >= iou_threshold:
-                is_dup = True
-                break
-            if desc and kdesc:
-                sim_thr = embedding_sim_threshold if is_embedding_vector(desc) else descriptor_sim_threshold
-                if descriptor_cosine_similarity(desc, kdesc) >= sim_thr:
-                    is_dup = True
-                    break
-            if nose and knose and eye_d and keye:
-                ref = min(eye_d, keye) * nose_dist_ratio
-                if math.hypot(nose[0] - knose[0], nose[1] - knose[1]) < ref:
-                    is_dup = True
-                    break
-        if is_dup:
-            continue
-        kept.append(face)
-        kept_meta.append((bbox, desc, nose, eye_d))
-
-    return kept

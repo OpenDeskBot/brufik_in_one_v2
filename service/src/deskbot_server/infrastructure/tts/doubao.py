@@ -120,9 +120,15 @@ def _resolve_tts_api_key() -> str:
     return ""
 
 
-def load_doubao_tts_config() -> DoubaoTtsConfig:
+def load_doubao_tts_config(tts_cfg: dict[str, Any] | None = None) -> DoubaoTtsConfig:
+    """读取豆包 TTS 配置。
+
+    speaker 优先级：``tts_cfg.doubao_speaker``（机器人设置页写入 config.yaml）
+    > 环境变量 ``DOUBAO_TTS_SPEAKER`` > 内置默认。
+    """
     load_dotenv()
-    speaker = (os.environ.get("DOUBAO_TTS_SPEAKER") or DEFAULT_SPEAKER).strip()
+    cfg_speaker = str((tts_cfg or {}).get("doubao_speaker") or "").strip()
+    speaker = cfg_speaker or (os.environ.get("DOUBAO_TTS_SPEAKER") or DEFAULT_SPEAKER).strip()
     resource_id = (os.environ.get("DOUBAO_TTS_RESOURCE_ID") or DEFAULT_RESOURCE_ID).strip()
     model = (os.environ.get("DOUBAO_TTS_MODEL") or DEFAULT_MODEL).strip()
     from deskbot_server.infrastructure.tts.speakers import find_doubao_tts_speaker_preset, suggest_resource_id

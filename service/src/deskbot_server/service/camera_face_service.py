@@ -1,51 +1,41 @@
-"""摄像头人脸服务：人脸识别（HTTP 外部服务或进程内池）+ 视频流订阅 + 跟踪/推流。"""
+"""摄像头人脸服务：推理走外部 insightface-engine（HTTP）+ 视频流订阅 + 跟踪/推流。
+
+v1.1.0 起主服务不再做进程内人脸推理（进程池与推理模块已移除）——
+`recognize` 只经 `FrHttpClient` 调外部服务 /detect；失败抛异常由调用方降级
+（跟踪/推流等纯业务链路保留在进程内）。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
-
 from deskbot_server.service.application.face_tracker import FaceTracker
 from deskbot_server.utils.singleton import SingletonMeta
-from deskbot_server.vision.undistort import CameraUndistorter, try_build_undistorter
 
 logger = logging.getLogger("deskbot-server")
 
 VideoStreamCallback = Callable[[str, bytes, dict[str, Any]], Awaitable[None]]
 
-# ---------- 多进程池（模块级，供 pickle）----------
-_pool: ProcessPoolExecutor | None = None
-_worker_detector = None
-_worker_opts_key: tuple | None = None
-
 
 @dataclass(frozen=True)
 class CameraFaceRuntime:
-    """全局共用的人脸推理参数（所有设备同一套）。"""
+    """全局共用的人脸运行时参数（所有设备同一套；推理参数在外部服务侧）。"""
 
-    undistorter: CameraUndistorter | None
-    min_face_detection_confidence: float
-    min_face_presence_confidence: float
-    num_faces: int = 5
     face_track_max_dist_px: float = 90.0
     face_track_max_lost_frames: int = 18
     frame_width: int = 320
     frame_height: int = 240
-    face_embedding_enabled: bool = True
     identity_similarity_threshold: float = 0.40
     identity_geometry_threshold: float = 0.88
-    # 推理提供方：http=外部 insightface-engine 独立进程（默认，多 worker 并行）；
-    # internal=进程内多进程池（HTTP 调用失败自动回落，亦可手动切换）
-    provider: str = "http"
+    # 人脸识别能力开关：insightface=外部独立服务（默认）；none=不识别（recognize 返回空）
+    mode: str = "insightface"
+    # 外部 insightface-engine 地址（推理/embedding 全在服务侧）
     external_url: str = "http://127.0.0.1:9103"
     external_timeout_s: float = 10.0
 
@@ -65,18 +55,6 @@ def build_camera_face_runtime(config: dict[str, Any]) -> CameraFaceRuntime:
     except Exception:
         pass
 
-    md_raw = os.environ.get("CAMERA_MIN_FACE_DETECTION_CONFIDENCE")
-    mp_raw = os.environ.get("CAMERA_MIN_FACE_PRESENCE_CONFIDENCE")
-    nf_raw = os.environ.get("CAMERA_NUM_FACES")
-
-    md = float(md_raw) if md_raw not in (None, "") else float(raw.get("min_face_detection_confidence", 0.5))
-    mp = float(mp_raw) if mp_raw not in (None, "") else float(raw.get("min_face_presence_confidence", 0.5))
-    nf = int(nf_raw) if nf_raw not in (None, "") else int(raw.get("num_faces", 5))
-
-    md = max(0.05, min(0.95, md))
-    mp = max(0.05, min(0.95, mp))
-    nf = max(1, min(10, nf))
-
     track_max_dist = float(raw.get("face_track_max_dist_px", 90.0))
     track_max_lost = int(raw.get("face_track_max_lost_frames", 18))
     track_max_dist = max(16.0, min(240.0, track_max_dist))
@@ -87,217 +65,73 @@ def build_camera_face_runtime(config: dict[str, Any]) -> CameraFaceRuntime:
     fw = max(160, min(640, fw))
     fh = max(120, min(480, fh))
 
-    fe_raw = raw.get("face_embedding_enabled", True)
-    face_embedding_enabled = str(fe_raw).strip().lower() not in ("0", "false", "no", "off")
-    ist_default = 0.40 if face_embedding_enabled else 0.82
-    ist = float(raw.get("identity_similarity_threshold", ist_default))
+    # 推理参数（置信度/num_faces/undistort/embedding 开关）在外部服务 config.yaml 侧，
+    # 主服务只管外部地址与跟踪/推流参数
+    ist = float(raw.get("identity_similarity_threshold", 0.40))
     ist = max(0.25, min(0.99, ist))
     ist_geo = float(raw.get("identity_similarity_threshold_geometry", 0.88))
     ist_geo = max(0.75, min(0.99, ist_geo))
 
-    provider = str(raw.get("provider") or "http").strip().lower()
-    if provider not in ("http", "internal"):
-        logger.warning("[camera_face] 未知 provider=%s，回落 http", provider)
-        provider = "http"
     external_url = str(raw.get("external_url") or "http://127.0.0.1:9103").strip() or "http://127.0.0.1:9103"
     external_timeout_s = max(1.0, float(raw.get("external_timeout_s") or 10.0))
 
-    ud = try_build_undistorter(raw)
+    mode = str(raw.get("mode") or "insightface").strip().lower()
+    if mode not in ("none", "insightface"):
+        logger.warning("[camera_face] 未知 mode=%s，回落 insightface", mode)
+        mode = "insightface"
+
     logger.info(
-        "[camera_face] frame=%dx%d num_faces=%d min_det=%.2f min_presence=%.2f "
-        "track_dist=%.0fpx track_lost=%d（undistort %s）",
+        "[camera_face] mode=%s frame=%dx%d track_dist=%.0fpx track_lost=%d external_url=%s",
+        mode,
         fw,
         fh,
-        nf,
-        md,
-        mp,
         track_max_dist,
         track_max_lost,
-        "开启" if ud is not None else "关闭",
+        external_url,
     )
-    logger.info("[camera_face] provider=%s external_url=%s", provider, external_url)
     return CameraFaceRuntime(
-        undistorter=ud,
-        min_face_detection_confidence=md,
-        min_face_presence_confidence=mp,
-        num_faces=nf,
         face_track_max_dist_px=track_max_dist,
         face_track_max_lost_frames=track_max_lost,
         frame_width=fw,
         frame_height=fh,
-        face_embedding_enabled=face_embedding_enabled,
         identity_similarity_threshold=ist,
         identity_geometry_threshold=ist_geo,
-        provider=provider,
+        mode=mode,
         external_url=external_url,
         external_timeout_s=external_timeout_s,
     )
 
 
-def _opts_from_runtime(runtime: CameraFaceRuntime) -> dict[str, Any]:
-    undistort = None
-    ud = runtime.undistorter
-    if ud is not None:
-        undistort = (
-            int(ud.calib_w),
-            int(ud.calib_h),
-            tuple(np.asarray(ud.camera_matrix, dtype=np.float64).reshape(-1).tolist()),
-            tuple(np.asarray(ud.dist_coeffs, dtype=np.float64).reshape(-1).tolist()),
-            float(ud.alpha),
-        )
-    return {
-        "num_faces": int(runtime.num_faces),
-        "min_face_detection_confidence": float(runtime.min_face_detection_confidence),
-        "min_face_presence_confidence": float(runtime.min_face_presence_confidence),
-        "frame_width": int(runtime.frame_width),
-        "frame_height": int(runtime.frame_height),
-        "undistort": undistort,
-    }
-
-
-def _opts_key(opts: dict[str, Any]) -> tuple:
-    return (
-        opts.get("num_faces"),
-        opts.get("min_face_detection_confidence"),
-        opts.get("min_face_presence_confidence"),
-        opts.get("frame_width"),
-        opts.get("frame_height"),
-        opts.get("undistort"),
-    )
-
-
-def _build_undistorter(undistort: Any):
-    if not undistort:
-        return None
-    cw, ch, k_flat, dist_flat, alpha = undistort
-    return CameraUndistorter(
-        calib_w=int(cw),
-        calib_h=int(ch),
-        camera_matrix=np.asarray(k_flat, dtype=np.float64).reshape(3, 3),
-        dist_coeffs=np.asarray(dist_flat, dtype=np.float64).reshape(-1, 1),
-        alpha=float(alpha),
-    )
-
-
-def _ensure_worker_detector(opts: dict[str, Any]):
-    global _worker_detector, _worker_opts_key
-    key = _opts_key(opts)
-    if _worker_detector is not None and _worker_opts_key == key:
-        return _worker_detector
-    if _worker_detector is not None:
-        try:
-            _worker_detector.close()
-        except Exception:
-            pass
-        _worker_detector = None
-
-    from deskbot_server.service.application.face_detector import CameraFaceDetector
-
-    _worker_detector = CameraFaceDetector(
-        num_faces=int(opts.get("num_faces") or 5),
-        undistorter=_build_undistorter(opts.get("undistort")),
-        min_face_detection_confidence=float(opts.get("min_face_detection_confidence") or 0.5),
-        min_face_presence_confidence=float(opts.get("min_face_presence_confidence") or 0.5),
-        frame_width=int(opts.get("frame_width") or 320),
-        frame_height=int(opts.get("frame_height") or 240),
-    )
-    _worker_opts_key = key
-    return _worker_detector
-
-
-def _mp_recognize(image: bytes, opts: dict[str, Any]) -> list[dict[str, Any]]:
-    """进程池入口：JPEG → [{landmarks, embedding, ...}, ...]。"""
-    from deskbot_server.vision.face_identity import attach_descriptors_to_faces, deduplicate_overlapping_faces
-
-    detector = _ensure_worker_detector(opts)
-    faces = detector.detect_faces(image)
-    faces = deduplicate_overlapping_faces(faces)
-    attach_descriptors_to_faces(faces, bgr_image=detector.last_bgr)
-
-    out: list[dict[str, Any]] = []
-    for face in faces or []:
-        if not isinstance(face, dict):
-            continue
-        emb = face.get("embedding") or face.get("face_descriptor")
-        if emb is not None and not isinstance(emb, list):
-            emb = list(emb)
-        row: dict[str, Any] = {
-            "landmarks": face.get("landmarks") or [],
-            "embedding": emb,
-            "image_w": int(face.get("image_w") or opts.get("frame_width") or 320),
-            "image_h": int(face.get("image_h") or opts.get("frame_height") or 240),
-        }
-        if emb is not None:
-            row["face_descriptor"] = emb
-        if face.get("descriptor_kind"):
-            row["descriptor_kind"] = face["descriptor_kind"]
-        if face.get("facial_transform") is not None:
-            row["facial_transform"] = face["facial_transform"]
-        out.append(row)
-    return out
-
-
 class CameraFaceService(metaclass=SingletonMeta):
     """设备 JPEG 帧处理入口（全局一套 runtime）。
 
-    - ``recognize``：人脸识别 → landmarks / embedding（provider=http 走外部服务，失败回落进程内池）
+    - ``recognize``：人脸识别 → landmarks / embedding（HTTP 调外部 insightface-engine /detect）
     - ``register_face_embedding``：档案写入
     - ``process``：跟踪、缓存、交互反馈；有订阅时 ``try_emit`` 推流
     """
 
     def __init__(self) -> None:
         self._runtime: CameraFaceRuntime | None = None
-        self._recognize_opts: dict[str, Any] | None = None
         self._trackers: dict[str, FaceTracker] = {}
         self._inflight: dict[str, asyncio.Task] = {}
         self._frame_count: dict[str, int] = {}
         self._video_subs: dict[str, tuple[str | None, VideoStreamCallback]] = {}
         self._video_subs_lock = asyncio.Lock()
         self._loop: asyncio.EventLoop | None = None
-        # provider=http 时的外部服务客户端；调用失败回落进程内池（首次失败 warning，之后 debug）
+        # 外部 insightface-engine 客户端（推理/embedding 全在服务侧）
         self._fr_client: FrHttpClient | None = None
-        self._http_fallback_logged = False
-
-    # ----- 进程池生命周期 -----
-
-    @classmethod
-    def start_pool(cls, max_workers: int = 0) -> None:
-        global _pool
-        cls.shutdown_pool()
-        cpu = os.cpu_count() or 2
-        n = int(max_workers) if max_workers and max_workers > 0 else max(1, min(4, cpu))
-        n = max(1, min(n, cpu))
-        _pool = ProcessPoolExecutor(max_workers=n)
-        logger.info("[CameraFaceService] 人脸识别进程池 workers=%d", n)
-
-    @classmethod
-    def shutdown_pool(cls) -> None:
-        global _pool
-        if _pool is None:
-            return
-        try:
-            _pool.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            _pool.shutdown(wait=False)
-        except Exception:
-            logger.warning("[CameraFaceService] 进程池 shutdown 异常", exc_info=True)
-        _pool = None
 
     # ----- 配置 -----
 
     def configure(self, runtime: CameraFaceRuntime) -> None:
         self._runtime = runtime
-        self._recognize_opts = _opts_from_runtime(runtime)
-        if runtime.provider == "http":
-            try:
-                from deskbot_server.infrastructure.face.fr_http_client import FrHttpClient
-
-                self._fr_client = FrHttpClient(runtime.external_url, timeout_s=runtime.external_timeout_s)
-            except Exception:
-                logger.exception("[camera_face] FrHttpClient 初始化失败，回落 internal")
-                self._fr_client = None
-        else:
+        if runtime.mode == "none":
             self._fr_client = None
+            logger.info("[camera_face] 人脸识别已关闭（mode=none）")
+            return
+        from deskbot_server.infrastructure.face.fr_http_client import FrHttpClient
+
+        self._fr_client = FrHttpClient(runtime.external_url, timeout_s=runtime.external_timeout_s)
 
     def is_configured(self) -> bool:
         return self._runtime is not None
@@ -319,26 +153,15 @@ class CameraFaceService(metaclass=SingletonMeta):
     async def recognize(self, image: bytes) -> list[dict[str, Any]]:
         """人脸识别，返回 ``[{landmarks, embedding, image_w, image_h}, ...]``。
 
-        provider=http 时调用外部 insightface-engine（/detect，多 worker 并行）；
-        调用失败（不可达/超时/响应异常）自动回落进程内池并告警。
+        mode=none 时不识别（返回空，下游走「无人脸」降级）；否则只走外部
+        insightface-engine /detect（进程内推理已移除）；调用失败抛异常，
+        由调用方（``_detect_then_post``）降级为「本帧无人脸」。
         """
-        if self._fr_client is not None:
-            try:
-                return await self._fr_client.detect(image)
-            except Exception as exc:
-                if self._http_fallback_logged:
-                    logger.debug("[camera_face] provider=http 调用失败，回落进程内池: %s", exc)
-                else:
-                    self._http_fallback_logged = True
-                    logger.warning("[camera_face] provider=http 调用失败，回落进程内池: %s", exc)
-        opts = self._recognize_opts
-        if opts is None:
-            opts = _opts_from_runtime(self.runtime)
-            self._recognize_opts = opts
-        loop = asyncio.get_running_loop()
-        if _pool is None:
-            return await loop.run_in_executor(None, _mp_recognize, image, opts)
-        return await loop.run_in_executor(_pool, _mp_recognize, image, opts)
+        if self._runtime is None:
+            raise RuntimeError("CameraFaceService 尚未 configure")
+        if self._fr_client is None:
+            return []
+        return await self._fr_client.detect(image)
 
     # ----- 档案：embedding 查 / 写 -----
 
@@ -519,15 +342,13 @@ class CameraFaceService(metaclass=SingletonMeta):
     async def _detect_then_post(
         self, *, device_id: str, frame_bytes: bytes, frame_source: str, log_channel: str
     ) -> None:
-        from deskbot_server.utils.concurrency import face_infer_slot
         from deskbot_server.vision.geometry import FACE_FRAME_HEIGHT, FACE_FRAME_WIDTH
 
         runtime = self.runtime
         nbytes = len(frame_bytes or b"")
         t0 = time.monotonic()
         try:
-            async with face_infer_slot():
-                faces = await self.recognize(frame_bytes)
+            faces = await self.recognize(frame_bytes)
         except Exception as exc:
             infer_ms = (time.monotonic() - t0) * 1000.0
             logger.debug(

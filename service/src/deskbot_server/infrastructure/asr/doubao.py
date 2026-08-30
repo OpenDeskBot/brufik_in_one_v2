@@ -79,6 +79,24 @@ def load_doubao_asr_config() -> DoubaoAsrConfig:
     )
 
 
+def _build_payload(cfg: DoubaoAsrConfig, pcm_bytes: bytes, sample_rate: int) -> tuple[dict, bytes]:
+    """构造一句话识别请求体（4 字节大端长度头 + JSON）。"""
+    wav_bytes = pcm_to_wav_bytes(pcm_bytes, sample_rate)
+    payload = {
+        "app": {"appid": cfg.app_id, "token": cfg.access_token, "cluster": cfg.cluster},
+        "user": {"uid": cfg.uid},
+        "audio": {"format": "wav", "rate": sample_rate, "bits": 16, "channel": 1},
+        "request": {"reqid": uuid.uuid4().hex, "workflow": cfg.workflow, "sequence": -1},
+        "audio_data": base64.b64encode(wav_bytes).decode("ascii"),
+    }
+    body = struct.pack(">I", len(json.dumps(payload).encode("utf-8"))) + json.dumps(payload).encode("utf-8")
+    return payload, body
+
+
+def _duration_ms(pcm_bytes: bytes, sample_rate: int) -> int:
+    return int(len(pcm_bytes) / 2 / max(1, sample_rate) * 1000)
+
+
 async def transcribe_doubao(pcm_bytes: bytes, sample_rate: int, cfg: DoubaoAsrConfig) -> str:
     """PCM → wav → 火山一句话识别 v1 → 识别文本。
 
@@ -91,31 +109,106 @@ async def transcribe_doubao(pcm_bytes: bytes, sample_rate: int, cfg: DoubaoAsrCo
     if duration_s > MAX_AUDIO_SECONDS:
         raise RuntimeError(f"豆包一句话识别超时上限: {duration_s:.1f}s > {MAX_AUDIO_SECONDS:.0f}s")
 
-    wav_bytes = pcm_to_wav_bytes(pcm_bytes, sample_rate)
-    payload = {
-        "app": {"appid": cfg.app_id, "token": cfg.access_token, "cluster": cfg.cluster},
-        "user": {"uid": cfg.uid},
-        "audio": {"format": "wav", "rate": sample_rate, "bits": 16, "channel": 1},
-        "request": {"reqid": uuid.uuid4().hex, "workflow": cfg.workflow, "sequence": -1},
-        "audio_data": base64.b64encode(wav_bytes).decode("ascii"),
-    }
-    body = struct.pack(">I", len(json.dumps(payload).encode("utf-8"))) + json.dumps(payload).encode("utf-8")
-
+    payload, body = _build_payload(cfg, pcm_bytes, sample_rate)
     t0 = time.monotonic()
     try:
-        resp = await asyncio.to_thread(_post, cfg.url, body, cfg.access_token)
+        http_code, resp = await asyncio.to_thread(_post, cfg.url, body, cfg.access_token)
     except urllib.error.URLError as exc:
         raise RuntimeError(f"豆包 ASR 不可达: {exc.reason}") from exc
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"豆包 ASR HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:200]}") from exc
     elapsed_ms = int((time.monotonic() - t0) * 1000)
 
+    if http_code != 200:  # _post 已捕获 HTTPError：非 200 一律按 HTTP 错误抛出
+        detail = json.dumps(resp, ensure_ascii=False)[:200] if resp else ""
+        raise RuntimeError(f"豆包 ASR HTTP {http_code}: {detail}")
+
     text = _parse_response(resp)
-    logger.info("[ASR/doubao] req=%s audio_ms=%d elapsed_ms=%d text=%r", payload["request"]["reqid"], int(duration_s * 1000), elapsed_ms, text[:40])
+    logger.info(
+        "[ASR/doubao] req=%s audio_ms=%d elapsed_ms=%d text=%r",
+        payload["request"]["reqid"],
+        _duration_ms(pcm_bytes, sample_rate),
+        elapsed_ms,
+        text[:40],
+    )
     return text
 
 
-def _post(url: str, body: bytes, token: str) -> dict:
+async def transcribe_doubao_detailed(
+    pcm_bytes: bytes, sample_rate: int, cfg: DoubaoAsrConfig
+) -> dict:
+    """测试专用：同 transcribe_doubao 的请求，但捕获 HTTP / 业务错误并返回详情。
+
+    返回 ``{text, http_code, elapsed_ms, business_code, message}``，不抛业务/
+    HTTP 异常（调用方据此渲染测试结果）：
+
+    - 网络不可达/超时 → ``http_code=0``
+    - HTTP 4xx/5xx → ``http_code`` 为实际状态码，message 尽力取响应体
+    - 业务 code != 0 → ``business_code`` 透出，message 为服务端信息
+    - 成功 → ``text`` + ``http_code=200`` + ``business_code=0``
+
+    Raises:
+        RuntimeError: 配置缺失 / 音频超时上限（与 transcribe_doubao 一致）。
+    """
+    if not pcm_bytes:
+        return {"text": "", "http_code": 200, "elapsed_ms": 0, "business_code": 0, "message": ""}
+    duration_s = len(pcm_bytes) / 2 / max(1, sample_rate)
+    if duration_s > MAX_AUDIO_SECONDS:
+        raise RuntimeError(f"豆包一句话识别超时上限: {duration_s:.1f}s > {MAX_AUDIO_SECONDS:.0f}s")
+
+    payload, body = _build_payload(cfg, pcm_bytes, sample_rate)
+    t0 = time.monotonic()
+    try:
+        http_code, resp = await asyncio.to_thread(_post, cfg.url, body, cfg.access_token)
+    except urllib.error.URLError as exc:
+        return {
+            "text": "",
+            "http_code": 0,
+            "elapsed_ms": int((time.monotonic() - t0) * 1000),
+            "business_code": None,
+            "message": f"豆包 ASR 不可达: {exc.reason}",
+        }
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+    code = resp.get("code", -1) if isinstance(resp, dict) else -1
+    if code != 0:
+        msg = str(resp.get("message", "")) if isinstance(resp, dict) else ""
+        logger.info(
+            "[ASR/doubao] req=%s audio_ms=%d elapsed_ms=%d failed http=%s code=%s msg=%r",
+            payload["request"]["reqid"],
+            _duration_ms(pcm_bytes, sample_rate),
+            elapsed_ms,
+            http_code,
+            code,
+            msg[:80],
+        )
+        return {
+            "text": "",
+            "http_code": http_code,
+            "elapsed_ms": elapsed_ms,
+            "business_code": code,
+            "message": msg or f"豆包 ASR 失败 code={code}",
+        }
+    text = _parse_response(resp)
+    logger.info(
+        "[ASR/doubao] req=%s audio_ms=%d elapsed_ms=%d text=%r",
+        payload["request"]["reqid"],
+        _duration_ms(pcm_bytes, sample_rate),
+        elapsed_ms,
+        text[:40],
+    )
+    return {
+        "text": text,
+        "http_code": http_code,
+        "elapsed_ms": elapsed_ms,
+        "business_code": 0,
+        "message": "",
+    }
+
+
+def _post(url: str, body: bytes, token: str) -> tuple[int, dict]:
+    """POST 一句话识别 → (http_status, payload)。
+
+    HTTPError 也捕获返回（状态码 + 尽力解析的 JSON），网络不可达仍抛 URLError。
+    """
     req = urllib.request.Request(
         url,
         data=body,
@@ -125,8 +218,15 @@ def _post(url: str, body: bytes, token: str) -> dict:
             "Authorization": f"Bearer; {token}",
         },
     )
-    with urllib.request.urlopen(req, timeout=TRANSCRIBE_TIMEOUT_S) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=TRANSCRIBE_TIMEOUT_S) as resp:
+            return resp.getcode(), json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+        except Exception:
+            payload = {}
+        return exc.code, payload
 
 
 def _parse_response(resp: dict) -> str:

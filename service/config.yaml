@@ -1,12 +1,6 @@
 camera_face:
-  # 人脸识别提供方：http=外部 insightface-engine 独立进程（默认，多 worker 并行）；
-  # internal=进程内多进程池（HTTP 调用失败自动回落，亦可手动切换）
-  provider: http
   external_url: http://127.0.0.1:9103
   external_timeout_s: 10
-  min_face_detection_confidence: 0.15
-  min_face_presence_confidence: 0.15
-  num_faces: 5
   frame_width: 320
   frame_height: 240
   face_track_max_dist_px: 90
@@ -14,20 +8,8 @@ camera_face:
   horizontal_fov_deg: 120
   eye_yaw_range_deg: 50
   frontal_angle_threshold_deg: 15
-  face_embedding_enabled: true
   identity_similarity_threshold: 0.4
-  undistort:
-    enabled: false
-    use_fov_estimate: true
-    default_dist_coeffs:
-    - -0.28
-    - 0.09
-    - 0.0
-    - 0.0
-    - 0.0
-    calib_width: 320
-    calib_height: 240
-    alpha: 1.0
+  mode: insightface
 debug:
   asr_auto_reply: true
   live_service: false
@@ -57,8 +39,6 @@ vad:
   silero_threshold: 0.5
   silero_threshold_low: 0.2
 asr:
-  # 设备级 ASR provider 存 device 表（funasr 默认 / doubao，见 infrastructure/asr/resolve.py）；
-  # 此处仅保留基础设施参数。进程内 FunASR 已移除（funasr 完全独立化，见 externals/funasr）
   external_url: http://127.0.0.1:9102
   text_filter:
     min_text_len: 2
@@ -109,11 +89,9 @@ llm:
     \ 拍到的照片）。\n  - moves / anims: 合法 id 与默认时长见 system 末尾「可用预设动作」「可用表情动画」附录。不需要时写 []。\n\
     \  - tools: 可选数组，服务端立即执行；不需要时写 []。"
 tts:
-  # TTS 后端：moss-tts-nano（独立进程 tts-engine，默认，HTTP 9101）/ doubao（火山云端）
-  provider: moss-tts-nano
-  sample_rate: 48000 # 默认 provider 输出采样率（moss 48k；豆包 24k，切回时改回 24000）
-  # moss-tts-nano 音色：demo.jsonl 行序（demo-N，N 从 1 起），可改 demo-2…切换音色
-  demo_id: demo-1
+  provider: doubao
+  sample_rate: 48000
+  demo_id: demo-3
   pb_random_servo:
     enabled: false
     probability: 0.35
@@ -127,3 +105,4 @@ tts:
     - 6
     skip_first: true
     skip_last: true
+  doubao_speaker: zh_female_vv_uranus_bigtts

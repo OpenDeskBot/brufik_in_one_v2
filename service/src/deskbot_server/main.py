@@ -19,7 +19,6 @@ from deskbot_server.service.live_service import ENTER_SEC, SLEEP_MAX_SEC, SLEEP_
 from deskbot_server.service.pipeline.audio import AudioConfig
 from deskbot_server.service.bus_service import BusService
 from deskbot_server.service.vad_service import VadService
-from deskbot_server.utils.concurrency import configure_concurrency, resolve_face_pool_workers
 from deskbot_server.utils.env import load_dotenv
 
 logger = logging.getLogger("deskbot-server")
@@ -61,12 +60,6 @@ def build_runtime() -> AppRuntime:
         config.get("asr", {}).get("text_filter", {}).get("min_text_len"),
         config.get("asr", {}).get("text_filter", {}).get("min_chinese_ratio"),
     )
-    configure_concurrency(max_concurrent_face_infer=app_settings.server.max_concurrent_face_infer)
-    try:
-        face_pool_n = resolve_face_pool_workers(app_settings.server.max_concurrent_face_infer)
-        CameraFaceService.start_pool(max_workers=face_pool_n)
-    except Exception:
-        logger.exception("[concurrency] 人脸识别进程池初始化失败")
     pipeline = build_chat_service(config)
     VadService().configure(audio_cfg)
     bus_service = BusService()

@@ -38,12 +38,6 @@ def create_fastapi_app(runtime: AppRuntime | None = None, *, web_only: bool = Fa
                     await runtime.external_manager.shutdown()
                 except Exception:
                     logger.exception("external_manager.shutdown failed")
-            try:
-                from deskbot_server.service.camera_face_service import CameraFaceService
-
-                CameraFaceService.shutdown_pool()
-            except Exception:
-                logger.exception("CameraFaceService.shutdown_pool failed")
             logger.info("FastAPI stopped")
 
     app = FastAPI(title="deskbot-server", version="0.1.0", lifespan=lifespan)

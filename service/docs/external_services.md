@@ -190,12 +190,15 @@ install 双路径：主服务 `models/` 或 `~/.insightface` 缓存有源则 cop
 - 契约 fr：`POST /detect`（body=JPEG bytes）→ `{"faces": [{landmarks, embedding,
   descriptor_kind, image_w, image_h}, ...]}`；`POST /embedding`（JSON `jpeg_base64` +
   `landmarks`）→ `{"embedding", "descriptor_kind"}`；`GET /health`；端口 9103
-- **主服务集成**：`camera_face.provider=http`（config.yaml 默认）→ `FrHttpClient`
-  （`infrastructure/face/fr_http_client.py`，镜像 funasr_adapter：urllib + to_thread）
-  调 `/detect`；调用失败（不可达/超时/响应异常）自动回落进程内池并告警
-  （首次 warning 之后 debug）；`provider=internal` 可手动切回进程内多进程池
-- 主服务进程内实现（`CameraFaceService` + ProcessPoolExecutor）保留作回落/对照，
-  依赖不卸载（与 funasr 的"internal 移除"不同——主服务自身还在用同一套 vision 代码）
+- **主服务集成**（v1.2.0 起 internal 已移除，无回落）：`CameraFaceService.recognize`
+  只走 `FrHttpClient`（`infrastructure/face/fr_http_client.py`，镜像 funasr_adapter：
+  urllib + to_thread）调 `/detect`；失败抛异常由调用方降级为「本帧无人脸」，
+  watchdog 同时自动重启 fr 服务
+- 主服务已删进程内推理：`face_detector/face_embedding/undistort` 模块、
+  `utils/concurrency.py`（face 信号量）、进程池（`CameraFaceService.start_pool` 等）、
+  venv 依赖 mediapipe/insightface/opencv（onnxruntime 保留——VAD 用）；
+  跟踪/注册/推流链路保留（`face_tracker`/`face_snapshot_cache`/`face_profile_service`，
+  吃 /detect 返回的 faces 结构）
 
 ## vpr-engine：WeSpeaker ResNet34 声纹识别
 

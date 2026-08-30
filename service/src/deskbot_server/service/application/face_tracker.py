@@ -13,7 +13,6 @@ from deskbot_server.service.face_profile_service import (
     resolve_profile_match,
 )
 from deskbot_server.vision.face_identity import (
-    attach_descriptor,
     descriptor_cosine_similarity,
     ema_update_descriptor,
     is_embedding_vector,
@@ -186,7 +185,8 @@ class FaceTracker:
 
         detections: list[tuple[int, tuple[float, float], list[float], dict[str, Any], int]] = []
         for idx, face in enumerate(faces):
-            desc = face.get("embedding") or face.get("face_descriptor") or attach_descriptor(face)
+            # 主服务不推理：descriptor 由外部服务 /detect 算好随 faces 返回
+            desc = face.get("embedding") or face.get("face_descriptor")
             nose = _nose_xy(face)
             if nose is None or desc is None:
                 continue

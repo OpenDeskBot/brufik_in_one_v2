@@ -196,3 +196,12 @@ def test_build_tts_adapter_default_is_moss():
 def test_build_tts_adapter_unknown_falls_back_to_moss():
     settings = AppSettings.from_config({"tts": {"provider": "bogus"}})
     assert isinstance(build_tts_adapter(settings), MossTtsAdapter)
+
+
+def test_doubao_config_speaker_precedence(monkeypatch):
+    """豆包音色优先级：config tts.doubao_speaker > env DOUBAO_TTS_SPEAKER。"""
+    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
+
+    monkeypatch.setenv("DOUBAO_TTS_SPEAKER", "env_speaker")
+    assert load_doubao_tts_config({}).speaker == "env_speaker"
+    assert load_doubao_tts_config({"doubao_speaker": "cfg_speaker"}).speaker == "cfg_speaker"
