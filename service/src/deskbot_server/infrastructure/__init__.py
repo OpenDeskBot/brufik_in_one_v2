@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["DoubaoPhonemeTtsAdapter", "FunAsrAdapter", "OpenAiLlmAdapter", "WsDownlinkAdapter", "build_tts_adapter"]
+__all__ = ["DoubaoPhonemeTtsAdapter", "OpenAiLlmAdapter", "WsDownlinkAdapter", "build_tts_adapter"]
 
 
 def __getattr__(name: str) -> Any:
@@ -10,10 +10,6 @@ def __getattr__(name: str) -> Any:
         from deskbot_server.infrastructure.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
 
         return DoubaoPhonemeTtsAdapter
-    if name == "FunAsrAdapter":
-        from deskbot_server.infrastructure.asr.funasr import FunAsrAdapter
-
-        return FunAsrAdapter
     if name == "OpenAiLlmAdapter":
         from deskbot_server.infrastructure.llm.openai_compat import OpenAiLlmAdapter
 

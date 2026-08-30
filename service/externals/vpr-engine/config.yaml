@@ -1,0 +1,6 @@
+# vpr-engine 独立配置：完全自治，不读主服务 config.yaml，也不读 env
+# 字段语义见同目录 server.py；缺字段用代码内置默认值，缺文件/解析失败不启动失败。
+model_dir: models/wespeaker-cnceleb-resnet34  # 相对服务源目录；留空走内置默认（同值）
+device: cpu                                   # 推理设备（cuda 需先按 CUDA 版 torch 重装 venv）
+min_audio_seconds: 0.3                        # 过短音频拒绝（静音/噪声无声纹信息）
+max_audio_seconds: 30                         # 过长音频截断（防止异常输入拖垮推理）

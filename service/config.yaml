@@ -52,6 +52,8 @@ vad:
   silero_threshold: 0.5
   silero_threshold_low: 0.2
 asr:
+  provider: external
+  external_url: http://127.0.0.1:9102
   model_dir: ''
   hub: hf
   language: zh

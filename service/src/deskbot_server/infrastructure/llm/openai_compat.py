@@ -11,7 +11,7 @@ try:
 except ImportError:
     ZoneInfo = None  # type: ignore[misc, assignment]
 
-from deskbot_server.infrastructure.llm.runtime import chat_acompletion, resolve_llm_config
+from deskbot_server.infrastructure.llm.runtime import chat_acompletion, is_local_llm_url, resolve_llm_config
 from deskbot_server.infrastructure.llm.user_message import build_llm_user_message
 from deskbot_server.infrastructure.llm.utils import (
     llm_device_screen_appendix,
@@ -111,7 +111,10 @@ class OpenAiLlmAdapter:
     ) -> str:
         llm_cfg = resolve_llm_config(device_id)
         # 火山 ark_responses 流式在工具/联网阶段常长时间无 text delta，语音对话改非流式更稳。
-        use_stream_tts = bool(on_tts_ready) and llm_cfg.protocol != "ark_responses"
+        # 本地引擎（llm-engine）不支持 stream，同样强制非流式（TTS 走完整响应后预取）。
+        use_stream_tts = (
+            bool(on_tts_ready) and llm_cfg.protocol != "ark_responses" and not is_local_llm_url(llm_cfg.api_base)
+        )
 
         system_content = self._build_system_prompt(device_id=device_id)
         user_content = build_llm_user_message(user_text, device_id=device_id, device_context=device_context)

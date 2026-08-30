@@ -50,21 +50,27 @@ def read_llm_env() -> dict[str, str]:
     return {k: env.get(k, "") for k in LLM_ENV_KEYS}
 
 
-def clear_llm_env() -> None:
-    """从 .env 与进程环境变量中移除本机大模型配置（调试用：回到未配置状态）。"""
+def clear_llm_env(keep_api_key: bool = False) -> None:
+    """从 .env 与进程环境变量中移除本机大模型配置（调试用：回到未配置状态）。
+
+    ``keep_api_key=True`` 时只清协议/模型/地址覆盖（LLM_PROTOCOL/LLM_MODEL/LLM_BASE_URL），
+    保留 ARK_API_KEY——机器人设置页切换 LLM 真源到 config.yaml 时用它，
+    密钥仍来自 .env，仅协议选择改由 config.yaml 决定。
+    """
     import os
 
     from deskbot_server.utils.paths import ENV_FILE
 
+    keys = ("LLM_PROTOCOL", "LLM_MODEL", "LLM_BASE_URL") if keep_api_key else LLM_ENV_KEYS
     if ENV_FILE.is_file():
         kept = []
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
             body = line.strip()
             body = body[7:].strip() if body.startswith("export ") else body
             key = body.split("=", 1)[0].strip() if "=" in body else ""
-            if key in LLM_ENV_KEYS:
+            if key in keys:
                 continue
             kept.append(line)
         ENV_FILE.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
-    for key in LLM_ENV_KEYS:
+    for key in keys:
         os.environ.pop(key, None)

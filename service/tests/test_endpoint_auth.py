@@ -31,7 +31,7 @@ def test_flask_api_requires_session(temp_db):
 
 
 def test_flask_api_allows_logged_in_developer(temp_db):
-    from deskbot_server.auth.service import create_user, set_user_developer
+    from tests._auth_compat import create_user, set_user_developer
     from deskbot_server.web.app import create_app
 
     user = create_user("alice@example.com", "password1234")
@@ -49,7 +49,7 @@ def test_flask_api_allows_logged_in_developer(temp_db):
 
 
 def test_flask_api_denies_debug_for_non_developer(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("first@example.com", "password1234")
@@ -85,7 +85,7 @@ def test_register_and_login_flow(temp_db):
 
 
 def test_developer_user_management(temp_db):
-    from deskbot_server.auth.service import create_user, get_user_by_email, set_user_developer
+    from tests._auth_compat import create_user, get_user_by_email, set_user_developer
     from deskbot_server.web.app import create_app
 
     admin = create_user("admin@example.com", "password1234")

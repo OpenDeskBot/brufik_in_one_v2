@@ -74,11 +74,9 @@ class AsrTextFilterSettings:
 
 @dataclass(frozen=True)
 class AsrSettings:
-    model_dir: str = ""
-    hub: str = "hf"
-    language: str = "zh"
-    use_quant_onnx: bool = True
-    onnx_intra_op_threads: int = 4
+    # external=独立 funasr 进程（HTTP，默认）；doubao=火山云端 ASR（进程内 FunASR 已移除）
+    provider: str = "external"
+    external_url: str = "http://127.0.0.1:9102"
     text_filter: AsrTextFilterSettings = field(default_factory=AsrTextFilterSettings)
 
 
@@ -142,6 +140,10 @@ class AppSettings:
             tts["spk_id"] = env
         if env := _env_int("TTS_SAMPLE_RATE"):
             tts["sample_rate"] = env
+        if env := _env_str("ASR_PROVIDER"):
+            asr["provider"] = env
+        if env := _env_str("ASR_EXTERNAL_URL"):
+            asr["external_url"] = env
 
         tts_extra = {
             k: v
@@ -197,6 +199,8 @@ class AppSettings:
                 language=str(asr.get("language", "zh")),
                 use_quant_onnx=bool(asr.get("use_quant_onnx", True)),
                 onnx_intra_op_threads=max(1, int(asr.get("onnx_intra_op_threads", 4))),
+                provider=str(asr.get("provider") or "internal").strip().lower(),
+                external_url=str(asr.get("external_url") or "http://127.0.0.1:9102"),
                 text_filter=AsrTextFilterSettings(
                     min_text_len=int(tf.get("min_text_len", 2)),
                     min_chinese_ratio=float(tf.get("min_chinese_ratio", 0.2)),

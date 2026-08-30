@@ -33,6 +33,11 @@ def create_fastapi_app(runtime: AppRuntime | None = None, *, web_only: bool = Fa
                         stop()
                     except Exception:
                         logger.exception("scheduler.stop failed")
+            if runtime is not None and runtime.external_manager is not None:
+                try:
+                    await runtime.external_manager.shutdown()
+                except Exception:
+                    logger.exception("external_manager.shutdown failed")
             try:
                 from deskbot_server.service.camera_face_service import CameraFaceService
 

@@ -25,9 +25,20 @@ _PUBLIC_PREFIXES = ("/login", "/register", "/health", "/docs", "/openapi.json", 
 
 
 def _register_endpoints_from_modules() -> None:
-    from deskbot_server.web.blueprints import app2c_bp, app_bp, auth_bp, debug_bp, flash_bp, proxy_bp, site
+    from deskbot_server.web.blueprints import (
+        app2c_bp,
+        app_bp,
+        auth_bp,
+        debug_bp,
+        flash_bp,
+        proxy_bp,
+        quest_bp,
+        robot_settings_bp,
+        services_bp,
+        site,
+    )
 
-    for mod in (site, auth_bp, app_bp, app2c_bp, debug_bp, flash_bp, proxy_bp):
+    for mod in (site, auth_bp, app_bp, app2c_bp, debug_bp, flash_bp, proxy_bp, services_bp, quest_bp, robot_settings_bp):
         for name, path in getattr(mod, "ENDPOINTS", {}).items():
             register_endpoint(name, path)
 
@@ -86,6 +97,9 @@ def mount_web(app: FastAPI) -> None:
     from deskbot_server.web.blueprints.debug_bp import router as debug_router
     from deskbot_server.web.blueprints.flash_bp import router as flash_router
     from deskbot_server.web.blueprints.proxy_bp import router as proxy_router
+    from deskbot_server.web.blueprints.quest_bp import router as quest_router
+    from deskbot_server.web.blueprints.robot_settings_bp import router as robot_settings_router
+    from deskbot_server.web.blueprints.services_bp import router as services_router
     from deskbot_server.web.blueprints.site import router as site_router
 
     @app.middleware("http")
@@ -106,6 +120,11 @@ def mount_web(app: FastAPI) -> None:
                     or path.startswith("/my/")
                     or path.startswith("/advanced")
                     or path.startswith("/flash")
+                    or path.startswith("/services")
+                    or path.startswith("/quest")
+                    or path.startswith("/robot-settings")
+                    or path.startswith("/api/robot-settings")
+                    or path.startswith("/api/quest")
                     or path.startswith("/onboarding")
                     or path.startswith("/api/setup/")
                     or path.startswith("/api/advanced")
@@ -115,6 +134,7 @@ def mount_web(app: FastAPI) -> None:
                     or path.startswith("/api/scene_playbook")
                     or path.startswith("/api/face_design")
                     or path.startswith("/api/flash/")
+                    or path.startswith("/api/services/")
                     or path.startswith("/api/debug/")
                     or path.startswith("/api/llm/")
                     or path.startswith("/api/tts/")
@@ -149,6 +169,9 @@ def mount_web(app: FastAPI) -> None:
     app.include_router(app_router)
     app.include_router(app2c_router)
     app.include_router(flash_router)
+    app.include_router(services_router)
+    app.include_router(quest_router)
+    app.include_router(robot_settings_router)
     app.include_router(debug_router)
     app.include_router(proxy_router)
 

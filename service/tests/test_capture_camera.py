@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from deskbot_server.dao.device_camera_frame_store import capture_camera_for_device_async
+from deskbot_server.service.camera_face_service import capture_camera_for_device_async
 from deskbot_server.infrastructure.llm.utils import parse_llm_reply
 from deskbot_server.pb.cam_signal import build_cam_fps_signal_pb
 from deskbot_server.pb.servo_pcm import make_anim_item, parse_pb_cam_fps, pb_json_messages
@@ -29,7 +29,7 @@ def test_capture_camera_for_device_async_via_video_subscribe():
             )
 
         pub = asyncio.create_task(_publisher())
-        cap = await capture_camera_for_device_async(dev, hub=None, wait_timeout_s=1.0)
+        cap = await capture_camera_for_device_async(dev, wait_timeout_s=1.0)
         await pub
         return cap
 

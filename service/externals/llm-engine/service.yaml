@@ -1,0 +1,37 @@
+# llm-engine 外部服务契约：本地 LLM 网关（Cactus Needle 2）独立进程
+# 设计：独立 venv（cactus-needle 为主服务外新依赖）；OpenAI 兼容 /v1/chat/completions
+# + 契约 /chat；无工具，核心能力为结构化提取与补全。主服务 LLM 仍走云端 ark，本服务就绪后可按需切换。
+name: llm-engine
+version: "1.0.0"
+type: llm
+port: 9104
+description: 本地 LLM 网关（Cactus Needle 2 · 45M · ~28MB 内存 · OpenAI 兼容 + 结构化提取）
+install:
+  # install/uninstall 命令在 service 根目录执行，须用相对根目录的路径
+  - bash externals/llm-engine/install.sh
+uninstall:
+  # 删除独立 venv（数据目录由管理器自动清理）
+  - rm -rf externals/llm-engine/.venv
+start:
+  # 独立 venv 内的 server.py；首次启动已由 install warmup 下载权重（约 14MB）
+  command:
+    - .venv/bin/python
+    - server.py
+    - --host
+    - 127.0.0.1
+    - --port
+    - "9104"
+  workdir: ./externals/llm-engine
+  # 权重从 HF 拉取，默认走 hf-mirror 镜像（同 tts-engine 经验）；HF_HUB_DISABLE_XET=1
+  # 禁用 huggingface_hub 的 xet 存储（镜像不支持，会 401）；海外用户可去掉镜像
+  env:
+    HF_ENDPOINT: "https://hf-mirror.com"
+    HF_HUB_DISABLE_XET: "1"
+healthcheck:
+  type: http
+  url: http://127.0.0.1:9104/health
+  interval_s: 5
+  startup_grace_s: 120 # 首次启动含权重下载（约 14MB）；超时后进程仍活只标记 unhealthy 不杀
+  timeout_s: 3
+  max_failures: 3
+auto_start: false

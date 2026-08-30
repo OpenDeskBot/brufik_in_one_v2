@@ -1,0 +1,30 @@
+# insightface-engine 外部服务契约：本地人脸检测与识别（InsightFace + MediaPipe）独立进程
+# 设计：复用主服务 venv（依赖/模型已就绪）与原 vision 代码（零修改，仅换进程运行），
+# 配置完全自治——只读同目录 config.yaml（主服务 camera_face 段的独立快照），不读主服务 config.yaml/env；
+# 原进程内实现保留，主服务后续按需切换。
+name: insightface-engine
+version: "1.0.0"
+type: fr
+port: 9103
+description: InsightFace + MediaPipe 本地人脸检测与识别（embedding，独立进程）
+install: []  # 无需安装：依赖随主服务 venv 就绪；face_landmarker.task 已就绪，buffalo_s 首次自动下载
+start:
+  # 复用主服务 venv（本服务无独立 venv）：command 相对 workdir（externals/insightface-engine）执行，
+  # 主服务 venv 在 service/.venv，需回退两级
+  command:
+    - ../../.venv/bin/python
+    - server.py
+    - --host
+    - 127.0.0.1
+    - --port
+    - "9103"
+  workdir: ./externals/insightface-engine
+  env: {}
+healthcheck:
+  type: http
+  url: http://127.0.0.1:9103/health
+  interval_s: 5
+  startup_grace_s: 300 # MediaPipe + InsightFace 加载（含 buffalo_s 首次下载）；超时后进程仍活只标记 unhealthy 不杀
+  timeout_s: 3
+  max_failures: 3
+auto_start: false

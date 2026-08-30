@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from deskbot_server.service.application.chat_service import ChatService
     from deskbot_server.service.bus_service import BusService
     from deskbot_server.service.device_ws_service import DeviceWsService
+    from deskbot_server.service.external.manager import ExternalServiceManager
     from deskbot_server.service.pipeline.audio import AudioConfig
 
 
@@ -22,6 +23,7 @@ class AppRuntime:
     bus_service: BusService
     device_ws: DeviceWsService
     scheduler: object | None = None
+    external_manager: ExternalServiceManager | None = None
 
 
 _RUNTIME: AppRuntime | None = None

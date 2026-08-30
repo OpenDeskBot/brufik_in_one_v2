@@ -48,13 +48,16 @@ class UserService(metaclass=SingletonMeta):
             raise ValueError("密码至少 8 位")
         is_first_user = not user_mapper.has_any_user()
         try:
-            user = user_mapper.create(_new_id(), email_norm, generate_password_hash(password), is_first_user)
+            user_mapper.create(_new_id(), email_norm, generate_password_hash(password), is_first_user)
         except Exception as exc:
             err = str(exc).lower()
             if "email" in err or "unique" in err:
                 raise ValueError("该邮箱已注册") from exc
             raise ValueError("注册失败，请稍后重试") from exc
-        return user
+        user = user_mapper.get_by_email(email_norm)
+        if user is None:
+            raise ValueError("注册失败，请稍后重试")
+        return user  # 返回 User 对象（auth_bp 注册登录流程依赖 .id）
 
     def login(self, email: str, password: str) -> User:
         user = user_mapper.get_by_email(_normalize_email(email))

@@ -1,4 +1,4 @@
-"""python -m deskbot_server.web — FastAPI Web 控制台（默认可与主服务同端口合并）。"""
+"""python -m deskbot_server.web — FastAPI Web 控制台（与主服务同端口 9000）。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def main() -> None:
     import uvicorn
 
     host = (os.environ.get("DESKBOT_WEB_HOST") or "0.0.0.0").strip()
-    port = int(os.environ.get("DESKBOT_WEB_PORT") or "5050")
+    port = int(os.environ.get("DESKBOT_WEB_PORT") or "9000")
     uvicorn.run(app, host=host, port=port, log_level="debug" if web_debug_enabled() else "info")
 
 

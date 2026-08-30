@@ -147,3 +147,29 @@ class DeviceSessionMessage(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class QuestInstance(Base):
+    """剧本任务实例：每设备每任务的运行状态、分数与结果。
+
+    定义（goal/activation_score/on_success 等）存于剧本 JSON 文件，
+    本表只存运行态：状态机 not_started → running → success/failed。
+    """
+
+    __tablename__ = "quest_instance"
+    __table_args__ = (
+        UniqueConstraint("device_id", "playbook", "task_id", name="uq_quest_instance_dev_play_task"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
+    device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    playbook: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="not_started", index=True)
+    current_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    strategy_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import ipaddress
 import json
 import logging
 import os
@@ -104,8 +105,9 @@ def _resolve_api_base(
     return default_base.rstrip("/") if default_base else None
 
 
-def resolve_system_llm_config() -> ResolvedLlmConfig:
-    cfg = load_config()
+def resolve_system_llm_config(cfg: dict | None = None) -> ResolvedLlmConfig:
+    if cfg is None:
+        cfg = load_config()
     llm_cfg = dict(cfg.get("llm") or {})
     api_key, api_key_source = _first_env(
         "LLM_API_KEY", "ARK_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY", "DASHSCOPE_API_KEY", "QWEN_API_KEY"
@@ -230,7 +232,34 @@ def _messages_to_ark_input(messages: list[dict[str, str]]) -> list[dict[str, Any
     return out
 
 
+LOCAL_LLM_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def is_local_llm_url(api_base: str | None) -> bool:
+    """判断 base_url 是否为本地/内网地址。
+
+    本地引擎（如 llm-engine）不需要 API Key、不支持流式，据此走豁免与降级路径。
+    """
+    raw = str(api_base or "").strip().rstrip("/")
+    if not raw:
+        return False
+    try:
+        netloc = raw.split("://", 1)[1].split("/", 1)[0]
+    except IndexError:
+        return False
+    host = netloc.rsplit(":", 1)[0].strip("[]")
+    if host in LOCAL_LLM_HOSTS:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
 def _validate_api_key(cfg: ResolvedLlmConfig) -> None:
+    if is_local_llm_url(cfg.api_base):
+        return  # 本地引擎不校验 Authorization（服务端不鉴权）
     if not cfg.api_key or "请替换" in cfg.api_key:
         raise ValueError(
             "LLM API Key 未配置。请在设备 LLM 管理中设置，或通过环境变量 "
@@ -536,7 +565,8 @@ async def chat_acompletion(
     cfg = config or resolve_llm_config(device_id)
     if first_token_timeout is None:
         first_token_timeout = resolve_first_token_timeout(cfg.protocol)
-    use_stream = bool(stream or on_tts_ready)
+    # 本地引擎（llm-engine 等）不支持 stream；任何调用路径都强制走非流式
+    use_stream = bool(stream or on_tts_ready) and not is_local_llm_url(cfg.api_base)
     usage_dict: dict[str, Any] | None = None
     tts_extractor: JsonTtsStreamExtractor | None = None
 

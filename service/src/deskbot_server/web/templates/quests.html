@@ -1,0 +1,897 @@
+{% extends "base_2c.html" %}
+{% block page_title %}剧情设计 · 小歪{% endblock %}
+{% block extra_head %}
+<script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>
+<style>
+[v-cloak]{display:none}
+.qt-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;border-bottom:var(--bw) solid var(--line);background:var(--panel)}
+.qt-top select{max-width:180px;padding:5px 8px;font-size:12px;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:8px}
+.qt-saved{font-size:11px;color:#4ade80;font-family:var(--mono);opacity:0;transition:opacity .3s}
+.qt-saved.on{opacity:1}
+.qt-hint{font-size:11px;color:var(--faint);margin-left:auto}
+.qt-palette{padding:5px 12px;font-size:12px;border:1px dashed #ff5a00;color:#ff5a00;border-radius:8px;cursor:grab;background:rgba(255,90,0,.06);user-select:none;white-space:nowrap}
+.qt-palette.dragging{opacity:.4}
+.qt-menu-label{font-size:12px;color:var(--dim)}
+.qt-top-err{font-size:11px;color:#ff6b6b;font-family:var(--mono)}
+.qt-ctx{position:absolute;z-index:70;background:var(--panel);border:var(--bw) solid var(--line);border-radius:8px;box-shadow:var(--shadow);padding:4px;min-width:120px}
+.qt-ctx button{display:block;width:100%;text-align:left;padding:6px 10px;font-size:12px;color:var(--ink);background:none;border:none;border-radius:6px;cursor:pointer}
+.qt-ctx button:hover{background:rgba(255,90,0,.1);color:#ff5a00}
+.qt-modal-box input[type=text]{width:100%;box-sizing:border-box;padding:8px 10px;font-size:13px;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:8px;margin:10px 0}
+.qt-modal-actions{display:flex;gap:8px;justify-content:flex-end}
+.qt-modal-actions .btn{min-width:80px}
+.qt-err{font-size:12px;color:#ff6b6b;margin-top:8px}
+.qt-id-dup{border-color:#ff6b6b}
+.qt-main{display:flex;height:calc(100vh - 190px);min-height:520px;position:relative}
+.qt-canvas{position:relative;flex:1;overflow:auto;background:var(--panel2);border-right:var(--bw) solid var(--line);user-select:none}
+.qt-edges{position:absolute;inset:0;pointer-events:none}
+.qt-edges path{pointer-events:stroke;cursor:pointer}
+.qt-edge-label{pointer-events:all;cursor:pointer}
+.qt-node{position:absolute;background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);cursor:grab;z-index:2}
+.qt-node.sel{border-color:#ff5a00;box-shadow:0 0 0 1px #ff5a00,var(--shadow)}
+.qt-node-head{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 10px;font-size:11px;color:var(--ink);border-bottom:1px solid var(--line);background:rgba(255,255,255,.03);border-radius:var(--r) var(--r) 0 0}
+.qt-world{position:absolute;left:0;top:0;transform-origin:0 0}
+.qt-world-inner{position:absolute;left:0;top:0;transform-origin:0 0}
+.qt-canvas.dragging{cursor:grabbing}
+.qt-canvas.dragging .qt-node{cursor:grabbing}
+.qt-inline{background:transparent;border:1px solid transparent;border-radius:5px;color:var(--ink);font-size:inherit;padding:1px 3px;min-width:0}
+.qt-inline:hover{border-color:var(--line)}
+.qt-inline:focus{outline:none;border-color:#ff5a00;background:var(--panel2)}
+.qt-inline-id{font-family:var(--mono);font-size:10px;width:64px;color:var(--ink)}
+.qt-inline-title{flex:1;font-size:11px;font-weight:600;width:0}
+.qt-inline-goal{flex:1;font-size:11px;color:var(--dim);width:0}
+.qt-inline-act{font-family:var(--mono);font-size:10px;width:44px;text-align:center}
+.qt-state-select{appearance:none;-webkit-appearance:none;border:none;border-radius:999px;font-size:10px;font-family:var(--mono);padding:2px 16px 2px 8px;cursor:pointer;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='6'%3E%3Cpath d='M0 0l4 6 4-6z' fill='%238a8a94'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 5px center}
+.qt-state-select:hover{outline:1px solid var(--line)}
+.qt-state-select.st-not_started{background-color:#1f232d;color:#8a8a94}
+.qt-state-select.st-running{background-color:#12243a;color:#7dd3fc}
+.qt-state-select.st-success{background-color:#0f2b1c;color:#4ade80}
+.qt-state-select.st-failed{background-color:#2b1010;color:#ff6b6b}
+.qt-head-idtitle{display:flex;align-items:center;gap:2px;flex:1;min-width:0}
+.qt-head-colon{color:var(--faint);font-family:var(--mono);font-size:10px}
+.qt-label{cursor:text;border-bottom:1px dashed rgba(138,138,148,.35)}
+.qt-label:hover{border-bottom-color:var(--faint)}
+.qt-label-id{font-family:var(--mono);font-size:10px;color:var(--ink)}
+.qt-label-title{flex:1;font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qt-label-goal{flex:1;font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qt-label-txt{flex:1;font-size:10px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qt-inline-txt{flex:1;font-size:10px;color:var(--ink);width:0}
+.qt-target{font-size:11px;flex-shrink:0}
+.qt-node-row{display:flex;align-items:center;gap:4px;padding:1px 10px;font-size:10px;color:var(--faint)}
+.qt-row-icon{font-size:9px;flex-shrink:0;opacity:.7}
+.qt-entry{display:flex;align-items:center;width:fit-content;margin:2px 0 0 18px;font-family:var(--mono);font-size:9px;color:#7dd3fc;background:rgba(18,36,58,.9);border:1px solid rgba(125,211,252,.3);border-radius:6px;padding:0 6px;white-space:nowrap;cursor:pointer}
+.qt-entry:hover{border-color:#7dd3fc}
+.qt-entry-edit{margin:3px 0 0 18px;width:76px;font-family:var(--mono);font-size:10px;text-align:center;color:var(--ink);background:var(--panel2);border:1px solid #ff5a00;border-radius:6px;padding:1px 4px}
+.qt-zoomctl{position:absolute;right:14px;bottom:14px;z-index:40;display:flex;align-items:center;gap:4px;background:var(--panel);border:var(--bw) solid var(--line);border-radius:10px;padding:4px 6px;box-shadow:var(--shadow)}
+.qt-zoomctl button{background:none;border:none;color:var(--dim);font-size:14px;cursor:pointer;padding:0 6px;line-height:1}
+.qt-zoomctl button:hover{color:#ff5a00}
+.qt-zoomctl span{font-family:var(--mono);font-size:11px;color:var(--dim);min-width:38px;text-align:center}
+.qt-badge{display:inline-block;padding:1px 6px;border-radius:999px;font-size:10px;font-family:var(--mono);white-space:nowrap}
+.qt-badge.not_started{background:#1f232d;color:#8a8a94}
+.qt-badge.running{background:#12243a;color:#7dd3fc}
+.qt-badge.success{background:#0f2b1c;color:#4ade80}
+.qt-badge.failed{background:#2b1010;color:#ff6b6b}
+.qt-node-goal{display:flex;align-items:center;gap:4px;padding:2px 10px;font-size:12px;color:var(--dim);line-height:1.4}
+.qt-port{position:absolute;width:16px;height:16px;border-radius:50%;border:2px solid var(--panel);cursor:crosshair;z-index:3;box-shadow:0 0 0 4px transparent}
+.qt-port:hover{box-shadow:0 0 0 4px rgba(255,90,0,.25)}
+.qt-port-in{left:-10px;top:34px;margin-top:-8px;background:#3b82f6}
+.qt-port-suc{right:-10px;top:32%;margin-top:-8px;background:#22c55e}
+.qt-port-fail{right:-10px;top:74%;margin-top:-8px;background:#ef4444}
+.qt-port-label{position:absolute;right:-34px;font-size:9px;font-family:var(--mono);color:var(--faint);pointer-events:none}
+.qt-pl-suc{top:calc(32% - 14px)}
+.qt-pl-fail{top:calc(74% + 2px)}
+.qt-panel{width:300px;flex-shrink:0;overflow:auto;background:var(--panel);padding:14px}
+.qt-panel h3{margin:0 0 12px;font-size:13px;color:var(--ink);display:flex;align-items:center;gap:8px}
+.qt-field{margin-bottom:10px}
+.qt-field label{display:block;font-size:11px;color:var(--dim);letter-spacing:.04em;margin-bottom:4px}
+.qt-field input,.qt-field select,.qt-field textarea{width:100%;box-sizing:border-box;padding:6px 8px;font-size:12px;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:8px}
+.qt-field textarea{min-height:52px;resize:vertical;line-height:1.5}
+.qt-field .row{display:flex;gap:8px}
+.qt-field .row>*{flex:1}
+.qt-ref-row{display:flex;gap:6px;align-items:center;margin-bottom:4px}
+.qt-ref-row span{flex:1;font-family:var(--mono);font-size:11px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qt-ref-row input{width:56px;padding:3px 6px;font-size:11px;font-family:var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--ink)}
+.qt-ref-row button{background:none;border:none;color:#ff6b6b;cursor:pointer;font-size:13px;padding:2px 4px}
+.qt-btn-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+.qt-btn-row .btn{flex:1;text-align:center;padding:5px 8px;font-size:12px}
+.qt-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:13px}
+.qt-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:100}
+.qt-modal-box{background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--rl);box-shadow:var(--shadow);width:min(620px,92vw);padding:16px}
+.qt-modal-box textarea{width:100%;height:300px;box-sizing:border-box;font:11px/1.5 "Space Mono",monospace;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px;resize:vertical}
+.qt-edge-input{position:absolute;z-index:50;width:70px}
+.qt-edge-input input{width:100%;box-sizing:border-box;padding:3px 6px;font:11px "Space Mono",monospace;color:var(--ink);background:var(--panel);border:1px solid #ff5a00;border-radius:6px;text-align:center}
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="questApp" v-cloak>
+  <div class="qt-top">
+    <span class="qt-menu-label">载入</span>
+    <select v-model="pbName" @change="onPbSwitch">
+      <option v-for="p in playbooks" :key="p" :value="p">[[ p ]]</option>
+    </select>
+    <button class="btn" @click="openNewModal">新建</button>
+    <button class="btn" @click="savePb" :disabled="!pb">保存</button>
+    <button class="btn ghost" @click="importClick" :disabled="!pb">导入</button>
+    <button class="btn ghost" @click="exportPb" :disabled="!pb">导出</button>
+    <div class="qt-palette" :class="{dragging: paletteDragging}" draggable="true"
+         title="拖到画布上创建任务" @dragstart="onPaletteDragStart" @dragend="onPaletteDragEnd">
+      ＋新任务
+    </div>
+    <span class="qt-saved" :class="{on: savedOn}">已保存</span>
+    <span class="qt-top-err" v-if="topErr">[[ topErr ]]</span>
+    <span class="qt-hint">右键画布添加任务 · 拖「新任务」图标到画布 · 拖节点移动 · 从成功口/失败口拖线到输入口 · 点线改分数</span>
+  </div>
+  <input ref="fileInput" type="file" accept=".json,application/json" style="display:none" @change="onFileImport"/>
+
+  <div class="qt-main">
+    <div class="qt-canvas" ref="canvas" :class="{dragging: pan}"
+         @contextmenu.prevent="onCanvasContext"
+         @dragover.prevent
+         @drop.prevent="onCanvasDrop"
+         @wheel="onWheel"
+         @mousedown.prevent="onCanvasDown">
+      <div class="qt-world" ref="world" :style="{width: canvasSize.w*zoom+'px', height: canvasSize.h*zoom+'px'}">
+        <div class="qt-world-inner" ref="worldInner" :style="worldStyle">
+          <svg class="qt-edges" :width="canvasSize.w" :height="canvasSize.h">
+            <g v-for="(e,i) in edges" :key="'e'+i">
+              <path :d="edgePath(e)" fill="none" :stroke="edgeColor(e)" stroke-width="2"
+                    @click.stop="editEdge($event, e)"/>
+              <g class="qt-edge-label" :transform="edgeLabelPos(e)" @click.stop="editEdge($event, e)">
+                <rect x="-14" y="-9" width="28" height="18" rx="9" :fill="edgeColor(e)"/>
+                <text text-anchor="middle" y="2.5" font-size="10" font-family="Space Mono,monospace" fill="#0d0d12">[[ e.score ]]</text>
+              </g>
+            </g>
+            <line v-if="linkDrag" :x1="linkDrag.x1" :y1="linkDrag.y1" :x2="linkDrag.x2" :y2="linkDrag.y2"
+                  stroke="#ff5a00" stroke-width="2" stroke-dasharray="6 4"/>
+          </svg>
+
+          <div v-if="!playbooks.length" class="qt-empty">还没有剧本 —— 点「＋新建剧本」开始</div>
+          <div v-else-if="!tasks.length" class="qt-empty">这个剧本还没有任务 —— 把左上角「＋新任务」图标拖到画布上创建</div>
+          <div v-for="(t,i) in tasks" :key="i" class="qt-node" :class="{sel: selectedId===t.id}"
+               :style="nodeStyle(t)" @mousedown.prevent="onNodeDown($event, t)"
+               @mouseup.prevent="onPortDrop($event, t)">
+            <div class="qt-node-head">
+              <span class="qt-head-idtitle">
+                <template v-if="!isEditing(t, 'id')">
+                  <span class="qt-label qt-label-id" title="双击编辑 id（改后自动更新连线）"
+                        @dblclick="startEdit(t, 'id')">[[ t.id ]]</span>
+                </template>
+                <input v-else class="qt-inline qt-inline-id qt-edit-on" v-model="t.id" title="回车保存，Esc 取消"
+                       @keydown.enter="finishEdit(t, 'id')" @keydown.esc="cancelEdit(t, 'id')"
+                       @blur="finishEdit(t, 'id')" @mousedown.stop @click.stop>
+                <span class="qt-head-colon">:</span>
+                <template v-if="!isEditing(t, 'title')">
+                  <span class="qt-label qt-label-title" title="双击编辑标题"
+                        @dblclick="startEdit(t, 'title')">[[ t.title ]]</span>
+                </template>
+                <input v-else class="qt-inline qt-inline-title qt-edit-on" v-model="t.title" title="回车保存，Esc 取消"
+                       @keydown.enter="finishEdit(t, 'title')" @keydown.esc="cancelEdit(t, 'title')"
+                       @blur="finishEdit(t, 'title')" @mousedown.stop @click.stop>
+              </span>
+              <select class="qt-state-select" :class="'st-' + instStatus(t)" :value="instStatus(t)"
+                      title="状态（沙箱直接切换）" @change="setState(t, $event.target.value)"
+                      @mousedown.stop="selectTask(t)">
+                <option value="not_started">未开始</option>
+                <option value="running">进行中</option>
+                <option value="success">成功</option>
+                <option value="failed">失败</option>
+              </select>
+            </div>
+            <template v-if="!isEditing(t, 'activation_score')">
+              <div class="qt-entry" title="已接入分数总和 / 激活分数（点击编辑激活分数）"
+                   @click="startEdit(t, 'activation_score')">⇐ [[ incomingSum(t) ]]/[[ t.activation_score ]]</div>
+            </template>
+            <input v-else class="qt-inline qt-entry-edit qt-edit-on" type="number" min="0" v-model.number="t.activation_score"
+                   title="激活分数（回车保存，Esc 取消）" @keydown.enter="finishEdit(t, 'activation_score')"
+                   @keydown.esc="cancelEdit(t, 'activation_score')" @blur="finishEdit(t, 'activation_score')"
+                   @mousedown.stop @click.stop>
+            <div class="qt-node-goal">
+              <span class="qt-target" title="任务目标">🎯</span>
+              <template v-if="!isEditing(t, 'goal')">
+                <span class="qt-label qt-label-goal" title="双击编辑任务目标"
+                      @dblclick="startEdit(t, 'goal')">[[ t.goal ]]</span>
+              </template>
+              <input v-else class="qt-inline qt-inline-goal qt-edit-on" v-model="t.goal" title="回车保存，Esc 取消"
+                     @keydown.enter="finishEdit(t, 'goal')" @keydown.esc="cancelEdit(t, 'goal')"
+                     @blur="finishEdit(t, 'goal')" @mousedown.stop @click.stop>
+            </div>
+            <div class="qt-node-row">
+              <span class="qt-row-icon" title="策略">📜</span>
+              <template v-if="!isEditing(t, 'strategy')">
+                <span class="qt-label qt-label-txt" title="双击编辑策略"
+                      @dblclick="startEdit(t, 'strategy')">[[ t.strategy ]]</span>
+              </template>
+              <input v-else class="qt-inline qt-inline-txt qt-edit-on" v-model="t.strategy" title="回车保存，Esc 取消"
+                     @keydown.enter="finishEdit(t, 'strategy')" @keydown.esc="cancelEdit(t, 'strategy')"
+                     @blur="finishEdit(t, 'strategy')" @mousedown.stop @click.stop>
+            </div>
+            <div class="qt-node-row">
+              <span class="qt-row-icon" title="成功条件">✔</span>
+              <template v-if="!isEditing(t, 'success_condition')">
+                <span class="qt-label qt-label-txt" title="双击编辑成功条件"
+                      @dblclick="startEdit(t, 'success_condition')">[[ t.success_condition ]]</span>
+              </template>
+              <input v-else class="qt-inline qt-inline-txt qt-edit-on" v-model="t.success_condition" title="回车保存，Esc 取消"
+                     @keydown.enter="finishEdit(t, 'success_condition')" @keydown.esc="cancelEdit(t, 'success_condition')"
+                     @blur="finishEdit(t, 'success_condition')" @mousedown.stop @click.stop>
+            </div>
+            <div class="qt-node-row">
+              <span class="qt-row-icon" title="失败条件">✘</span>
+              <template v-if="!isEditing(t, 'failure_condition')">
+                <span class="qt-label qt-label-txt" title="双击编辑失败条件"
+                      @dblclick="startEdit(t, 'failure_condition')">[[ t.failure_condition ]]</span>
+              </template>
+              <input v-else class="qt-inline qt-inline-txt qt-edit-on" v-model="t.failure_condition" title="回车保存，Esc 取消"
+                     @keydown.enter="finishEdit(t, 'failure_condition')" @keydown.esc="cancelEdit(t, 'failure_condition')"
+                     @blur="finishEdit(t, 'failure_condition')" @mousedown.stop @click.stop>
+            </div>
+            <div class="qt-port qt-port-in" title="输入口（分数汇入）"
+                 @mousedown.stop.prevent="onPortDown($event, t, 'in')"
+                 @mouseup.stop.prevent="onPortDrop($event, t)"></div>
+            <div class="qt-port qt-port-suc" title="成功口（拖线到目标输入口）"
+                 @mousedown.stop.prevent="onPortDown($event, t, 'success')"></div>
+            <div class="qt-port qt-port-fail" title="失败口（拖线到目标输入口）"
+                 @mousedown.stop.prevent="onPortDown($event, t, 'failed')"></div>
+            <div class="qt-port-label qt-pl-suc">成功</div>
+            <div class="qt-port-label qt-pl-fail">失败</div>
+          </div>
+
+          <div v-if="edgeEdit" class="qt-edge-input" :style="{left: edgeEdit.x+'px', top: edgeEdit.y+'px'}">
+            <input ref="edgeInput" v-model="edgeScore" @keydown.enter="saveEdge" @keydown.esc="closeEdge" @blur="closeEdge"/>
+          </div>
+          <div v-if="ctxMenu" class="qt-ctx" :style="{left: ctxMenu.x+'px', top: ctxMenu.y+'px'}">
+            <button @click="ctxAddTask">＋新任务</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="qt-zoomctl">
+      <button @click="zoomBy(1/1.25)" title="缩小">－</button>
+      <span>[[ Math.round(zoom*100) ]]%</span>
+      <button @click="zoomBy(1.25)" title="放大">＋</button>
+      <button @click="resetView" title="复位（100%，回到原点）">复位</button>
+    </div>
+
+    <aside class="qt-panel" v-if="selected">
+      <h3>
+        <span class="qt-head-idtitle" style="gap:2px">
+          <template v-if="!isEditing(selected, 'id')">
+            <span class="qt-label qt-label-id" title="双击编辑 id" @dblclick="startEdit(selected, 'id')">[[ selected.id ]]</span>
+          </template>
+          <input v-else class="qt-inline qt-inline-id qt-edit-on" v-model="selected.id" title="回车保存，Esc 取消"
+                 @keydown.enter="finishEdit(selected, 'id')" @keydown.esc="cancelEdit(selected, 'id')"
+                 @blur="finishEdit(selected, 'id')" @mousedown.stop @click.stop>
+          <span class="qt-head-colon">:</span>
+          <template v-if="!isEditing(selected, 'title')">
+            <span class="qt-label qt-label-title" title="双击编辑标题" @dblclick="startEdit(selected, 'title')">[[ selected.title ]]</span>
+          </template>
+          <input v-else class="qt-inline qt-inline-title qt-edit-on" v-model="selected.title" title="回车保存，Esc 取消"
+                 @keydown.enter="finishEdit(selected, 'title')" @keydown.esc="cancelEdit(selected, 'title')"
+                 @blur="finishEdit(selected, 'title')" @mousedown.stop @click.stop>
+        </span>
+        <span class="qt-badge" :class="instStatus(selected)">[[ instText(selected) ]]</span>
+      </h3>
+      <div class="qt-field">
+        <label>目标 goal（AI 要完成的事）</label>
+        <textarea v-model="selected.goal" placeholder="例：了解用户的职业"
+                  @change="saveField(selected, 'goal')"></textarea>
+      </div>
+      <div class="qt-field">
+        <label>策略 strategy（AI 怎么说话/收放）</label>
+        <textarea v-model="selected.strategy" placeholder="例：自然打听，别像问卷；用户不愿谈就尊重"
+                  @change="saveField(selected, 'strategy')"></textarea>
+      </div>
+      <div class="qt-field">
+        <label>成功条件（AI 据此调 update_task_result(success)）</label>
+        <textarea v-model="selected.success_condition" placeholder="例：用户明确告诉了我他的职业"
+                  @change="saveField(selected, 'success_condition')"></textarea>
+      </div>
+      <div class="qt-field">
+        <label>失败条件（AI 据此调 update_task_result(failed)）</label>
+        <textarea v-model="selected.failure_condition" placeholder="例：用户明确表示不愿谈，或多次回避"
+                  @change="saveField(selected, 'failure_condition')"></textarea>
+      </div>
+      <div class="qt-field">
+        <div class="row">
+          <div>
+            <label>激活分数</label>
+            <input type="number" min="0" v-model.number="selected.activation_score"
+                   @change="saveField(selected, 'activation_score')">
+          </div>
+          <div>
+            <label>初始状态</label>
+            <select v-model="selected.initial_status" @change="saveField(selected, 'initial_status')">
+              <option value="not_started">未开始</option>
+              <option value="running">进行中（起点任务）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="qt-field">
+        <label>分数来源</label>
+        <div class="row" style="align-items:center">
+          <label class="qt-chk" style="font-size:12px;color:var(--dim);display:flex;gap:4px;align-items:center">
+            <input type="checkbox" v-model="selected.score_sources.conversation"
+                   @change="saveField(selected, 'score_sources')"> 对话贡献分
+          </label>
+          <input placeholder="时间（如 08:00）" v-model="selected.score_sources.time"
+                 @change="saveField(selected, 'score_sources')">
+        </div>
+      </div>
+      <div class="qt-field">
+        <label>成功后继（on_success，成功后传播）</label>
+        <div v-for="(r,i) in selected.on_success" :key="'s'+i" class="qt-ref-row">
+          <span :title="r.id">[[ r.id ]]</span>
+          <input type="number" min="0" v-model.number="r.score" @change="saveField(selected, 'on_success')">
+          <button @click="removeRef(selected, 'on_success', i)">✕</button>
+        </div>
+        <div class="qt-ref-row">
+          <select v-model="newSucId"><option value="">— 选后继任务 —</option>
+            <option v-for="t in otherTasks" :key="t.id" :value="t.id">[[ t.id ]]</option>
+          </select>
+          <input type="number" min="0" v-model.number="newSucScore" placeholder="分">
+          <button @click="addRef(selected, 'on_success')">＋</button>
+        </div>
+      </div>
+      <div class="qt-field">
+        <label>失败后继（on_failure，失败后传播）</label>
+        <div v-for="(r,i) in selected.on_failure" :key="'f'+i" class="qt-ref-row">
+          <span :title="r.id">[[ r.id ]]</span>
+          <input type="number" min="0" v-model.number="r.score" @change="saveField(selected, 'on_failure')">
+          <button @click="removeRef(selected, 'on_failure', i)">✕</button>
+        </div>
+        <div class="qt-ref-row">
+          <select v-model="newFailId"><option value="">— 选后继任务 —</option>
+            <option v-for="t in otherTasks" :key="t.id" :value="t.id">[[ t.id ]]</option>
+          </select>
+          <input type="number" min="0" v-model.number="newFailScore" placeholder="分">
+          <button @click="addRef(selected, 'on_failure')">＋</button>
+        </div>
+      </div>
+      <div class="qt-field">
+        <label>画布位置 pos（拖动节点自动更新）</label>
+        <div class="row">
+          <div><label>X</label><input type="number" v-model.number="selected.pos.x" @change="saveField(selected, 'pos')"></div>
+          <div><label>Y</label><input type="number" v-model.number="selected.pos.y" @change="saveField(selected, 'pos')"></div>
+        </div>
+      </div>
+      <div class="qt-btn-row">
+        <button class="btn ghost" style="color:#ff6b6b;flex:none;width:100%" @click="deleteTask">删除任务</button>
+      </div>
+    </aside>
+  </div>
+
+  <div v-if="newModal" class="qt-modal" @click.self="newModal=false">
+    <div class="qt-modal-box">
+      <h3 style="margin:0;font-size:13px">新建剧本</h3>
+      <input ref="newNameInput" type="text" v-model="newName" maxlength="64"
+             placeholder="剧本名：小写字母 / 数字 / 下划线 / 中划线"
+             @keydown.enter="confirmNew" @keydown.esc="newModal=false">
+      <div class="qt-modal-actions">
+        <button class="btn" @click="confirmNew">创建</button>
+        <button class="btn ghost" @click="newModal=false">取消</button>
+      </div>
+      <div v-if="newErr" class="qt-err">[[ newErr ]]</div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const { createApp } = Vue;
+const api = async (path, opts = {}) => {
+  const init = { method: opts.method || 'GET', headers: { 'Content-Type': 'application/json' } };
+  if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
+  const res = await fetch(path, init);
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+};
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
+createApp({
+  delimiters: ['[[', ']]'],
+  data() {
+    return {
+      playbooks: [], pbName: '', pb: null,
+      instances: {},
+      selectedId: null, selected: null, undoStack: [],
+      newSucId: '', newSucScore: 1, newFailId: '', newFailScore: 1,
+      savedOn: false, savedTimer: null,
+      drag: null, linkDrag: null, pan: null,
+      zoom: 1, panX: 0, panY: 0,
+      editingField: null,
+      paletteDragging: false,
+      ctxMenu: null,
+      newModal: false, newName: '', newErr: '',
+      topErr: '',
+      edgeEdit: null, edgeScore: '',
+    };
+  },
+  computed: {
+    tasks() { return (this.pb && this.pb.tasks) || []; },
+    edges() {
+      const out = [];
+      for (const t of this.tasks) {
+        for (const r of (t.on_success || [])) out.push({ from: t.id, port: 'success', to: r.id, score: r.score });
+        for (const r of (t.on_failure || [])) out.push({ from: t.id, port: 'failed', to: r.id, score: r.score });
+      }
+      return out;
+    },
+    otherTasks() { return this.tasks.filter(t => t.id !== this.selectedId); },
+    canvasSize() {
+      let w = 1200, h = 800;
+      for (const t of this.tasks) {
+        w = Math.max(w, t.pos.x + this.nodeW(t) + 160);
+        h = Math.max(h, t.pos.y + this.nodeH(t) + 120);
+      }
+      return { w, h };
+    },
+    worldStyle() {
+      return { transform: `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})` };
+    },
+  },
+  methods: {
+    byId(id) { return this.tasks.find(t => t.id === id) || null; },
+    nodeW(t) { return Math.max(t.pos.width || 210, 210); },
+    nodeH(t) { return Math.max(t.pos.height || 120, 120); },
+    nodeRect(t) { return { x: t.pos.x, y: t.pos.y, w: this.nodeW(t), h: this.nodeH(t) }; },
+    portPos(t, port) {
+      const r = this.nodeRect(t);
+      if (port === 'in') return { x: r.x, y: r.y + 34 };  // 输入口固定在下移后的入口行
+      if (port === 'success') return { x: r.x + r.w, y: r.y + r.h * 0.32 };
+      return { x: r.x + r.w, y: r.y + r.h * 0.74 };
+    },
+    nodeStyle(t) { return { left: t.pos.x + 'px', top: t.pos.y + 'px', width: this.nodeW(t) + 'px', height: this.nodeH(t) + 'px' }; },
+    edgePath(e) {
+      const a = this.portPos(this.byId(e.from), e.port);
+      const b = this.portPos(this.byId(e.to), 'in');
+      if (!a || !b) return '';
+      const dx = Math.max(60, Math.abs(b.x - a.x) * 0.5);
+      return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
+    },
+    edgeColor(e) { return e.port === 'success' ? '#22c55e' : '#ef4444'; },
+    edgeLabelPos(e) {
+      const a = this.portPos(this.byId(e.from), e.port);
+      const b = this.portPos(this.byId(e.to), 'in');
+      if (!a || !b) return 'translate(0,0)';
+      return `translate(${(a.x + b.x) / 2}, ${(a.y + b.y) / 2})`;
+    },
+    inst(t) { return t ? (this.instances[t.id] || null) : null; },
+    instStatus(t) { const i = this.inst(t); return i ? i.status : 'not_started'; },
+    instText(t) {
+      const i = this.inst(t);
+      if (!i) return '未开始';
+      return i.status === 'running' ? '进行中' : i.status === 'success' ? '成功' : i.status === 'failed' ? '失败' : '未开始';
+    },
+    instScore(t) { const i = this.inst(t); return i ? i.current_score : 0; },
+    barPct(t) {
+      const i = this.inst(t);
+      const act = t.activation_score || 1;
+      const cur = i ? i.current_score : 0;
+      return Math.min(100, Math.round(cur / act * 100));
+    },
+
+    flashSaved() {
+      this.savedOn = true;
+      clearTimeout(this.savedTimer);
+      this.savedTimer = setTimeout(() => { this.savedOn = false; }, 1200);
+    },
+
+    async loadPlaybooks() {
+      const d = await api('/api/quest/playbooks');
+      this.playbooks = d.playbooks || [];
+      if (!this.pbName || !this.playbooks.includes(this.pbName)) {
+        this.pbName = this.playbooks.length ? this.playbooks[0] : '';
+      }
+      await this.loadPb();
+    },
+    openNewModal() {
+      this.newName = '';
+      this.newErr = '';
+      this.newModal = true;
+      this.$nextTick(() => { const el = this.$refs.newNameInput; if (el) el.focus(); });
+    },
+    async confirmNew() {
+      const name = this.newName.trim();
+      if (!name) { this.newErr = '请输入剧本名'; return; }
+      if (!/^[a-z0-9_-]{1,64}$/.test(name)) {
+        this.newErr = '剧本名只允许小写字母/数字/下划线/中划线，且不超过 64 字符';
+        return;
+      }
+      try {
+        await api('/api/quest/playbooks', { method: 'POST', body: { name } });
+        this.playbooks = (await api('/api/quest/playbooks')).playbooks || [];
+        this.pbName = name;
+        this.newModal = false;
+        await this.loadPb();
+      } catch (err) { this.newErr = String(err.message || err); }
+    },
+    async savePb() {
+      if (!this.pbName || !this.pb) return;
+      try {
+        await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/import`, {
+          method: 'POST', body: this.pb,
+        });
+        this.flashSaved();
+        this.topErr = '';
+      } catch (err) { this.topErr = String(err.message || err); }
+    },
+    importClick() {
+      const el = this.$refs.fileInput;
+      if (el) el.click();
+    },
+    async onFileImport(e) {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      const name = file.name.replace(/\.json$/i, '');
+      if (!/^[a-z0-9_-]{1,64}$/.test(name)) {
+        this.topErr = `文件名不能作为剧本名（${name}）：只允许小写字母/数字/下划线/中划线`;
+        return;
+      }
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        await api(`/api/quest/playbooks/${encodeURIComponent(name)}/import`, { method: 'POST', body: data });
+        this.playbooks = (await api('/api/quest/playbooks')).playbooks || [];
+        this.pbName = name;
+        this.topErr = '';
+        await this.loadPb();
+      } catch (err) { this.topErr = String(err.message || err); }
+    },
+    async loadPb() {
+      if (!this.pbName) return;
+      const d = await api('/api/quest/playbooks/' + encodeURIComponent(this.pbName));
+      this.pb = d.playbook;
+      // 规格化：所有节点统一 210×120（容纳 入口/目标/策略/成功/失败 五行 + 少量呼吸）
+      let migrated = false;
+      for (const t of this.pb.tasks || []) {
+        const pos = t.pos || (t.pos = {});
+        if (pos.height !== 120) { pos.height = 120; migrated = true; }
+        if (pos.width !== 210) { pos.width = 210; migrated = true; }
+      }
+      if (migrated) {
+        try {
+          await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/import`, { method: 'POST', body: this.pb });
+        } catch (e) { /* 迁移失败不影响使用 */ }
+      }
+      this.selectedId = null;
+      this.selected = null;
+      this.undoStack = [];
+      await this.loadState();
+    },
+    async loadState() {
+      this.instances = {};
+      if (!this.pbName) return;
+      try {
+        const d = await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/state`);
+        this.instances = d.instances || {};
+      } catch (err) { /* 空剧本也返回状态 */ }
+    },
+    onPbSwitch() { this.loadPb(); },
+    onPaletteDragStart(e) {
+      e.dataTransfer.setData('text/plain', 'new-task');
+      e.dataTransfer.effectAllowed = 'copy';
+      this.paletteDragging = true;
+    },
+    onPaletteDragEnd() { this.paletteDragging = false; },
+    onCanvasDrop(e) {
+      if (!this.paletteDragging) return;
+      const p = this.worldPos(e);
+      this.createTaskAt(p.x, p.y);
+      this.paletteDragging = false;
+    },
+    onCanvasContext(e) {
+      const p = this.worldPos(e);
+      this.ctxMenu = { x: p.x, y: p.y };
+    },
+    onWindowClick() { this.ctxMenu = null; },
+    ctxAddTask() {
+      if (this.ctxMenu) this.createTaskAt(this.ctxMenu.x, this.ctxMenu.y);
+      this.ctxMenu = null;
+    },
+    async createTaskAt(x, y) {
+      if (!this.pbName) { this.topErr = '请先新建或载入剧本，再添加任务'; return; }
+      this.pushUndo();
+      this.topErr = '';
+      let n = this.tasks.length + 1;
+      let id = 'g_task' + n;
+      while (this.tasks.some(t => t.id === id)) { n += 1; id = 'g_task' + n; }
+      try {
+        const d = await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/tasks`, {
+          method: 'POST',
+          body: { id, goal: '新任务目标', pos: { x: Math.max(0, Math.round(x - 100)), y: Math.max(0, Math.round(y - 48)), width: 210, height: 120 } },
+        });
+        this.flashSaved();
+        await this.loadPb();
+        this.selectTask(this.byId(d.task.id));
+      } catch (err) { this.topErr = String(err.message || err); }
+    },
+
+    incomingSum(t) {
+      // 已接入分数总和 = 所有入边（成功口+失败口）分数之和
+      let s = 0;
+      for (const o of this.tasks) {
+        for (const r of (o.on_success || [])) if (r.id === t.id) s += r.score;
+        for (const r of (o.on_failure || [])) if (r.id === t.id) s += r.score;
+      }
+      return s;
+    },
+    isEditing(t, field) {
+      return !!(this.editingField && this.editingField.t === t && this.editingField.field === field);
+    },
+    startEdit(t, field) {
+      this.selectTask(t);
+      this.editingField = { t, field, oldId: t.id, oldVal: t[field] };
+      this.$nextTick(() => {
+        const el = this.$el && this.$el.querySelector('.qt-edit-on');
+        if (el) { el.focus(); if (el.select) el.select(); }
+      });
+    },
+    cancelEdit(t, field) {
+      if (!this.isEditing(t, field)) return;
+      const { oldVal } = this.editingField;
+      t[field] = oldVal;  // 恢复旧值（id 可能已被 v-model 改动）
+      this.editingField = null;
+    },
+    async finishEdit(t, field) {
+      if (!this.isEditing(t, field)) return;
+      const focus = this.editingField;
+      this.editingField = null;
+      await this.saveField(t, field, focus);
+    },
+    async saveField(t, field, focus) {
+      this.pushUndo();
+      focus = focus || { oldId: t.id, oldVal: t[field] };
+      if (field === 'id') {
+        const newId = String(t.id || '').trim();
+        if (!/^[a-zA-Z0-9_.\-]{1,64}$/.test(newId)) {
+          t.id = focus.oldId;  // 恢复原值，不整页刷新
+          this.topErr = 'id 非法（字母/数字/_.-，≤64），已恢复原值';
+          return;
+        }
+        if (this.tasks.some(o => o !== t && o.id === newId)) {
+          t.id = focus.oldId;
+          this.topErr = 'id 不能重复，已恢复原值';
+          return;
+        }
+      }
+      const urlId = field === 'id' && focus ? focus.oldId : t.id;
+      try {
+        await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/tasks/${encodeURIComponent(urlId)}`, {
+          method: 'PUT', body: { [field]: t[field] },
+        });
+        this.flashSaved();
+        this.topErr = '';
+        if (field === 'id') {
+          // 改名成功：本地同步其他任务连线引用（与服务端一致），沙箱实例已由服务端改名
+          for (const o of this.tasks) {
+            for (const port of ['on_success', 'on_failure']) {
+              for (const r of (o[port] || [])) if (r.id === focus.oldId) r.id = t.id;
+            }
+          }
+          this.selectedId = t.id;
+          this.selected = t;
+          await this.loadState();
+        }
+      } catch (err) {
+        if (field === 'id') t.id = focus.oldId;  // 保存失败恢复原 id（服务端未变）
+        this.topErr = String(err.message || err);
+      }
+    },
+    async setState(t, status) {
+      try {
+        await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/simulate/${encodeURIComponent(t.id)}`, {
+          method: 'POST', body: { action: 'set_state', status, result: '手动设置' },
+        });
+        await this.loadState();
+      } catch (err) { this.topErr = String(err.message || err); }
+    },
+    selectTask(t) { this.selectedId = t.id; this.selected = t; },
+    onNodeDown(e, t) {
+      if (e.target.closest('.qt-port')) return;
+      this.selectTask(t);
+      const p = this.worldPos(e);
+      this.drag = { id: t.id, ox: p.x - t.pos.x, oy: p.y - t.pos.y, moved: false };
+    },
+    onMove(e) {
+      if (this.drag) {
+        const p = this.worldPos(e);
+        const t = this.byId(this.drag.id);
+        if (t) {
+          t.pos.x = Math.max(0, Math.round(p.x - this.drag.ox));
+          t.pos.y = Math.max(0, Math.round(p.y - this.drag.oy));
+          this.drag.moved = true;
+        }
+      }
+      if (this.linkDrag && this.linkDrag.from) {
+        const p = this.worldPos(e);
+        const a = this.portPos(this.byId(this.linkDrag.from), this.linkDrag.port);
+        this.linkDrag.x1 = a.x; this.linkDrag.y1 = a.y;
+        this.linkDrag.x2 = p.x; this.linkDrag.y2 = p.y;
+      }
+      if (this.pan) {
+        const c = this.canvasPos(e);
+        this.panX = this.pan.tx0 + (c.x - this.pan.sx) / this.zoom;
+        this.panY = this.pan.ty0 + (c.y - this.pan.sy) / this.zoom;
+      }
+    },
+    onUp() {
+      if (this.drag && this.drag.moved && this.drag.id) this.savePos(this.drag.id);
+      this.drag = null;
+      this.linkDrag = null;
+      this.pan = null;
+    },
+    canvasPos(e) {
+      // 内容坐标（含滚动偏移）：节点 pos 存的是画布内容坐标
+      const c = this.$refs.canvas;
+      const r = c.getBoundingClientRect();
+      return { x: e.clientX - r.left + c.scrollLeft, y: e.clientY - r.top + c.scrollTop };
+    },
+    worldPos(e) {
+      // 世界坐标（内容坐标逆变换：减去平移、除以缩放）
+      const c = this.canvasPos(e);
+      return { x: c.x / this.zoom - this.panX, y: c.y / this.zoom - this.panY };
+    },
+    onWheel(e) {
+      // 仅 ctrl/cmd+滚轮（含触控板捏合）缩放；普通滚动留给画布滚动条
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const c = this.canvasPos(e);
+      const k2 = Math.min(2.5, Math.max(0.3, this.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+      if (k2 === this.zoom) return;
+      // 保持光标下的世界坐标不动
+      const wx = c.x / this.zoom - this.panX;
+      const wy = c.y / this.zoom - this.panY;
+      this.zoom = k2;
+      this.panX = c.x / k2 - wx;
+      this.panY = c.y / k2 - wy;
+    },
+    zoomBy(f) {
+      const c = { x: this.$refs.canvas.clientWidth / 2, y: this.$refs.canvas.clientHeight / 2 };
+      const k2 = Math.min(2.5, Math.max(0.3, this.zoom * f));
+      const wx = c.x / this.zoom - this.panX;
+      const wy = c.y / this.zoom - this.panY;
+      this.zoom = k2;
+      this.panX = c.x / k2 - wx;
+      this.panY = c.y / k2 - wy;
+    },
+    resetView() { this.zoom = 1; this.panX = 0; this.panY = 0; },
+    onCanvasDown(e) {
+      // 空白处左键 / 任意中键 → 平移画布
+      const t = e.target;
+      if (e.button === 1 || t === this.$refs.canvas || t === this.$refs.world || t === this.$refs.worldInner) {
+        const c = this.canvasPos(e);
+        this.pan = { sx: c.x, sy: c.y, tx0: this.panX, ty0: this.panY };
+      }
+    },
+    async savePos(id) {
+      const t = this.byId(id);
+      if (!t) return;
+      this.pushUndo();
+      try {
+        await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/tasks/${encodeURIComponent(id)}`, { method: 'PUT', body: { pos: t.pos } });
+        this.flashSaved();
+      } catch (err) { this.topErr = String(err.message || err); }
+    },
+
+    onPortDown(e, t, port) {
+      if (port === 'in') return;
+      const a = this.portPos(t, port);
+      this.linkDrag = { from: t.id, port, x1: a.x, y1: a.y, x2: a.x, y2: a.y };
+    },
+    async onPortDrop(e, t) {
+      if (!this.linkDrag || !this.linkDrag.from) return;
+      if (this.linkDrag.from !== t.id) {
+        this.pushUndo();
+        try {
+          await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/edges`, {
+            method: 'PUT',
+            body: { from: this.linkDrag.from, port: this.linkDrag.port, to: t.id, score: 1 },
+          });
+          this.flashSaved();
+          await this.loadPb();
+        } catch (err) { this.topErr = String(err.message || err); }
+      }
+      this.linkDrag = null;
+    },
+
+    editEdge(e, edge) {
+      const p = this.worldPos(e);
+      this.edgeEdit = { edge, x: p.x - 35, y: p.y - 14 };
+      this.edgeScore = String(edge.score);
+      this.$nextTick(() => { const el = this.$refs.edgeInput; if (el) el.focus(); });
+    },
+    async saveEdge() {
+      const edge = this.edgeEdit && this.edgeEdit.edge;
+      if (!edge) return;
+      this.closeEdge();
+      this.pushUndo();
+      try {
+        await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/edges`, {
+          method: 'PUT',
+          body: { from: edge.from, port: edge.port, to: edge.to, score: parseInt(this.edgeScore || '0', 10) || 0 },
+        });
+        this.flashSaved();
+        await this.loadPb();
+      } catch (err) { this.topErr = String(err.message || err); }
+    },
+    closeEdge() { this.edgeEdit = null; },
+
+    async deleteTask() {
+      if (!this.selectedId) return;
+      if (!window.confirm('删除任务 ' + this.selectedId + '？其成功/失败连线会被清除。')) return;
+      this.pushUndo();
+      try {
+        await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/tasks/${encodeURIComponent(this.selectedId)}`, { method: 'DELETE' });
+        this.flashSaved();
+        this.selectedId = null;
+        this.selected = null;
+        await this.loadPb();
+      } catch (err) { this.topErr = String(err.message || err); }
+    },
+    addRef(t, port) {
+      const id = port === 'on_success' ? this.newSucId : this.newFailId;
+      const score = port === 'on_success' ? this.newSucScore : this.newFailScore;
+      if (!id || !t) return;
+      const list = t[port];
+      if (list.find(r => r.id === id)) return;
+      list.push({ id, score });
+      if (port === 'on_success') this.newSucId = ''; else this.newFailId = '';
+      this.saveField(t, port);
+    },
+    removeRef(t, port, i) {
+      t[port].splice(i, 1);
+      this.saveField(t, port);
+    },
+
+    pushUndo() {
+      this.undoStack.push(JSON.stringify(this.tasks));
+      if (this.undoStack.length > 50) this.undoStack.shift();
+    },
+    async undo() {
+      const prev = this.undoStack.pop();
+      if (!prev) { this.topErr = '没有可撤回的操作'; return; }
+      try {
+        await api(`/api/quest/playbooks/${encodeURIComponent(this.pbName)}/import`, {
+          method: 'POST', body: { name: this.pbName, tasks: JSON.parse(prev) },
+        });
+        this.flashSaved();
+        await this.loadPb();
+      } catch (err) { this.topErr = String(err.message || err); }
+    },
+    onKeydown(e) {
+      // 输入框/下拉里不拦截按键
+      const tag = String(e.target && e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        this.undo();
+      } else if (e.key === 'Delete' && this.selectedId) {
+        e.preventDefault();
+        this.deleteTask();
+      }
+    },
+
+    exportPb() {
+      window.location.href = `/api/quest/playbooks/${encodeURIComponent(this.pbName)}/export`;
+    },
+  },
+  mounted() {
+    window.addEventListener('mousemove', this.onMove);
+    window.addEventListener('mouseup', this.onUp);
+    window.addEventListener('click', this.onWindowClick);
+    window.addEventListener('keydown', this.onKeydown);
+    this.loadPlaybooks();
+  },
+  beforeUnmount() {
+    window.removeEventListener('mousemove', this.onMove);
+    window.removeEventListener('mouseup', this.onUp);
+    window.removeEventListener('click', this.onWindowClick);
+    window.removeEventListener('keydown', this.onKeydown);
+  },
+}).mount('#questApp');
+</script>
+{% endblock %}

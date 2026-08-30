@@ -180,9 +180,18 @@ data/opendesk.db-shm
 data/opendesk.db-wal
 data/device/
 data/miot-cli/
+data/services/
 data/user_memory.json
 data/face_profiles.json
 data/face_live_snapshot.json
+
+# 外部进程服务（externals/）：独立 venv 与源码 checkout 不入库
+externals/*/.venv/
+externals/*/checkout/
+# 剧本任务运行时数据（设计产物留在本机，需要入库用 git add -f）
+data/quest/
+data/quest_playbooks/
+data/test/
 .e2e-results/
 **/secrets*.json
 **/local*.json

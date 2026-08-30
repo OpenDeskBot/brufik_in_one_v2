@@ -1,0 +1,51 @@
+# MOSS-TTS-Nano 外部服务契约（由 deskbot-server 服务管理器读取）
+# 字段说明见 service/docs（外部服务管理文档）与 deskbot_server.service.external.manifest
+name: moss-tts-nano
+version: "2026.4.10"
+type: tts
+port: 9101
+description: MOSS-TTS-Nano 本地语音合成（0.1B · CPU/ONNX · 支持音色克隆 · 20 语种）
+install:
+  # 注意：install/uninstall 命令在 service 根目录执行，须用相对根目录的路径
+  - bash externals/tts-engine/install.sh
+uninstall:
+  # 删除独立 venv 与源码 checkout（数据目录由管理器自动清理）
+  - rm -rf externals/tts-engine/.venv externals/tts-engine/checkout
+start:
+  # 独立 venv 内的 CLI；首次启动会自动下载 ONNX 模型（约数百 MB，国内网络可设
+  # HF_ENDPOINT=https://hf-mirror.com 环境变量加速）
+  command:
+    - .venv/bin/moss-tts-nano
+    - serve
+    - --backend
+    - onnx
+    - --host
+    - 127.0.0.1
+    - --port
+    - "9101"
+  workdir: ./externals/tts-engine
+  # 国内网络直连 HF 不通，默认走 hf-mirror 镜像；HF_HUB_DISABLE_XET=1 禁用
+  # huggingface_hub 的 xet 存储（镜像不支持，会 401）；海外用户可去掉镜像
+  env:
+    HF_ENDPOINT: "https://hf-mirror.com"
+    HF_HUB_DISABLE_XET: "1"
+healthcheck:
+  type: http
+  url: http://127.0.0.1:9101/health
+  interval_s: 5
+  startup_grace_s: 900 # 首次启动含模型下载，宽限拉长；超时后进程仍活只标记 unhealthy 不杀
+  timeout_s: 3
+  max_failures: 3
+# 测试契约覆盖：MOSS 真实接口是 multipart 的 /api/generate（通用 tts 契约是
+# JSON /synthesize，该服务没有实现）；管理后台「测试」按钮与 curl 命令按此发送。
+# demo_id 形如 demo-N（voices_file 行序，N 从 1 起）；后台「测试」对话框按
+# voices_file 枚举音色名供下拉选择（demo.jsonl 每行 JSON 的 name 字段）
+test:
+  path: /api/generate
+  method: POST
+  form:
+    text: "你好，这是语音合成测试。"
+    demo_id: "demo-3"
+  expect: [audio_base64]
+  voices_file: checkout/assets/demo.jsonl
+auto_start: false

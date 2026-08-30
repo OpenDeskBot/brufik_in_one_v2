@@ -1,0 +1,12 @@
+# funasr 独立配置：完全自治，不读主服务 config.yaml，也不读 env
+# 模型为本服务目录内副本（install.sh 从 service/models copy 到 models/），
+# 路径相对本服务根（externals/funasr）。
+# 字段语义与 deskbot_server.infrastructure.asr.FunasrAdapter 保持一致；缺字段用代码内置默认值。
+model_dir: 'models/SenseVoiceSmall'   # 相对 externals/funasr（PROJECT_ROOT），指向本服务 models/ 副本
+hub: hf
+language: zh
+use_quant_onnx: true
+onnx_intra_op_threads: 4
+text_filter:
+  min_text_len: 2
+  min_chinese_ratio: 0.0

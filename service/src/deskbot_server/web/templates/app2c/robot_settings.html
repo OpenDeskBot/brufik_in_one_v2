@@ -1,0 +1,257 @@
+{% extends "base_2c.html" %}
+{% block page_title %}机器人设置 · 小歪{% endblock %}
+{% block extra_head %}
+<script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>
+<style>
+.cap-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-top:4px}
+.cap-card{background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--rl);padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+.cap-head{display:flex;align-items:center;gap:10px}
+.cap-head .cap-ico{width:34px;height:34px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--accent)}
+.cap-head b{font-size:15px;color:var(--ink)}
+.cap-head small{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--faint)}
+.cap-warn{display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.5;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:8px 10px}
+.cap-warn.err{color:#ff6b6b;background:rgba(255,107,107,.08);border-color:rgba(255,107,107,.3)}
+.cap-opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;cursor:pointer;transition:border-color .15s}
+.cap-opt:hover{border-color:var(--dim)}
+.cap-opt.on{border-color:var(--accent);background:rgba(255,90,0,.05)}
+.cap-opt input{margin-top:3px;accent-color:#ff5a00}
+.cap-opt b{font-size:13px;color:var(--ink)}
+.cap-opt small{display:block;font-size:12px;color:var(--dim);line-height:1.5;margin-top:3px}
+.cap-opt.disabled{opacity:.45;cursor:not-allowed}
+.cap-opt.disabled input{pointer-events:none}
+.cap-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;font-size:10px;letter-spacing:.05em;vertical-align:1px}
+.cap-badge.exp{background:#2b1010;color:#ff6b6b;border:1px solid rgba(255,107,107,.4)}
+.cap-badge.svc-off{background:#1f232d;color:#8a8a94}
+.cap-serv{display:inline-block;margin-left:6px;font-family:var(--mono);font-size:10px}
+.cap-serv.on{color:#4ade80}
+.cap-serv.off{color:#ff6b6b}
+.cap-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:auto}
+.cap-cur{font-size:12px;color:var(--faint)}
+.cap-cur b{color:var(--dim);font-family:var(--mono);font-weight:600}
+.cap-ovr{font-size:12px;line-height:1.5;color:#7dd3fc;background:rgba(56,130,246,.08);border:1px solid rgba(56,130,246,.25);border-radius:8px;padding:8px 10px;display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.cap-ovr .btn{padding:2px 9px;font-size:11px;line-height:1.5}
+.cap-env{font-size:12px;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:8px 10px;line-height:1.6}
+.cap-meta{font:11px/1.6 "Space Mono",monospace;color:var(--faint);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;word-break:break-all;margin:0}
+.cap-hint{font-size:11px;color:var(--faint);line-height:1.5}
+.cap-apply{min-width:96px}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.cap-tts-cur{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim)}
+.cap-tts-cur b{color:var(--ink)}
+.cap-tts-note{font-size:12px;color:var(--faint);line-height:1.6}
+</style>
+{% endblock %}
+{% block content %}
+<div id="robotApp">
+  <div class="pagehd">
+    <div>
+      <div class="eyebrow">ROBOT CAPABILITIES</div>
+      <h1>机器人设置</h1>
+      <p>选择小歪的语音识别（ASR）、大脑（LLM）与语音合成（TTS）能力，保存后立即生效。</p>
+    </div>
+    <div class="btngroup">
+      <button type="button" class="btn ghost" @click="load">刷新</button>
+    </div>
+  </div>
+
+  <div v-if="err" class="cap-warn err" style="margin-bottom:12px">[[ err ]]</div>
+  <div v-if="msg" class="cap-warn" style="margin-bottom:12px">[[ msg ]]</div>
+
+  <div v-if="envNotice" class="cap-env" style="margin-bottom:12px">
+    [[ envNotice ]] —— 应用设置时会清除这些环境变量（密钥 ARK_API_KEY 保留）。
+  </div>
+
+  <div class="cap-grid">
+    <!-- ===== ASR ===== -->
+    <div class="cap-card">
+      <div class="cap-head">
+        <div class="cap-ico">🎙️</div>
+        <div><b>语音识别 ASR</b><small>SPEECH RECOGNITION</small></div>
+      </div>
+      <label v-for="c in asr.candidates" :key="c.id" class="cap-opt" :class="{on: selected.asr===c.id}">
+        <input type="radio" name="asr" :value="c.id" v-model="selected.asr" :disabled="busyAsr">
+        <span>
+          <b>[[ c.name ]]
+            <span v-if="c.experimental" class="cap-badge exp">实验性</span>
+            <span v-if="c.requires_service" class="cap-serv" :class="svcOn(c.requires_service)?'on':'off'">
+              ● [[ svcOn(c.requires_service)?'运行中':'未运行' ]]
+            </span>
+          </b>
+          <small>[[ c.description ]]</small>
+        </span>
+      </label>
+      <div v-if="asr.warning" class="cap-warn">⚠ [[ asr.warning ]]</div>
+      <div class="cap-foot">
+        <span class="cap-cur">当前：<b>[[ curName(asr) ]]</b></span>
+        <button type="button" class="btn cap-apply" :disabled="busyAsr || selected.asr===asr.current" @click="applyAsr">
+          [[ busyAsr ? '切换中…' : '应用' ]]
+        </button>
+      </div>
+      <p class="cap-hint">切换「本地 FunASR」需重新加载模型，可能耗时数秒；切换期间不影响正在进行的识别。</p>
+    </div>
+
+    <!-- ===== LLM ===== -->
+    <div class="cap-card">
+      <div class="cap-head">
+        <div class="cap-ico">🧠</div>
+        <div><b>大脑 LLM</b><small>LANGUAGE MODEL</small></div>
+      </div>
+      <div v-if="llm.device_override.active" class="cap-ovr">
+        <span>设备级覆盖生效中：[[ llm.device_override.model.name ]]（[[ llm.device_override.model.model_name ]]），
+        此处修改系统默认 LLM 对该设备不生效。</span>
+        <button type="button" class="btn ghost" @click="clearOverride">清除覆盖</button>
+      </div>
+      <label v-for="c in llm.candidates" :key="c.id" class="cap-opt"
+             :class="{on: selected.llm===c.id, disabled: llm.device_override.active}">
+        <input type="radio" name="llm" :value="c.id" v-model="selected.llm"
+               :disabled="busyLlm || llm.device_override.active">
+        <span>
+          <b>[[ c.name ]]
+            <span v-if="c.experimental" class="cap-badge exp">实验性</span>
+            <span v-if="c.requires_service" class="cap-serv" :class="svcOn(c.requires_service)?'on':'off'">
+              ● [[ svcOn(c.requires_service)?'运行中':'未运行' ]]
+            </span>
+          </b>
+          <small>[[ c.description ]]</small>
+        </span>
+      </label>
+      <div v-if="llm.warning" class="cap-warn">⚠ [[ llm.warning ]]</div>
+      <p v-if="llm.effective && !llm.effective.error" class="cap-meta">
+        [[ llm.effective.display_name ]] · [[ llm.effective.protocol ]] · [[ llm.effective.base_url ]]
+      </p>
+      <p v-else-if="llm.effective && llm.effective.error" class="cap-meta">[[ llm.effective.error ]]</p>
+      <div class="cap-foot">
+        <span class="cap-cur">当前：<b>[[ curName(llm) ]]</b></span>
+        <button type="button" class="btn cap-apply" :disabled="busyLlm || llm.device_override.active || selected.llm===null || selected.llm===llm.current"
+                @click="applyLlm">
+          [[ busyLlm ? '保存中…' : '应用' ]]
+        </button>
+      </div>
+      <p class="cap-hint">LLM 修改写入 config.yaml 并立即生效；若「高级 → 大模型」曾配置过环境变量，应用时会清掉协议类覆盖。</p>
+    </div>
+
+    <!-- ===== TTS ===== -->
+    <div class="cap-card">
+      <div class="cap-head">
+        <div class="cap-ico">🔊</div>
+        <div><b>语音合成 TTS</b><small>TEXT TO SPEECH</small></div>
+      </div>
+      <div class="cap-tts-cur">当前能力：<b>[[ curName(tts) ]]</b></div>
+      <p class="cap-tts-note">
+        [[ ttsDesc ]] 本地 tts-engine（MOSS-TTS-Nano）接入后可在本页选择离线合成。
+      </p>
+      <div v-if="tts.warning" class="cap-warn">⚠ [[ tts.warning ]]</div>
+    </div>
+  </div>
+
+  <p class="cap-hint" style="margin-top:14px">
+    所有修改直接写入 <code>config.yaml</code>（重启后保持；YAML 注释不保留）。依赖的外部服务请先在
+    <a href="{{ url_for('services.page') }}" style="color:var(--accent)">独立服务管理</a> 中安装并启动。
+  </p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const { createApp } = Vue;
+createApp({
+  delimiters: ['[[', ']]'],
+  data(){
+    return {
+      status: null,
+      selected: { asr: null, llm: null, tts: null },
+      busyAsr: false,
+      busyLlm: false,
+      err: '',
+      msg: '',
+    };
+  },
+  computed:{
+    asr(){ return (this.status && this.status.capabilities.asr) || { candidates: [], current: null, warning: null }; },
+    llm(){ return (this.status && this.status.capabilities.llm) || { candidates: [], current: null, warning: null, device_override: { active: false } }; },
+    tts(){ return (this.status && this.status.capabilities.tts) || { candidates: [], current: null, warning: null }; },
+    envNotice(){
+      if(!this.status) return '';
+      const o = this.status.env_overrides || {};
+      const keys = Object.keys(o).filter(k => o[k]);
+      if(!keys.length) return '';
+      return '检测到环境变量覆盖配置：' + keys.join(' / ') + '（当前生效值可能不是 config.yaml 中的设置）';
+    },
+    ttsDesc(){
+      const c = this.tts.candidates.find(x => x.id === this.tts.current);
+      return c ? c.description : '';
+    },
+  },
+  methods:{
+    async api(url, opts){
+      const r = await fetch(url, Object.assign({ cache: 'no-store' }, opts || {}));
+      const data = await r.json().catch(() => ({}));
+      if(!r.ok || data.ok === false){
+        throw new Error(data.error || ('HTTP '+r.status));
+      }
+      return data;
+    },
+    svcOn(name){
+      const s = this.status && this.status.services[name];
+      return !!(s && s.state === 'running');
+    },
+    curName(cap){
+      const c = cap.candidates.find(x => x.id === cap.current);
+      return c ? c.name : (cap.current || '-');
+    },
+    async load(){
+      this.err = '';
+      this.msg = '';
+      try{
+        const d = await this.api('/api/robot-settings');
+        this.status = d;
+        if(this.selected.asr === null) this.selected.asr = this.asr.current;
+        if(this.selected.llm === null && this.llm.current !== 'device') this.selected.llm = this.llm.current;
+      }catch(e){ this.err = '加载失败：' + e.message; }
+    },
+    async applyAsr(){
+      if(this.busyAsr) return;
+      this.err = ''; this.msg = '';
+      this.busyAsr = true;
+      try{
+        const d = await this.api('/api/robot-settings/asr', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: this.selected.asr }),
+        });
+        this.status = d;
+        this.msg = 'ASR 已切换为「' + this.curName(this.asr) + '」并生效';
+        if(d.capabilities && d.capabilities.asr.warning) this.err = d.capabilities.asr.warning;
+      }catch(e){
+        this.err = '切换失败：' + e.message;
+        await this.load();  // 恢复页面状态（回滚后 current 不变）
+      }finally{ this.busyAsr = false; }
+    },
+    async applyLlm(){
+      if(this.busyLlm || this.selected.llm === null) return;
+      this.err = ''; this.msg = '';
+      this.busyLlm = true;
+      try{
+        const d = await this.api('/api/robot-settings/llm', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: this.selected.llm }),
+        });
+        this.status = d;
+        this.msg = 'LLM 已切换为「' + this.curName(this.llm) + '」并生效';
+        if(d.capabilities && d.capabilities.llm.warning) this.err = d.capabilities.llm.warning;
+      }catch(e){
+        this.err = '切换失败：' + e.message;
+        await this.load();
+      }finally{ this.busyLlm = false; }
+    },
+    async clearOverride(){
+      this.err = ''; this.msg = '';
+      try{
+        const d = await this.api('/api/robot-settings/llm/clear-device-override', { method: 'POST' });
+        this.status = d;
+        if(this.selected.llm === null && this.llm.current !== 'device') this.selected.llm = this.llm.current;
+        this.msg = '已清除设备级 LLM 覆盖，当前设备将使用机器人设置的系统默认 LLM';
+      }catch(e){ this.err = '清除失败：' + e.message; }
+    },
+  },
+  mounted(){ this.load(); },
+}).mount('#robotApp');
+</script>
+{% endblock %}

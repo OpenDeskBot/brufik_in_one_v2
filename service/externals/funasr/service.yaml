@@ -1,0 +1,37 @@
+# funasr 外部服务契约：FunASR SenseVoice 独立进程（完全自包含）
+# 设计：独立 venv（.venv，install.sh 幂等）+ 服务目录内模型副本（models/）+ deskbot_server
+# 运行子集副本（deskbot_server/，随仓库提交，各文件头有同步标记）；
+# 运行期零依赖主服务（不读主服务 venv/模型/源码）；配置完全自治——只读同目录 config.yaml。
+name: funasr
+version: "1.1.0"
+type: asr
+port: 9102
+description: FunASR SenseVoice 本地语音识别（独立 venv + 独立模型副本，完全自包含）
+install:
+  # install/uninstall 命令在 service 根目录执行，须用相对根目录的路径
+  - bash externals/funasr/install.sh
+uninstall:
+  # 删除独立 venv 与模型副本（deskbot_server/ 代码副本随仓库提交，不在此清除；数据目录由管理器自动清理）
+  - rm -rf externals/funasr/.venv externals/funasr/models externals/funasr/__pycache__
+start:
+  # 独立 venv：command 相对 workdir（externals/funasr）执行
+  command:
+    - .venv/bin/python
+    - server.py
+    - --host
+    - 127.0.0.1
+    - --port
+    - "9102"
+  workdir: ./externals/funasr
+  # 兜底镜像（模型完全本地，正常不走网络；防未来 hub 访问被墙）
+  env:
+    HF_ENDPOINT: "https://hf-mirror.com"
+    HF_HUB_DISABLE_XET: "1"
+healthcheck:
+  type: http
+  url: http://127.0.0.1:9102/health
+  interval_s: 5
+  startup_grace_s: 60 # 模型本地 + install warmup 已预验，ONNX 加载数秒；慢冷盘可放宽
+  timeout_s: 3
+  max_failures: 3
+auto_start: false # 默认值；用户覆盖持久化在 data/services/state.json

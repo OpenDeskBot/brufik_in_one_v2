@@ -1,0 +1,31 @@
+# vpr-engine 外部服务契约：WeSpeaker ResNet34 声纹识别（speaker embedding）独立进程
+# 设计：独立 venv（主服务 venv 无 wespeaker 依赖），install.sh 幂等安装依赖与模型；
+# 配置完全自治——只读同目录 config.yaml，不读主服务 config.yaml/env。
+name: wespeaker-resnet34
+version: "1.0.0"
+type: vpr
+port: 9104
+description: WeSpeaker ResNet34 本地声纹识别（256 维 speaker embedding，独立进程）
+install:
+  - bash externals/vpr-engine/install.sh
+uninstall:
+  - rm -rf externals/vpr-engine/.venv externals/vpr-engine/models
+start:
+  # 独立 venv：command 相对 workdir（externals/vpr-engine）执行
+  command:
+    - .venv/bin/python
+    - server.py
+    - --host
+    - 127.0.0.1
+    - --port
+    - "9104"
+  workdir: ./externals/vpr-engine
+  env: {}
+healthcheck:
+  type: http
+  url: http://127.0.0.1:9104/health
+  interval_s: 5
+  startup_grace_s: 180 # torch + ResNet34 模型加载；超时后进程仍活只标记 unhealthy 不杀
+  timeout_s: 3
+  max_failures: 3
+auto_start: false

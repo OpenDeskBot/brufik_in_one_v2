@@ -1,0 +1,555 @@
+{% extends "base_2c.html" %}
+{% block page_title %}独立服务管理 · 小歪{% endblock %}
+{% block extra_head %}
+<script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>
+<style>
+.svc-table{width:100%;border-collapse:collapse;background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);overflow:hidden}
+.svc-table th{font-size:12px;letter-spacing:.06em;color:var(--dim);text-align:left;padding:10px 14px;border-bottom:var(--bw) solid var(--line);font-weight:600;white-space:nowrap}
+.svc-table td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
+.svc-table tr:last-child td{border-bottom:none}
+.svc-table tr.on{background:rgba(255,90,0,.08)}
+.svc-table tr:hover{background:rgba(255,90,0,.04)}
+.svc-name b{font-size:14px}
+.svc-name small{display:block;color:var(--faint);font-family:var(--mono);font-size:11px;margin-top:2px}
+.svc-desc{font-size:12px;color:var(--dim);max-width:320px;line-height:1.5}
+.svc-sub{display:block;font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:3px}
+.svc-err{color:#ff6b6b;font-family:var(--mono);font-size:11px;margin-top:3px;max-width:260px;word-break:break-all}
+.svc-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.btn-sm{padding:3px 8px;font-size:12px}
+.svc-type{font-family:var(--mono);font-size:12px}
+.svc-port{font-family:var(--mono);font-size:12px}
+.svc-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:100}
+.svc-modal-box{background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--rl);box-shadow:var(--shadow);width:min(720px,92vw);max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+.svc-modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line)}
+.svc-modal-head b{font-size:14px;color:var(--ink)}
+.svc-modal-body{padding:14px 18px;overflow:auto}
+.svc-modal-body h4{font-size:12px;color:var(--dim);letter-spacing:.06em;margin:0 0 6px}
+.svc-test-req{font:12px/1.6 "Space Mono",monospace;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;color:var(--ink);white-space:pre-wrap;word-break:break-all;margin-bottom:12px}
+.svc-test-resp{font:12px/1.5 "Space Mono",monospace;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;color:var(--ink);white-space:pre-wrap;word-break:break-all;max-height:280px;overflow:auto}
+.svc-test-ok{color:#16a34a;font-size:13px;font-weight:600;margin-bottom:8px}
+.svc-test-fail{color:#dc2626;font-size:13px;font-weight:600;margin-bottom:8px}
+.svc-test-audio{display:block;width:100%;height:36px;margin:2px 0 10px;border:var(--bw) solid var(--line);border-radius:8px;background:var(--panel2)}
+.svc-curlbox{margin-bottom:12px}
+.svc-test-curl{margin:0;font:12px/1.5 "Space Mono",monospace;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;color:var(--ink);white-space:pre-wrap;word-break:break-all}
+.svc-h4{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.svc-h4 .btn{padding:1px 7px;font-size:11px;line-height:1.4}
+.svc-curl-hint{font-size:11px;color:var(--faint);margin:-6px 0 12px}
+.svc-test-actions{margin:14px 0 4px}
+.svc-test-actions .btn{min-width:130px}
+.svc-face{display:flex;gap:14px;align-items:flex-start;margin-bottom:14px}
+.svc-face-preview{max-width:220px;max-height:150px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);object-fit:contain}
+.svc-face-audio{max-width:240px;height:38px;border-radius:8px;border:1px solid var(--line);background:var(--panel2)}
+.svc-tts-input{flex:1;min-width:200px;padding:7px 10px;font:12px/1.5 "Space Mono",monospace;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:8px}
+.svc-tts-select{max-width:340px;padding:7px 8px;font-size:12px;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:8px}
+.svc-tts-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.svc-face-none{width:220px;height:120px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--line);border-radius:8px;color:var(--faint);font-size:12px;text-align:center;padding:8px}
+.svc-face-side{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.svc-face-name{font-size:13px;font-weight:600}
+.svc-face-path{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.svc-face-busy{font-size:12px;color:var(--dim)}
+.state-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-family:var(--mono);white-space:nowrap}
+.state-running{background:#0f2b1c;color:#4ade80}
+.state-unhealthy,.state-failed,.state-crash_loop{background:#2b1010;color:#ff6b6b}
+.state-starting,.state-restarting,.state-stopping,.state-installing{background:#12243a;color:#7dd3fc}
+.state-stopped,.state-not_installed{background:#1f232d;color:#8a8a94}
+.svc-toggle{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--dim);cursor:pointer;user-select:none;white-space:nowrap}
+.svc-toggle input{accent-color:#ff5a00}
+.svc-toggle.disabled{opacity:.4;cursor:not-allowed}
+.svc-logpanel{margin-top:16px}
+.svc-log{background:#0a0b0f;border:1px solid var(--line);border-radius:10px;padding:10px;height:380px;overflow:auto;font:12px/1.45 "Space Mono",monospace;color:#d8d6ce;white-space:pre-wrap;word-break:break-word}
+.svc-hint{font-size:12px;color:var(--faint);margin:0 0 12px;line-height:1.5}
+.svc-empty{padding:40px 0;text-align:center;color:var(--faint);font-family:var(--mono);font-size:12px}
+</style>
+{% endblock %}
+{% block content %}
+<div id="servicesApp">
+  <div class="pagehd">
+    <div>
+      <div class="eyebrow">EXTERNAL SERVICES</div>
+      <h1>独立服务管理</h1>
+      <p>管理以独立进程运行的外部服务（安装 / 卸载 / 启停 / 默认启动 / 实时日志）。</p>
+    </div>
+    <div class="btngroup">
+      <button type="button" class="btn ghost" @click="loadServices">刷新</button>
+    </div>
+  </div>
+
+  <p class="svc-hint">
+    每个服务由 <code>service/externals/&lt;name&gt;/service.yaml</code> 声明，运行在自己独立的
+    venv 与进程中，跟随本服务生命周期；运行中崩溃会自动重启（指数退避），连续 5 次后停止自愈。
+  </p>
+
+  <table class="svc-table">
+    <thead>
+      <tr>
+        <th style="width:16%">服务名称</th>
+        <th style="width:11%">类型</th>
+        <th style="width:10%">状态</th>
+        <th style="width:7%">端口</th>
+        <th>描述</th>
+        <th style="width:26%">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr v-for="s in services" :key="s.name" :class="{on: selected===s.name}" @click="select(s.name)">
+        <td class="svc-name">
+          <b>[[ s.name ]]</b>
+          <small v-if="s.installed">已安装 [[ s.installed_version || '' ]]</small>
+          <small v-else>未安装</small>
+        </td>
+        <td><span class="svc-type">[[ s.service_type ]]</span></td>
+        <td>
+          <span class="state-badge" :class="'state-'+s.state">[[ stateLabel(s.state) ]]</span>
+          <span class="svc-sub" v-if="s.pid">pid [[ s.pid ]]</span>
+          <span class="svc-sub" v-if="s.uptime_s != null">已运行 [[ fmtUptime(s.uptime_s) ]]</span>
+          <span class="svc-sub" v-if="s.restarts">重启 [[ s.restarts ]] 次</span>
+          <span class="svc-sub" v-if="s.exit_code != null">exit [[ s.exit_code ]]</span>
+        </td>
+        <td><span class="svc-port">[[ s.port ]]</span></td>
+        <td>
+          <span class="svc-desc">[[ s.description || '（无描述）' ]]</span>
+          <div class="svc-err" v-if="s.last_error">[[ s.last_error ]]</div>
+        </td>
+        <td>
+          <div class="svc-actions">
+            <template v-if="!s.installed">
+              <button type="button" class="btn ghost btn-sm" :disabled="s.state==='installing'" @click.stop="doAction(s.name,'install')">[[ s.state==='installing' ? '安装中…' : '安装' ]]</button>
+            </template>
+            <template v-else>
+              <button v-if="s.state==='running'||s.state==='unhealthy'" type="button" class="btn ghost btn-sm" @click.stop="doAction(s.name,'stop')">停止</button>
+              <button v-else-if="s.state==='stopped'||s.state==='failed'||s.state==='crash_loop'" type="button" class="btn ghost btn-sm" @click.stop="doAction(s.name,'start')">启动</button>
+              <button v-if="s.state==='running'||s.state==='unhealthy'" type="button" class="btn ghost btn-sm" @click.stop="doAction(s.name,'restart')">重启</button>
+              <button v-if="s.state!=='starting'&&s.state!=='restarting'&&s.state!=='stopping'&&s.state!=='installing'" type="button" class="btn ghost btn-sm" @click.stop="doAction(s.name,'uninstall')">卸载</button>
+            </template>
+            <button type="button" class="btn ghost btn-sm" @click.stop="doTest(s.name)">测试</button>
+            <label class="svc-toggle" :class="{disabled: !s.installed}" @click.stop>
+              <input type="checkbox" :checked="s.auto_start" :disabled="!s.installed" @change="setAutoStart(s.name, $event.target.checked)" />
+              默认启动
+            </label>
+            <button type="button" class="btn ghost btn-sm" @click.stop="select(s.name)">日志</button>
+          </div>
+        </td>
+      </tr>
+      <tr v-if="!services.length">
+        <td colspan="6" class="svc-empty">未发现外部服务（service/externals 下没有 service.yaml）</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="svc-logpanel" v-if="selected">
+    <div class="panel-head">
+      <div><b>[[ selected ]]</b><small>实时日志（安装过程与运行输出都在此文件）</small></div>
+      <div class="btngroup">
+        <button type="button" class="btn ghost" @click="loadLog(true)">刷新</button>
+        <button type="button" class="btn ghost" @click="selected=null; logLines=[]">关闭</button>
+      </div>
+    </div>
+    <pre class="svc-log" ref="logBox">[[ logText ]]</pre>
+  </div>
+
+  <p v-if="err" class="svc-err" style="margin-top:12px">[[ err ]]</p>
+
+  <!-- 契约测试对话框 -->
+  <div class="svc-modal" v-if="testResult">
+    <div class="svc-modal-box">
+      <div class="svc-modal-head">
+        <b>测试 [[ testResult.service ]] <span style="color:var(--dim)">([[ testResult.type ]])</span></b>
+        <button type="button" class="btn ghost btn-sm" @click="closeTest">关闭</button>
+      </div>
+      <div class="svc-modal-body">
+        <template v-if="testResult.type === 'fr'">
+          <h4>测试图片</h4>
+          <div class="svc-face">
+            <img v-if="testImageUrl" class="svc-face-preview" :src="testImageUrl" alt="测试图片" />
+            <div v-else-if="!testBusy" class="svc-face-none">无默认样本<br />（data/test/face.jpg 缺失）</div>
+            <div class="svc-face-side">
+              <span class="svc-face-name">[[ testImageName || '选择图片' ]]</span>
+              <span class="svc-face-path" v-if="testImagePath">[[ testImagePath ]]</span>
+              <span class="svc-face-busy" v-if="testBusy">测试中…</span>
+              <label class="btn ghost btn-sm" style="cursor:pointer;display:inline-block">
+                选择本地图片
+                <input type="file" accept="image/*" style="display:none" @change="onPickTestImage" />
+              </label>
+            </div>
+          </div>
+        </template>
+        <template v-else-if="testResult.type === 'asr' || testResult.type === 'vpr'">
+          <h4>测试音频</h4>
+          <div class="svc-face">
+            <audio v-if="testInputAudioUrl" class="svc-face-audio" controls :src="testInputAudioUrl"></audio>
+            <div v-else-if="!testBusy" class="svc-face-none">无默认样本<br />（data/test/asr.wav 缺失）</div>
+            <div class="svc-face-side">
+              <span class="svc-face-name">[[ testInputAudioName || '选择音频' ]]</span>
+              <span class="svc-face-path" v-if="testInputAudioPath">[[ testInputAudioPath ]]</span>
+              <span class="svc-face-busy" v-if="testBusy">测试中…</span>
+              <label class="btn ghost btn-sm" style="cursor:pointer;display:inline-block">
+                选择本地音频
+                <input type="file" accept="audio/*,.wav,.pcm" style="display:none" @change="onPickTestAudio" />
+              </label>
+            </div>
+          </div>
+        </template>
+        <template v-else-if="testResult.type === 'tts'">
+          <h4>测试文本与音色</h4>
+          <div class="svc-tts-row">
+            <select v-if="testResult.voices && testResult.voices.length" class="svc-tts-select" v-model="testInputVoice" :title="voiceTitle">
+              <option v-for="v in testResult.voices" :key="v.id" :value="v.id">[[ v.id ]] · [[ v.name ]]</option>
+            </select>
+            <input class="svc-tts-input" v-model="testInputText" placeholder="输入要合成的文本" />
+            <span class="svc-face-busy" v-if="testBusy">测试中…</span>
+          </div>
+        </template>
+        <h4 class="svc-h4"><span>curl 命令</span><button type="button" class="btn ghost" title="复制 curl 命令" @click="copyCurl">[[ curlCopied ? '✓' : '📋' ]]</button></h4>
+        <div class="svc-curlbox">
+          <pre class="svc-test-curl">[[ testResult.curl || '（加载中…）' ]]</pre>
+        </div>
+        <p class="svc-curl-hint" v-if="testResult.curl_hint">提示：[[ testResult.curl_hint ]]</p>
+        <h4>请求</h4>
+        <div class="svc-test-req">[[ testResult.request.method || '?' ]] [[ testResult.request.url || '' ]]
+<template v-for="(v,k) in testResult.request.headers" :key="k">[[ k ]]: [[ v ]]
+</template><template v-if="testResult.request.body">body: [[ testResult.request.body ]]
+</template></div>
+        <div class="svc-test-actions">
+          <button type="button" class="btn" :disabled="testBusy" @click="runTest">[[ testBusy ? '测试中…' : '执行测试' ]]</button>
+        </div>
+        <template v-if="testDone">
+          <div v-if="testResult.ok" class="svc-test-ok">✓ 通过（HTTP [[ testResult.status ]] · [[ testResult.elapsed_ms || 0 ]]ms）</div>
+          <div v-else class="svc-test-fail">✗ 失败：[[ testResult.error || '未知错误' ]]</div>
+          <audio v-if="testAudioUrl" class="svc-test-audio" controls :src="testAudioUrl"></audio>
+          <h4 class="svc-h4"><span>响应</span><button type="button" class="btn ghost" title="复制响应内容" @click="copyResp">[[ respCopied ? '✓' : '📋' ]]</button></h4>
+          <pre class="svc-test-resp">[[ testResult.body || '（无响应体）' ]]</pre>
+        </template>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const { createApp } = Vue;
+createApp({
+  delimiters: ['[[', ']]'],
+  data(){
+    return {
+      services: [],
+      selected: null,
+      logLines: [],
+      logSince: 0,
+      err: '',
+      testResult: null,
+      testDone: false,       // 测试是否已执行（结果区只在执行后显示）
+      testAudioUrl: '',      // tts 测试成功返回的 audio_base64 → 可播放 data URL
+      testImageUrl: '',      // fr 测试图预览（默认 data/test/face.jpg 或用户选择）
+      testImageName: '',
+      testImagePath: '',
+      testInputAudioUrl: '',  // asr 测试音频预览（默认 data/test/asr.wav 或用户选择；独立于 tts 结果区 testAudioUrl）
+      testInputAudioName: '',
+      testInputAudioPath: '',
+      testInputText: '',      // tts 测试文本（默认 manifest/契约文本，可修改）
+      testInputVoice: '',     // tts 音色 demo_id（默认 manifest 或 voices[0]）
+      testBusy: false,
+      curlCopied: false,
+      respCopied: false,
+      pollTimer: null,
+      logTimer: null,
+    };
+  },
+  computed:{
+    logText(){ return this.logLines.join('\n'); },
+    voiceTitle(){
+      const voices = (this.testResult && this.testResult.voices) || [];
+      const v = voices.find(x => x.id === this.testInputVoice);
+      return v ? (v.id + ' · ' + v.name) : '';
+    },
+  },
+  methods:{
+    async api(url, opts){
+      const r = await fetch(url, Object.assign({ cache: 'no-store' }, opts || {}));
+      const data = await r.json().catch(() => ({}));
+      if(!r.ok || data.ok === false){
+        throw new Error(data.error || ('HTTP '+r.status));
+      }
+      return data;
+    },
+    stateLabel(s){
+      return {
+        not_installed: '未安装', installing: '安装中', stopped: '未启动',
+        starting: '启动中', restarting: '启动中', stopping: '停止中',
+        running: '运行中', unhealthy: '运行出错', failed: '运行出错', crash_loop: '运行出错',
+      }[s] || s;
+    },
+    fmtUptime(sec){
+      if(sec == null) return '-';
+      if(sec < 60) return Math.round(sec)+'s';
+      if(sec < 3600) return Math.round(sec/60)+'m';
+      return (sec/3600).toFixed(1)+'h';
+    },
+    select(name){
+      this.selected = name;
+      this.logLines = [];
+      this.logSince = 0;
+      this.loadLog(true);
+    },
+    async loadServices(){
+      const d = await this.api('/api/services');
+      this.services = d.services || [];
+      const alive = this.services.some(s => s.name === this.selected);
+      if(this.selected && !alive) this.selected = null;
+    },
+    async loadLog(reset){
+      if(!this.selected) return;
+      try{
+        const d = await this.api('/api/services/'+encodeURIComponent(this.selected)+'/logs?since='+this.logSince);
+        if(d.log){
+          this.logLines.push(...d.log.split('\n').filter(Boolean));
+          if(this.logLines.length > 5000) this.logLines.splice(0, this.logLines.length - 5000);
+          this.logSince = d.next_offset;
+          this.$nextTick(() => {
+            const el = this.$refs.logBox;
+            if(el && reset) el.scrollTop = el.scrollHeight;
+          });
+        }
+      }catch(e){
+        if(reset) this.err = String(e.message || e);
+      }
+    },
+    async refresh(){
+      this.err = '';
+      try{
+        await this.loadServices();
+        await this.loadLog(false);
+      }catch(e){ this.err = String(e.message || e); }
+    },
+    async doAction(name, action){
+      this.err = '';
+      try{
+        await this.api('/api/services/'+encodeURIComponent(name)+'/'+action, { method:'POST' });
+        if(this.selected === name && action === 'uninstall') this.selected = null;
+        await this.refresh();
+      }catch(e){ this.err = String(e.message || e); }
+    },
+    async doTest(name){
+      // 打开测试对话框：只拉契约元信息（含可复制 curl），不执行请求；
+      // 用户点「执行测试」才真正发测试请求
+      this.err = '';
+      const svc = this.services.find(s => s.name === name);
+      this.testResult = { service: name, type: svc ? svc.service_type : '', contract: '', request: {}, curl: '', curl_hint: '', ok: false };
+      this.testDone = false;
+      this.testAudioUrl = '';
+      this.testImageUrl = '';
+      this.testImageName = '';
+      this.testImagePath = '';
+      this.testInputAudioUrl = '';
+      this.testInputAudioName = '';
+      this.testInputAudioPath = '';
+      this.testInputText = '';
+      this.testInputVoice = '';
+      this.testBusy = false;
+      this.curlCopied = false;
+      this.respCopied = false;
+      try{
+        const d = await this.api('/api/services/'+encodeURIComponent(name)+'/test-info');
+        this.testResult = Object.assign(this.testResult, d);
+        // fr：test-info 即带默认测试图（data/test/face.jpg），打开对话框立刻预览
+        if(d.image_base64){
+          this.testImageUrl = 'data:image/jpeg;base64,' + d.image_base64;
+          this.testImageName = d.image_name || 'face.jpg';
+          this.testImagePath = d.image_path || '';
+        }
+        // asr/vpr：test-info 即带默认测试音频（data/test/asr.wav，WAV 容器可播放）
+        if(d.audio_base64){
+          this.testInputAudioUrl = 'data:audio/wav;base64,' + d.audio_base64;
+          this.testInputAudioName = d.audio_name || 'asr.wav';
+          this.testInputAudioPath = d.audio_path || '';
+        }
+        // tts：test-info 即带默认测试文本（manifest test 或契约）与音色列表，回填
+        if(d.text) this.testInputText = d.text;
+        if(d.demo_id) this.testInputVoice = d.demo_id;
+        if(!this.testInputVoice && d.voices && d.voices.length) this.testInputVoice = d.voices[0].id;
+      }catch(e){
+        this.testResult.error = String(e.message || e);
+      }
+    },
+    async runTest(){
+      const svc = this.testResult && this.testResult.service;
+      if(!svc || this.testBusy) return;
+      this.testBusy = true;
+      // 注意：testDone 在请求返回后才置位——提前置位会让结果区闪现
+      // 「✗ 失败：未知错误」（此时 error 还是空串，|| 取到默认文案）
+      this.testResult.ok = false;
+      this.testResult.status = null;
+      this.testResult.body = '';
+      this.testResult.error = '';
+      this.testAudioUrl = '';
+      try{
+        // tts：携带当前测试文本与音色（手动点「执行测试」才用当前值；fr/asr 无 body 用默认样本）
+        const body = {};
+        if(this.testResult.type === 'tts'){
+          const text = String(this.testInputText || '').trim();
+          if(text) body.text = text;
+          if(this.testInputVoice) body.demo_id = this.testInputVoice;
+        }
+        const opts = Object.keys(body).length
+          ? { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }
+          : { method:'POST' };
+        const d = await this.api('/api/services/'+encodeURIComponent(svc)+'/test', opts);
+        // Object.assign 合并而非替换：保留 test-info 的 voices 等元信息（音色下拉不消失）
+        this.testResult = Object.assign(this.testResult, d);
+        // tts 类服务：audio_base64 → 内嵌播放器（按文件头猜容器格式）
+        if(d.audio_base64) this.testAudioUrl = 'data:' + this.audioMime(d.audio_base64) + ';base64,' + d.audio_base64;
+        // 默认样本命中时服务端回 image_base64/image_name/image_path（用户上传的图前端自己持有预览）
+        if(d.image_base64){
+          this.testImageUrl = 'data:image/jpeg;base64,' + d.image_base64;
+          this.testImageName = d.image_name || 'face.jpg';
+          this.testImagePath = d.image_path || '';
+        }
+        this.testDone = true;
+      }catch(e){
+        this.testResult.error = String(e.message || e);
+        this.testDone = true;
+      }
+      this.testBusy = false;
+    },
+    audioMime(b64){
+      // 按字节头猜音频容器：RIFF→wav（含 WAV 包裹的 aac/opus）；ID3/mpeg 同步字→mp3；ftyp→mp4；OggS→ogg
+      let bin = '';
+      try{ bin = atob(String(b64 || '').slice(0, 64).replace(/[^A-Za-z0-9+/=]/g, '')); }catch(e){}
+      if(bin.startsWith('RIFF')) return 'audio/wav';
+      if(bin.startsWith('ID3')) return 'audio/mpeg';
+      if(bin.length >= 2 && bin.charCodeAt(0) === 0xFF && (bin.charCodeAt(1) & 0xE0) === 0xE0) return 'audio/mpeg';
+      if(bin.startsWith('ftyp')) return 'audio/mp4';
+      if(bin.startsWith('OggS')) return 'audio/ogg';
+      return 'audio/wav';
+    },
+    copyCurl(){
+      this.copyText((this.testResult && this.testResult.curl) || '', 'curlCopied');
+    },
+    copyResp(){
+      this.copyText((this.testResult && this.testResult.body) || '', 'respCopied');
+    },
+    copyText(text, flagKey){
+      const value = String(text || '');
+      if(!value) return;
+      const done = () => { this[flagKey] = true; setTimeout(() => { this[flagKey] = false; }, 1500); };
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(value).then(done).catch(() => this.copyFallback(value, done));
+      }else{
+        this.copyFallback(value, done);
+      }
+    },
+    copyFallback(text, done){
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try{ document.execCommand('copy'); done(); }catch(e){ /* 忽略 */ }
+      document.body.removeChild(ta);
+    },
+    onPickTestImage(e){
+      const file = e.target && e.target.files && e.target.files[0];
+      if(e.target) e.target.value = ''; // 允许重复选择同一文件
+      if(!file) return;
+      const reader = new FileReader();
+      reader.onload = () => this.runTestWithImage(String(reader.result || ''), file.name);
+      reader.readAsDataURL(file);
+    },
+    onPickTestAudio(e){
+      const file = e.target && e.target.files && e.target.files[0];
+      if(e.target) e.target.value = ''; // 允许重复选择同一文件
+      if(!file) return;
+      const reader = new FileReader();
+      reader.onload = () => this.runTestWithAudio(String(reader.result || ''), file.name);
+      reader.readAsDataURL(file);
+    },
+    async runTestWithAudio(dataUrl, fileName){
+      if(!this.testResult || !this.testResult.service) return;
+      const svc = this.testResult.service;
+      this.testInputAudioUrl = dataUrl;
+      this.testInputAudioName = fileName || '本地音频';
+      this.testInputAudioPath = '用户上传';
+      this.testBusy = true;
+      this.testDone = true;
+      this.testResult.ok = false;
+      this.testResult.status = null;
+      this.testResult.body = '';
+      this.testResult.error = '';
+      try{
+        const b64 = dataUrl.split(',')[1] || '';
+        const d = await this.api('/api/services/'+encodeURIComponent(svc)+'/test', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ audio_base64: b64 }),
+        });
+        this.testResult = d;
+      }catch(e){
+        this.testResult = { service: svc, type: (this.testResult && this.testResult.type) || 'asr', contract: '', request: {}, ok: false, error: String(e.message || e), body: '' };
+      }
+      this.testBusy = false;
+    },
+    async runTestWithImage(dataUrl, fileName){
+      if(!this.testResult || !this.testResult.service) return;
+      const svc = this.testResult.service;
+      this.testImageUrl = dataUrl;
+      this.testImageName = fileName || '本地图片';
+      this.testImagePath = '用户上传';
+      this.testBusy = true;
+      this.testDone = true;
+      this.testResult.ok = false;
+      this.testResult.status = null;
+      this.testResult.body = '';
+      this.testResult.error = '';
+      try{
+        const b64 = dataUrl.split(',')[1] || '';
+        const d = await this.api('/api/services/'+encodeURIComponent(svc)+'/test', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ image_base64: b64 }),
+        });
+        this.testResult = d;
+      }catch(e){
+        this.testResult = { service: svc, type: 'fr', contract: '', request: {}, ok: false, error: String(e.message || e), body: '' };
+      }
+      this.testBusy = false;
+    },
+    closeTest(){
+      this.testResult = null;
+      this.testDone = false;
+      this.testAudioUrl = '';
+      this.testImageUrl = '';
+      this.testImageName = '';
+      this.testImagePath = '';
+      this.testInputAudioUrl = '';
+      this.testInputAudioName = '';
+      this.testInputAudioPath = '';
+      this.testInputText = '';
+      this.testInputVoice = '';
+      this.testBusy = false;
+      this.curlCopied = false;
+      this.respCopied = false;
+    },
+    async setAutoStart(name, enabled){
+      this.err = '';
+      try{
+        await this.api('/api/services/'+encodeURIComponent(name)+'/autostart', {
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ enabled }),
+        });
+        await this.loadServices();
+      }catch(e){ this.err = String(e.message || e); }
+    },
+  },
+  mounted(){
+    this.refresh();
+    this.pollTimer = setInterval(() => this.loadServices(), 2000);
+    this.logTimer = setInterval(() => this.loadLog(false), 1000);
+  },
+  beforeUnmount(){
+    if(this.pollTimer) clearInterval(this.pollTimer);
+    if(this.logTimer) clearInterval(this.logTimer);
+  },
+}).mount('#servicesApp');
+</script>
+{% endblock %}

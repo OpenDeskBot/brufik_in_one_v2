@@ -15,6 +15,8 @@
 |------|------|
 | [SERVER.md](./SERVER.md) | 主服务：端口、控制台、LLM 工具、豆包 TTS 配置 |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 代码分层、对话与定时任务链路 |
+| [external_services.md](./external_services.md) | 外部进程服务管理（manifest 契约 / 状态机 / 管理后台） |
+| [external_service_design.md](./external_service_design.md) | 外部服务设计模式与后台交互规范（insightface-engine 为例，含新增服务清单与踩坑记录） |
 
 ## 联调工具
 

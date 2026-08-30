@@ -1,0 +1,17 @@
+# insightface-engine 独立配置：完全自治，不读主服务 config.yaml，也不读 env
+# 本文件是主服务 config.yaml 的 camera_face 段快照（改这里不影响主服务）。
+# 字段语义与 deskbot_server.vision 保持一致；缺字段时用代码内置默认值。
+min_face_detection_confidence: 0.15
+min_face_presence_confidence: 0.15
+num_faces: 5
+frame_width: 320
+frame_height: 240
+face_embedding_enabled: true
+horizontal_fov_deg: 120
+undistort:
+  enabled: false
+  use_fov_estimate: true
+  default_dist_coeffs: [-0.28, 0.09, 0.0, 0.0, 0.0]
+  calib_width: 320
+  calib_height: 240
+  alpha: 1.0

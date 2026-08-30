@@ -20,7 +20,7 @@ def temp_db(monkeypatch):
         yield db_path
 
 
-PAGES = ["/home", "/voice", "/expr", "/lab", "/my/memories", "/my/reminders", "/my/people", "/my/devices", "/advanced"]
+PAGES = ["/home", "/voice", "/expr", "/lab", "/my/memories", "/my/reminders", "/my/people", "/my/devices", "/advanced", "/robot-settings"]
 
 
 @pytest.mark.parametrize("path", PAGES)
@@ -33,7 +33,7 @@ def test_2c_pages_redirect_when_anonymous(temp_db, path):
 
 @pytest.mark.parametrize("path", PAGES)
 def test_2c_pages_render_when_logged_in(temp_db, path):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("u2c@example.com", "password1234")
@@ -46,7 +46,7 @@ def test_2c_pages_render_when_logged_in(temp_db, path):
 
 def test_2c_advanced_json_apis(temp_db):
     from tests.device_bind_helpers import bind_device_online
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     user = create_user("advanced2c@example.com", "password1234")
@@ -93,7 +93,7 @@ def test_2c_advanced_json_apis(temp_db):
 
 
 def test_2c_tts_config_does_not_reuse_system_ark_key(temp_db, monkeypatch):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.infrastructure.tts import doubao as doubao_mod
     from deskbot_server.web.app import create_app
 
@@ -127,7 +127,7 @@ def test_2c_tts_config_does_not_reuse_system_ark_key(temp_db, monkeypatch):
 
 
 def test_2c_advanced_guides_users_to_volcengine_key_pages(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("key-guide2c@example.com", "password1234")
@@ -146,7 +146,7 @@ def test_2c_advanced_guides_users_to_volcengine_key_pages(temp_db):
 
 
 def test_2c_expr_curved_custom_mouth_hides_layout_box(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-mouth2c@example.com", "password1234")
@@ -164,7 +164,7 @@ def test_2c_expr_curved_custom_mouth_hides_layout_box(temp_db):
 
 
 def test_2c_advanced_debug_is_inline_not_old_debug_links(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("debug2c@example.com", "password1234")
@@ -187,7 +187,7 @@ def test_2c_advanced_debug_is_inline_not_old_debug_links(temp_db):
 
 
 def test_2c_lab_surfaces_device_runtime_features(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("lab2c@example.com", "password1234")
@@ -225,7 +225,7 @@ def test_2c_lab_surfaces_device_runtime_features(temp_db):
 
 
 def test_2c_lab_restores_robot_motion_preview(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("lab-robot2c@example.com", "password1234")
@@ -248,7 +248,7 @@ def test_2c_lab_restores_robot_motion_preview(temp_db):
 
 
 def test_2c_lab_allows_browsing_before_device_selection(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("lab-browse2c@example.com", "password1234")
@@ -272,7 +272,7 @@ def test_2c_lab_allows_browsing_before_device_selection(temp_db):
 
 
 def test_2c_nav_links_to_lab_page(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("lab-nav2c@example.com", "password1234")
@@ -289,7 +289,7 @@ def test_2c_nav_links_to_lab_page(temp_db):
 
 
 def test_2c_expr_basic_face_uses_controls_without_second_canvas(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-diy2c@example.com", "password1234")
@@ -332,7 +332,7 @@ def test_2c_expr_layout_collapses_to_balanced_workspace():
 
 
 def test_2c_home_heroes_are_the_two_creative_actions_without_duplicate_camera(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("lab-home2c@example.com", "password1234")
@@ -354,7 +354,7 @@ def test_2c_home_heroes_are_the_two_creative_actions_without_duplicate_camera(te
 
 
 def test_2c_home_embeds_live_camera_view_under_stage(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("home-camera2c@example.com", "password1234")
@@ -379,7 +379,7 @@ def test_2c_home_embeds_live_camera_view_under_stage(temp_db):
 
 
 def test_2c_home_integrates_robot_motion_preview(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("home-robot2c@example.com", "password1234")
@@ -413,7 +413,7 @@ def test_2c_home_integrates_robot_motion_preview(temp_db):
 
 
 def test_2c_home_is_state_aware_and_drops_duplicate_nav_panels(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("home-reminders2c@example.com", "password1234")
@@ -441,7 +441,7 @@ def test_2c_home_is_state_aware_and_drops_duplicate_nav_panels(temp_db):
 
 
 def test_2c_lab_accepts_initial_tab_from_query(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("lab-query2c@example.com", "password1234")
@@ -460,7 +460,7 @@ def test_2c_lab_accepts_initial_tab_from_query(temp_db):
 
 def test_2c_scene_playbook_export_plan_is_available_to_regular_user(temp_db):
     from tests.device_bind_helpers import bind_device_online
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("lab-export-admin2c@example.com", "password1234")
@@ -492,7 +492,7 @@ def test_2c_scene_playbook_export_plan_is_available_to_regular_user(temp_db):
 
 
 def test_2c_voice_page_links_to_model_config_and_keeps_player(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("voice2c@example.com", "password1234")
@@ -521,7 +521,7 @@ def test_2c_voice_page_links_to_model_config_and_keeps_player(temp_db):
 
 
 def test_2c_voice_page_collapses_doubao_voice_library_by_default(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("voice-library2c@example.com", "password1234")
@@ -556,7 +556,7 @@ def test_2c_voice_page_collapses_doubao_voice_library_by_default(temp_db):
 
 
 def test_2c_voice_preview_plays_inline_without_visible_audio_bar(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("voice-compact-preview2c@example.com", "password1234")
@@ -609,7 +609,7 @@ def test_2c_theme_uses_bold_retro_tokens():
 
 
 def test_2c_voice_page_exposes_voice_clone_workflow(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("voice-clone-page2c@example.com", "password1234")
@@ -632,7 +632,7 @@ def test_2c_voice_page_exposes_voice_clone_workflow(temp_db):
 
 
 def test_2c_voice_page_separates_library_and_clone_tabs_with_progress(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("voice-tabs2c@example.com", "password1234")
@@ -656,7 +656,7 @@ def test_2c_voice_page_separates_library_and_clone_tabs_with_progress(temp_db):
 def test_2c_voice_clone_upload_endpoint_uses_configured_volcengine_credentials(temp_db, monkeypatch):
     from io import BytesIO
 
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.infrastructure.tts.voice_clone import DoubaoVoiceCloneResult
     from deskbot_server.web.app import create_app
 
@@ -713,7 +713,7 @@ def test_2c_voice_clone_upload_endpoint_uses_configured_volcengine_credentials(t
 
 
 def test_2c_voice_clone_status_endpoint_reports_ready(temp_db, monkeypatch):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.infrastructure.tts.voice_clone import DoubaoVoiceCloneResult
     from deskbot_server.web.app import create_app
 
@@ -749,7 +749,7 @@ def test_2c_voice_clone_status_endpoint_reports_ready(temp_db, monkeypatch):
 def test_doubao_tts_speakers_api_can_return_consumer_ready_presets(temp_db):
     import json
 
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     speakers_path = Path(__file__).resolve().parents[1] / "data" / "doubao_tts_speakers.json"
@@ -784,7 +784,7 @@ def test_doubao_tts_speakers_api_can_return_consumer_ready_presets(temp_db):
 def test_doubao_tts_speakers_api_returns_full_local_preset_file(temp_db):
     import json
 
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     speakers_path = Path(__file__).resolve().parents[1] / "data" / "doubao_tts_speakers.json"
@@ -805,7 +805,7 @@ def test_doubao_tts_speakers_api_returns_full_local_preset_file(temp_db):
 
 
 def test_2c_voice_no_longer_owns_tts_config_panel(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("voice-collapse2c@example.com", "password1234")
@@ -824,7 +824,7 @@ def test_2c_voice_no_longer_owns_tts_config_panel(temp_db):
 
 
 def test_2c_voice_tts_synthesize_endpoint_returns_wav(temp_db, monkeypatch):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.infrastructure.tts.doubao import DoubaoTtsResult
     from deskbot_server.web.app import create_app
 
@@ -854,7 +854,7 @@ def test_2c_voice_tts_synthesize_endpoint_returns_wav(temp_db, monkeypatch):
 
 
 def test_2c_expr_page_exposes_real_face_editor_controls(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-editor2c@example.com", "password1234")
@@ -891,7 +891,7 @@ def test_2c_expr_page_exposes_real_face_editor_controls(temp_db):
 
 
 def test_2c_expr_keeps_svg_library_features_global_above_left_preview(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-svg-library2c@example.com", "password1234")
@@ -939,7 +939,7 @@ def test_2c_expr_keeps_svg_library_features_global_above_left_preview(temp_db):
 
 
 def test_2c_expr_basic_sliders_still_drive_face_geometry(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-basic-sliders2c@example.com", "password1234")
@@ -957,7 +957,7 @@ def test_2c_expr_basic_sliders_still_drive_face_geometry(temp_db):
 
 
 def test_2c_expr_basic_face_does_not_generate_default_yellow_dots(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-no-yellow-dots2c@example.com", "password1234")
@@ -978,7 +978,7 @@ def test_2c_expr_basic_face_does_not_generate_default_yellow_dots(temp_db):
 
 
 def test_2c_expr_basic_tab_keeps_left_drag_editor_visible(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-left-drag2c@example.com", "password1234")
@@ -1002,7 +1002,7 @@ def test_2c_expr_basic_tab_keeps_left_drag_editor_visible(temp_db):
 
 
 def test_2c_expr_preview_uses_home_fallback_until_user_edits(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-fallback2c@example.com", "password1234")
@@ -1027,7 +1027,7 @@ def test_2c_expr_preview_uses_home_fallback_until_user_edits(temp_db):
 
 
 def test_2c_expr_allows_browsing_without_device_selection(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-browse2c@example.com", "password1234")
@@ -1051,7 +1051,7 @@ def test_2c_expr_allows_browsing_without_device_selection(temp_db):
 
 
 def test_2c_expr_page_exposes_professional_design_tab(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-pro-design2c@example.com", "password1234")
@@ -1096,7 +1096,7 @@ def test_2c_face_config_apis_are_available_to_regular_user(temp_db, tmp_path, mo
     import json
 
     from tests.device_bind_helpers import bind_device_online
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     monkeypatch.setattr("deskbot_server.utils.device_data.DATA_DIR", tmp_path)
@@ -1147,7 +1147,7 @@ def test_2c_face_config_apis_are_available_to_regular_user(temp_db, tmp_path, mo
 
 
 def test_2c_advanced_keeps_heavy_features_collapsed(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("advanced-collapse2c@example.com", "password1234")
@@ -1174,7 +1174,7 @@ def test_2c_advanced_keeps_heavy_features_collapsed(temp_db):
 
 
 def test_2c_advanced_model_config_has_clear_primary_secondary_hierarchy(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("advanced-hierarchy2c@example.com", "password1234")
@@ -1206,7 +1206,7 @@ def test_2c_advanced_model_config_has_clear_primary_secondary_hierarchy(temp_db)
 
 def test_2c_consumer_apis_are_not_developer_locked(temp_db, monkeypatch):
     from tests.device_bind_helpers import bind_device_online
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     def fake_completion(messages, *, device_id=None, temperature=0.7, config=None, json_mode=True):
@@ -1235,7 +1235,7 @@ def test_2c_consumer_apis_are_not_developer_locked(temp_db, monkeypatch):
 
 
 def test_2c_debug_phoneme_endpoint_returns_json_when_tts_adapter_fails(temp_db, monkeypatch):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.infrastructure.tts import factory
     from deskbot_server.web.app import create_app
 
@@ -1259,7 +1259,7 @@ def test_2c_debug_phoneme_endpoint_returns_json_when_tts_adapter_fails(temp_db, 
 
 def test_face_design_generate_endpoint_uses_llm_and_returns_design(temp_db, monkeypatch):
     from tests.device_bind_helpers import bind_device_online
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     captured = {}
@@ -1303,7 +1303,7 @@ def test_face_design_generate_endpoint_uses_llm_and_returns_design(temp_db, monk
 
 
 def test_face_design_generate_endpoint_allows_browsing_without_device(temp_db, monkeypatch):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     captured = {}
@@ -1341,7 +1341,7 @@ def test_2c_face_preview_helper_exposes_frame_reader():
 
 
 def test_2c_expr_ai_generation_reminds_llm_config_required(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("expr-ai-reminder2c@example.com", "password1234")
@@ -1361,7 +1361,7 @@ def test_2c_expr_ai_generation_reminds_llm_config_required(temp_db):
 
 
 def test_2c_advanced_llm_form_has_test_connection(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("llm-test2c@example.com", "password1234")
@@ -1381,7 +1381,7 @@ def test_2c_advanced_llm_form_has_test_connection(temp_db):
 
 def test_2c_advanced_usage_includes_daily_breakdown(temp_db):
     from tests.device_bind_helpers import bind_device_online
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     user = create_user("usage-daily2c@example.com", "password1234")
@@ -1398,7 +1398,7 @@ def test_2c_advanced_usage_includes_daily_breakdown(temp_db):
 
 
 def test_2c_advanced_usage_has_trend_charts(temp_db):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     create_user("usage-charts2c@example.com", "password1234")
@@ -1412,7 +1412,7 @@ def test_2c_advanced_usage_has_trend_charts(temp_db):
 
 def test_old_app_pages_removed_but_apis_kept(temp_db):
     from tests.device_bind_helpers import bind_device_online
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     user = create_user("retire-app@example.com", "password1234")

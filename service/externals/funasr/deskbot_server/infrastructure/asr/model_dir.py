@@ -1,3 +1,7 @@
+# === externals/funasr 本地副本（funasr 独立化，勿直接删改此段）===
+# 来源: src/deskbot_server/infrastructure/asr/model_dir.py
+# 同步: 主服务改动后按 docs/external_services.md「funasr」节同步本副本并更新日期
+# synced: 2026-08-30
 """SenseVoiceSmall 本地目录是否已包含可用权重（供 start.sh / download_model / FunASR 共用）。"""
 
 from __future__ import annotations

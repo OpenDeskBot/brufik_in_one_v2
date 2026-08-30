@@ -103,6 +103,12 @@ def build_runtime() -> AppRuntime:
     )
     scheduler.start()
 
+    from deskbot_server.service.external.manager import ExternalServiceManager
+
+    external_manager = ExternalServiceManager()
+    external_manager.discover()
+    logger.info("[external] 发现 %d 个外部服务", len(external_manager.names()))
+
     return AppRuntime(
         settings=app_settings,
         chat=pipeline,
@@ -111,7 +117,15 @@ def build_runtime() -> AppRuntime:
         bus_service=bus_service,
         device_ws=device_ws,
         scheduler=scheduler,
+        external_manager=external_manager,
     )
+
+
+async def _apply_auto_start_safe(external_manager) -> None:
+    try:
+        await external_manager.apply_auto_start()
+    except Exception:
+        logger.exception("[external] auto_start 拉起失败")
 
 
 async def main():
@@ -154,6 +168,15 @@ async def main():
         ws_max_size=None,
     )
     server = uvicorn.Server(config)
+
+    external_manager = runtime.external_manager
+    if external_manager is not None:
+        external_manager.start_watchdog()
+        # 非阻塞拉起 auto_start 服务；失败仅记日志，不阻塞主服务启动
+        asyncio.create_task(
+            _apply_auto_start_safe(external_manager),
+            name="external-auto-start",
+        )
     try:
         await server.serve()
     finally:
