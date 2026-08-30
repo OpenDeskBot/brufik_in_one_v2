@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from deskbot_server.infrastructure.asr.doubao_adapter import DoubaoAsrAdapter
-from deskbot_server.infrastructure.asr.http_adapter import HttpAsrAdapter
+from deskbot_server.infrastructure.asr.funasr_adapter import FunAsrAdapter
 from deskbot_server.infrastructure.llm.openai_compat import OpenAiLlmAdapter
 from deskbot_server.infrastructure.tts.factory import build_tts_adapter
 from deskbot_server.model.settings import AppSettings
@@ -17,21 +17,21 @@ from deskbot_server.service.tts_service import TtsService
 logger = logging.getLogger("deskbot-server")
 
 
-def build_asr_adapter(settings: AppSettings):
-    """按 config.yaml 的 asr.provider 装配：
-    external=独立 funasr 进程（默认）；doubao=火山云端 ASR。
+def build_asr_adapter(provider: str, settings: AppSettings):
+    """按 provider 装配 ASR adapter（设备级路由见 infrastructure/asr/resolve.py）：
+    funasr=独立 funasr 进程（默认）；doubao=火山云端 ASR。
     进程内 FunASR 已于 v1.2.0 移除（funasr 完全独立化，见 externals/funasr）。
     """
-    if settings.asr.provider == "doubao":
+    if provider == "doubao":
         return DoubaoAsrAdapter(settings)
-    if settings.asr.provider != "external":
-        logger.warning("[ASR] 未知 provider=%r，回落 external", settings.asr.provider)
-    return HttpAsrAdapter(settings.asr.external_url, settings.asr.text_filter)
+    if provider != "funasr":
+        logger.warning("[ASR] 未知 provider=%r，回落 funasr", provider)
+    return FunAsrAdapter(settings.asr.external_url, settings.asr.text_filter)
 
 
 def build_chat_service(config: dict) -> ChatService:
     settings = AppSettings.from_config(config)
-    asr = build_asr_adapter(settings)
+    asr = build_asr_adapter("funasr", settings)  # 默认 funasr；运行时按设备动态解析（resolve_asr_adapter）
     llm = OpenAiLlmAdapter(settings)
     tts = build_tts_adapter(settings)
 

@@ -23,11 +23,7 @@ from deskbot_server.service.robot_capability import (
 
 MINIMAL_CONFIG = {
     "asr": {
-        "provider": "internal",
         "external_url": "http://127.0.0.1:9102",
-        "language": "zh",
-        "use_quant_onnx": True,
-        "onnx_intra_op_threads": 4,
         "text_filter": {"min_text_len": 2, "min_chinese_ratio": 0.0},
     },
     "llm": {
@@ -107,7 +103,7 @@ def bound_asr():
 # ---------- 1. 能力目录 ----------
 
 def test_capability_catalogs_structure():
-    assert [c.id for c in ASR_CANDIDATES] == ["internal", "external", "doubao"]
+    assert [c.id for c in ASR_CANDIDATES] == ["funasr", "doubao"]
     assert [c.id for c in LLM_CANDIDATES] == ["ark", "local"]
     assert [c.id for c in TTS_CANDIDATES] == ["doubao"]
 
@@ -116,60 +112,82 @@ def test_capability_catalogs_structure():
     assert ark.experimental is False
     assert local.experimental is True
     assert local.requires_service == "llm-engine"
-    assert ASR_CANDIDATES[1].requires_service == "funasr"
+    assert ASR_CANDIDATES[0].requires_service == "funasr"
     for cap in (*ASR_CANDIDATES, *LLM_CANDIDATES, *TTS_CANDIDATES):
         assert cap.id and cap.name and cap.description
 
 
-# ---------- 2. ASR 热切换 ----------
+# ---------- 2. ASR 设备级配置 ----------
 
-def test_apply_asr_switches_config_and_rebind(svc, fake_asr_build, bound_asr, clean_llm_env):
-    from deskbot_server.config import load_config
-    from deskbot_server.service.asr_service import AsrService
+@pytest.fixture()
+def temp_db(monkeypatch):
+    import tempfile
 
-    status = svc.get_status()
-    assert status["capabilities"]["asr"]["current"] == "internal"
+    from deskbot_server.db import init_database
+    from deskbot_server.db.engine import init_engine, reset_engine
 
-    asyncio.run(svc.apply_asr("external"))
-
-    assert load_config(svc._config_path)["asr"]["provider"] == "external"
-    assert AsrService().asr is fake_asr_build["built"][-1]
-    assert AsrService().asr.provider == "external"
-    assert svc.get_status()["capabilities"]["asr"]["current"] == "external"
-
-
-def test_apply_asr_failure_rolls_back(svc, fake_asr_build, bound_asr, clean_llm_env):
-    from deskbot_server.config import load_config
-    from deskbot_server.service.asr_service import AsrService
-
-    fake_asr_build["fail"] = RuntimeError("doubao 未配置凭证")
-
-    with pytest.raises(CapabilityError, match="已回滚"):
-        asyncio.run(svc.apply_asr("doubao"))
-
-    assert load_config(svc._config_path)["asr"]["provider"] == "internal"  # config 已回滚
-    assert AsrService().asr is bound_asr  # 单例保持旧 adapter
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.db"
+        monkeypatch.setenv("DESKBOT_DB_PATH", str(db_path))
+        reset_engine()
+        init_engine(db_path)
+        init_database()  # 含 _migrate_devices_schema（asr_provider 列）
+        yield db_path
 
 
-def test_apply_asr_idempotent(svc, fake_asr_build, bound_asr, clean_llm_env):
-    from deskbot_server.config import load_config
+@pytest.fixture()
+def device(temp_db):
+    """绑定一台测试设备。"""
+    from tests.device_bind_helpers import bind_device_online
+    from deskbot_server.service.user_service import UserService
 
-    fake_asr_build["built"].clear()
-    asyncio.run(svc.apply_asr("internal"))  # 与当前一致
-
-    assert not fake_asr_build["built"]  # 未重建 adapter
-    assert load_config(svc._config_path)["asr"]["provider"] == "internal"
+    user = UserService().register("asr-device@example.com", "password1234")
+    return bind_device_online(user.id, "deskbot_asr")
 
 
-def test_apply_asr_rejects_env_override(svc, fake_asr_build, bound_asr, monkeypatch):
-    monkeypatch.setenv("ASR_PROVIDER", "external")
-
-    with pytest.raises(CapabilityError, match="ASR_PROVIDER"):
-        asyncio.run(svc.apply_asr("external"))
-
+def test_apply_asr_writes_device_table(svc, device, clean_llm_env):
+    """ASR 为设备级：apply_asr 写 device 表，动态解析即时生效（不落 config）。"""
+    from deskbot_server.dao.device_mapper import get_asr_provider
     from deskbot_server.config import load_config
 
-    assert load_config(svc._config_path)["asr"]["provider"] == "internal"
+    assert get_asr_provider("deskbot_asr") == "funasr"  # 默认
+
+    svc.apply_asr("doubao", "deskbot_asr")
+
+    assert get_asr_provider("deskbot_asr") == "doubao"
+    assert "provider" not in load_config(svc._config_path).get("asr", {})  # config 无 provider
+
+    status = svc.get_status("deskbot_asr")
+    assert status["capabilities"]["asr"]["current"] == "doubao"
+
+
+def test_apply_asr_requires_device(svc):
+    with pytest.raises(CapabilityError, match="未选择当前设备"):
+        svc.apply_asr("doubao", None)
+
+
+def test_apply_asr_unknown_provider_rejected(svc, device):
+    from deskbot_server.dao.device_mapper import get_asr_provider
+
+    with pytest.raises(CapabilityError, match="未知的 ASR 能力"):
+        svc.apply_asr("bogus", "deskbot_asr")
+    assert get_asr_provider("deskbot_asr") == "funasr"
+
+
+def test_clear_device_asr_override_resets_to_funasr(svc, device):
+    from deskbot_server.dao.device_mapper import get_asr_provider
+
+    svc.apply_asr("doubao", "deskbot_asr")
+    assert get_asr_provider("deskbot_asr") == "doubao"
+
+    svc.clear_device_asr_override("deskbot_asr")
+    assert get_asr_provider("deskbot_asr") == "funasr"
+    assert svc.get_status("deskbot_asr")["capabilities"]["asr"]["current"] == "funasr"
+
+
+def test_asr_status_default_when_no_device(svc, temp_db):
+    """匿名/未选择设备 → 默认 funasr。"""
+    assert svc.get_status(None)["capabilities"]["asr"]["current"] == "funasr"
 
 
 # ---------- 3. LLM 切换 ----------
@@ -292,7 +310,7 @@ def test_local_llm_forces_non_stream(monkeypatch):
 
 # ---------- 5. 设备级 LLM 覆盖 ----------
 
-def test_device_override_status_and_clear(svc, clean_llm_env, monkeypatch, tmp_path):
+def test_device_override_status_and_clear(svc, clean_llm_env, monkeypatch, tmp_path, temp_db):
     monkeypatch.setattr("deskbot_server.utils.device_data.DATA_DIR", tmp_path)
     from deskbot_server.dao.llm_config_store import add_llm_model, set_active_llm_model
 
@@ -357,7 +375,7 @@ def test_api_robot_settings_endpoints(temp_db):
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["ok"] is True
-    assert payload["capabilities"]["asr"]["current"] in ("internal", "external", "doubao")
+    assert payload["capabilities"]["asr"]["current"] in ("funasr", "doubao")
     assert payload["capabilities"]["tts"]["current"] == "doubao"
     assert payload["capabilities"]["llm"]["current"] in ("ark", "local", "device", "custom")
 

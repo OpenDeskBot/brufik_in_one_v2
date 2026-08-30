@@ -61,10 +61,7 @@ def build_runtime() -> AppRuntime:
         config.get("asr", {}).get("text_filter", {}).get("min_text_len"),
         config.get("asr", {}).get("text_filter", {}).get("min_chinese_ratio"),
     )
-    configure_concurrency(
-        max_concurrent_asr=app_settings.server.max_concurrent_asr,
-        max_concurrent_face_infer=app_settings.server.max_concurrent_face_infer,
-    )
+    configure_concurrency(max_concurrent_face_infer=app_settings.server.max_concurrent_face_infer)
     try:
         face_pool_n = resolve_face_pool_workers(app_settings.server.max_concurrent_face_infer)
         CameraFaceService.start_pool(max_workers=face_pool_n)

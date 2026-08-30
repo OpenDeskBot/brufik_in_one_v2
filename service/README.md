@@ -101,7 +101,7 @@ WAV 须 **16 kHz / mono / s16le**。麦克风实时测试见 [tools/README.md](t
 
 ```
 ┌──────── ESP32 ────────┐                    ┌──── deskbot-server ────┐
-│ 麦克风 Opus/PCM       │  audio + binary    │ VAD → FunASR → 文本     │
+│ 麦克风 Opus/PCM       │  audio + binary    │ VAD → 外部 funasr 服务（HTTP）→ 文本     │
 │ 可选 JPEG             │  camera_frame      │ → 方舟 LLM + tools │
 │ flush / pb_ack        │ ─────────────────► │ → 豆包 TTS + 音素口型   │
 │                       │                    │ → 组 pb + PCM           │

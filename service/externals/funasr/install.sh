@@ -58,22 +58,59 @@ fi
 [ -f deskbot_server/model/settings.py ] || \
   fail "deskbot_server 运行子集副本缺失（deskbot_server/ 目录不完整）。请 git 恢复后重试"
 
-# ---------- 4. copy 模型（2G，幂等；中断后重跑先清残片自愈） ----------
+# ---------- 4. 模型（双路径，幂等；中断后重跑先清残片自愈） ----------
+# 路径 A：主服务 models/SenseVoiceSmall 存在（历史遗留）→ copy；
+# 路径 B：无源 → 从 modelscope 下载 + 本地导出量化 ONNX（新装机不依赖主服务任何东西）。
 SRC_MODEL="$PWD/../../models/SenseVoiceSmall"
 DST_MODEL="models/SenseVoiceSmall"
-if [ -f "$SRC_MODEL/model_quant.onnx" ] && [ -f "$SRC_MODEL/model.pt" ]; then
-  if [ -f "$DST_MODEL/model_quant.onnx" ] && [ -f "$DST_MODEL/model.pt" ] && [ -f "$DST_MODEL/model.onnx" ]; then
-    info "模型已存在（${DST_MODEL}），跳过 copy"
-  else
-    info "copy 模型（约 2G，需 1~2 分钟）..."
-    rm -rf "$DST_MODEL"
-    mkdir -p models
-    cp -RL "$SRC_MODEL" models/   # -L: 跟随符号链接，杜绝指向主服务的隐藏依赖
-    [ -f "$DST_MODEL/model_quant.onnx" ] || fail "模型 copy 不完整"
-    info "模型 copy 完成"
-  fi
+
+model_ready() {
+  [ -f "$DST_MODEL/model_quant.onnx" ] && [ -f "$DST_MODEL/model.pt" ]
+}
+
+if model_ready; then
+  info "模型已存在（${DST_MODEL}），跳过获取"
+elif [ -f "$SRC_MODEL/model_quant.onnx" ] && [ -f "$SRC_MODEL/model.pt" ]; then
+  info "copy 模型（约 2G，需 1~2 分钟）..."
+  rm -rf "$DST_MODEL"
+  mkdir -p models
+  cp -RL "$SRC_MODEL" models/   # -L: 跟随符号链接，杜绝指向主服务的隐藏依赖
+  model_ready || fail "模型 copy 不完整"
+  info "模型 copy 完成"
 else
-  fail "主服务模型缺失: ${SRC_MODEL}。请先在 service/ 下执行 python scripts/download_model.py 再安装本服务"
+  info "本机无模型源，从 modelscope 下载 SenseVoiceSmall（约 900MB，首次较慢；可设 HF_ENDPOINT 镜像）..."
+  rm -rf "$DST_MODEL"
+  mkdir -p models
+  if HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}" HF_HUB_DISABLE_XET=1 \
+      .venv/bin/python -c '
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(".").resolve()))
+from modelscope import snapshot_download
+local = snapshot_download("iic/SenseVoiceSmall", local_dir=str(Path("models/SenseVoiceSmall").resolve()))
+print("download ok:", local)
+'; then
+    info "模型下载完成"
+  else
+    fail "模型下载失败（网络/镜像问题？）。重跑本脚本会继续（幂等），或手动放置 models/SenseVoiceSmall 后重试"
+  fi
+  # 量化 ONNX：缺 model_quant.onnx 时由 funasr-onnx 导出（约 1 分钟）；失败仅告警（回退 PyTorch 推理）
+  if [ -f "$DST_MODEL/model.pt" ] && ! model_ready; then
+    info "导出量化 ONNX（model_quant.onnx，首次约 1 分钟）..."
+    if .venv/bin/python -c '
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(".").resolve()))
+from funasr_onnx import SenseVoiceSmall
+SenseVoiceSmall(str(Path("models/SenseVoiceSmall").resolve()), batch_size=1, quantize=True)
+print("quant export ok")
+'; then
+      info "量化 ONNX 导出完成"
+    else
+      info "量化 ONNX 导出失败，将回退 PyTorch model.pt 推理（仅告警）"
+    fi
+  fi
+  model_ready || fail "模型未就绪（缺 model_quant.onnx 或 model.pt）"
 fi
 
 # ---------- 5. warmup（真实加载一次，失败仅告警；llm-engine 风格） ----------

@@ -61,14 +61,14 @@
   </div>
 
   <div class="cap-grid">
-    <!-- ===== ASR ===== -->
+    <!-- ===== ASR（设备级） ===== -->
     <div class="cap-card">
       <div class="cap-head">
         <div class="cap-ico">🎙️</div>
-        <div><b>语音识别 ASR</b><small>SPEECH RECOGNITION</small></div>
+        <div><b>语音识别 ASR</b><small>SPEECH RECOGNITION · 设备级</small></div>
       </div>
       <label v-for="c in asr.candidates" :key="c.id" class="cap-opt" :class="{on: selected.asr===c.id}">
-        <input type="radio" name="asr" :value="c.id" v-model="selected.asr" :disabled="busyAsr">
+        <input type="radio" name="asr" :value="c.id" v-model="selected.asr" :disabled="noDevice">
         <span>
           <b>[[ c.name ]]
             <span v-if="c.experimental" class="cap-badge exp">实验性</span>
@@ -79,14 +79,16 @@
           <small>[[ c.description ]]</small>
         </span>
       </label>
+      <div v-if="noDevice" class="cap-warn">⚠ 未选择当前设备，请在「我的设备」中选择后再配置 ASR。</div>
       <div v-if="asr.warning" class="cap-warn">⚠ [[ asr.warning ]]</div>
       <div class="cap-foot">
         <span class="cap-cur">当前：<b>[[ curName(asr) ]]</b></span>
-        <button type="button" class="btn cap-apply" :disabled="busyAsr || selected.asr===asr.current" @click="applyAsr">
-          [[ busyAsr ? '切换中…' : '应用' ]]
+        <button type="button" class="btn cap-apply" :disabled="noDevice || selected.asr===asr.current" @click="applyAsr">
+          应用
         </button>
       </div>
-      <p class="cap-hint">切换「本地 FunASR」需重新加载模型，可能耗时数秒；切换期间不影响正在进行的识别。</p>
+      <p class="cap-hint">ASR 为设备级配置，保存在 device 表；未设置时默认 funasr 独立进程。
+      「豆包云端」需要 DOUBAO_ASR_* 环境变量凭证。</p>
     </div>
 
     <!-- ===== LLM ===== -->
@@ -144,7 +146,8 @@
   </div>
 
   <p class="cap-hint" style="margin-top:14px">
-    所有修改直接写入 <code>config.yaml</code>（重启后保持；YAML 注释不保留）。依赖的外部服务请先在
+    ASR 为设备级配置（device 表，立即生效）；LLM 为系统默认 + 设备覆盖；TTS 写入
+    <code>config.yaml</code>（重启后保持；YAML 注释不保留）。依赖的外部服务请先在
     <a href="{{ url_for('services.page') }}" style="color:var(--accent)">独立服务管理</a> 中安装并启动。
   </p>
 </div>
@@ -158,7 +161,6 @@ createApp({
     return {
       status: null,
       selected: { asr: null, llm: null, tts: null },
-      busyAsr: false,
       busyLlm: false,
       err: '',
       msg: '',
@@ -168,6 +170,7 @@ createApp({
     asr(){ return (this.status && this.status.capabilities.asr) || { candidates: [], current: null, warning: null }; },
     llm(){ return (this.status && this.status.capabilities.llm) || { candidates: [], current: null, warning: null, device_override: { active: false } }; },
     tts(){ return (this.status && this.status.capabilities.tts) || { candidates: [], current: null, warning: null }; },
+    noDevice(){ return !(this.status && this.status.device_id); },
     envNotice(){
       if(!this.status) return '';
       const o = this.status.env_overrides || {};
@@ -208,21 +211,20 @@ createApp({
       }catch(e){ this.err = '加载失败：' + e.message; }
     },
     async applyAsr(){
-      if(this.busyAsr) return;
+      if(!this.status || !this.status.device_id) return;
       this.err = ''; this.msg = '';
-      this.busyAsr = true;
       try{
         const d = await this.api('/api/robot-settings/asr', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ provider: this.selected.asr }),
         });
         this.status = d;
-        this.msg = 'ASR 已切换为「' + this.curName(this.asr) + '」并生效';
+        this.msg = '当前设备 ASR 已设为「' + this.curName(this.asr) + '」并立即生效';
         if(d.capabilities && d.capabilities.asr.warning) this.err = d.capabilities.asr.warning;
       }catch(e){
         this.err = '切换失败：' + e.message;
-        await this.load();  // 恢复页面状态（回滚后 current 不变）
-      }finally{ this.busyAsr = false; }
+        await this.load();
+      }
     },
     async applyLlm(){
       if(this.busyLlm || this.selected.llm === null) return;

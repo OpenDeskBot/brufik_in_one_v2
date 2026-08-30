@@ -1,4 +1,4 @@
-"""外部 ASR（funasr）测试：HttpAsrAdapter 转发 / provider 切换 / server 路由。
+"""外部 ASR（funasr）测试：FunAsrAdapter 转发 / provider 切换 / server 路由。
 
 用本地 fake http server 模拟 funasr 进程，不加载真实模型。
 """
@@ -12,8 +12,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from deskbot_server.infrastructure.asr.funasr import FunAsrAdapter
-from deskbot_server.infrastructure.asr.http_adapter import HttpAsrAdapter
+from deskbot_server.infrastructure.asr.doubao_adapter import DoubaoAsrAdapter
+from deskbot_server.infrastructure.asr.funasr_adapter import FunAsrAdapter
 from deskbot_server.infrastructure.bootstrap import build_asr_adapter
 from deskbot_server.model.settings import AppSettings, AsrTextFilterSettings
 
@@ -72,11 +72,11 @@ def fake_engine():
         engine.stop()
 
 
-# ------------------------------------------------------------------ HttpAsrAdapter
+# ------------------------------------------------------------------ FunAsrAdapter
 
 
-def test_http_adapter_transcribe(fake_engine):
-    adapter = HttpAsrAdapter("http://127.0.0.1:9201", AsrTextFilterSettings())
+def test_funasr_adapter_transcribe(fake_engine):
+    adapter = FunAsrAdapter("http://127.0.0.1:9201", AsrTextFilterSettings())
 
     async def run():
         text = await adapter.transcribe(b"\x00\x01\x02" * 100, 16000)
@@ -88,8 +88,8 @@ def test_http_adapter_transcribe(fake_engine):
     assert fake_engine.last_pcm_len == 300
 
 
-def test_http_adapter_unreachable():
-    adapter = HttpAsrAdapter("http://127.0.0.1:19999", AsrTextFilterSettings())
+def test_funasr_adapter_unreachable():
+    adapter = FunAsrAdapter("http://127.0.0.1:19999", AsrTextFilterSettings())
 
     async def run():
         with pytest.raises(RuntimeError, match="不可达"):
@@ -98,9 +98,9 @@ def test_http_adapter_unreachable():
     asyncio.run(run())
 
 
-def test_http_adapter_is_valid_text_local():
+def test_funasr_adapter_is_valid_text_local():
     """文本过滤是纯逻辑，本地执行（不依赖远程）。"""
-    adapter = HttpAsrAdapter("http://127.0.0.1:9201", AsrTextFilterSettings(min_text_len=2, min_chinese_ratio=0.0))
+    adapter = FunAsrAdapter("http://127.0.0.1:9201", AsrTextFilterSettings(min_text_len=2, min_chinese_ratio=0.0))
     assert adapter.is_valid_text("你好世界")
     assert not adapter.is_valid_text("a")  # 短于 min_text_len
 
@@ -108,13 +108,14 @@ def test_http_adapter_is_valid_text_local():
 # ------------------------------------------------------------------ provider 切换
 
 
-def test_provider_switch():
-    assert isinstance(build_asr_adapter(AppSettings.from_config({"asr": {}})), FunAsrAdapter)
-    assert isinstance(build_asr_adapter(AppSettings.from_config({"asr": {"provider": "internal"}})), FunAsrAdapter)
-    external = build_asr_adapter(
-        AppSettings.from_config({"asr": {"provider": "external", "external_url": "http://127.0.0.1:9201"}})
-    )
-    assert isinstance(external, HttpAsrAdapter)
+def test_provider_switch(monkeypatch):
+    """build_asr_adapter 按 provider 参数装配：funasr 默认 / doubao / 未知回落 funasr。"""
+    settings = AppSettings.from_config({"asr": {"external_url": "http://127.0.0.1:9201"}})
+    assert isinstance(build_asr_adapter("funasr", settings), FunAsrAdapter)
+    assert isinstance(build_asr_adapter("bogus", settings), FunAsrAdapter)  # 未知回落
+    for name in ("DOUBAO_ASR_APP_ID", "DOUBAO_ASR_ACCESS_TOKEN", "DOUBAO_ASR_CLUSTER"):
+        monkeypatch.setenv(name, "test")
+    assert isinstance(build_asr_adapter("doubao", settings), DoubaoAsrAdapter)
 
 
 # ------------------------------------------------------------------ funasr server 路由

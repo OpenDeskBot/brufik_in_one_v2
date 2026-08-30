@@ -1,11 +1,8 @@
-# 与 pyproject.toml [project.dependencies] 同步；torch 仍由 start.sh 单独安装
-funasr==1.2.7
-funasr-onnx>=0.4.1
+# 与 pyproject.toml [project.dependencies] 同步
 websockets==14.2
 PyYAML==6.0.2
 numpy==1.26.4
 opuslib_next==1.1.5
-librosa>=0.10.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.9

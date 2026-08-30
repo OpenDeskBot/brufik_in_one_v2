@@ -8,7 +8,6 @@
 #
 # 环境变量:
 #   PYTHON_BIN=             创建 venv 时使用的 Python（默认自动查找 >= 3.11）
-#   USE_CPU_TORCH=1         安装 CPU 版 torch（默认 1）
 #   SKIP_SYSTEM_CHECK=1     跳过 ffmpeg 等系统依赖警告
 
 set -euo pipefail
@@ -18,11 +17,9 @@ cd "$ROOT"
 source "$ROOT/scripts/platform.sh"
 
 REQUIRED_PY_MM="${REQUIRED_PY_MM:-3.11}"
-USE_CPU_TORCH="${USE_CPU_TORCH:-1}"
 FAST_START="${FAST_START:-0}"
 SKIP_SETUP="${SKIP_SETUP:-0}"
 SETUP_ONLY="${SETUP_ONLY:-0}"
-TORCH_WHEEL_DIR="${TORCH_WHEEL_DIR:-$HOME/.cache/torch-wheels}"
 VENV_DIR="$ROOT/.venv"
 
 if [[ -f .env ]]; then
@@ -118,17 +115,13 @@ require_python "$VPY" "venv python"
 
 if [[ "$FAST_START" == "1" ]]; then
   echo "FAST_START=1，跳过依赖安装。"
-  if ! "$VPY" -c "import numpy, websockets, yaml, webrtcvad, openai, opuslib_next, torch, torchaudio, funasr, croniter, fastapi, uvicorn, deskbot_server" >/dev/null 2>&1; then
-    echo "当前 .venv 依赖不完整（常见是缺少 torch 或未 pip install -e .）。" >&2
+  if ! "$VPY" -c "import numpy, websockets, yaml, webrtcvad, openai, opuslib_next, croniter, fastapi, uvicorn, deskbot_server" >/dev/null 2>&1; then
+    echo "当前 .venv 依赖不完整（常见是未 pip install -e .）。" >&2
     echo "请执行 ./start.sh（不设 FAST_START/SKIP_SETUP）后重试。" >&2
     exit 1
   fi
 else
   configure_pip_index "$VPY"
-
-  if [[ "$USE_CPU_TORCH" == "1" ]]; then
-    platform_install_cpu_torch "$VPY" "$REQUIRED_PY_MM" "$TORCH_WHEEL_DIR"
-  fi
 
   echo "安装项目依赖..."
   "$VPY" -m pip install -r requirements.txt --default-timeout=1000 --cache-dir="${HOME}/.cache/pip" \

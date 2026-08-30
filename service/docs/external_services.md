@@ -204,36 +204,41 @@ auto_start 服务；FastAPI lifespan 关闭时 `shutdown()` 优雅回收全部�
 - **verify**：`/health` 200；`POST /api/generate`（multipart `text` + `demo_id`）
   返回 JSON 含 `audio_base64`（48kHz 双声道 wav）
 
-## funasr：FunASR 外部化（provider 可切换）
+## funasr：FunASR 独立服务（主服务 internal 已移除，v1.2.0）
 
-`externals/funasr/` 把进程内 FunASR（`infrastructure/asr/funasr.py` 的
-`FunAsrAdapter`）以独立进程提供：**完全自包含**——独立 venv（`.venv`，`install.sh` 幂等）、
-服务目录内模型副本（`models/SenseVoiceSmall`，约 2G，install 时从主服务 `models/` copy）、
-`deskbot_server/` 运行子集副本（随仓库提交），**运行期零依赖主服务**（venv/模型/源码均自备）；
-**配置完全自治**——只读同目录 `config.yaml`（主服务 `asr` 段的独立快照），不读主服务 config.yaml/env。
+`externals/funasr/` 以独立进程提供 FunASR SenseVoice 识别：**完全自包含**——
+独立 venv（`.venv`，`install.sh` 幂等）、服务目录内模型副本（`models/SenseVoiceSmall`，
+约 2G；install 双路径：本机 `service/models/` 有源则 copy，无源则从 modelscope 下载 +
+本地导出量化 ONNX）、`deskbot_server/` 运行子集副本（随仓库提交），**运行期零依赖主服务**
+（venv/模型/源码均自备）；**配置完全自治**——只读同目录 `config.yaml`，不读主服务 config.yaml/env。
+
+**主服务进程内 FunASR 已移除**（`src/deskbot_server/infrastructure/asr/funasr.py`、
+`model_dir.py` 及 venv 依赖 funasr/funasr-onnx/torch 等全部删除）。
 
 - 端点：`GET /health`；`POST /transcribe` → `{"text": "...", "elapsed_ms": ...}`；
   端口 9102。请求/响应遵循 ASR 外部服务协议 v1（PCM + `X-Sample-Rate` 或 WAV 容器
   自描述；错误统一 `{"error": {code, message}}`），完整规范见
   [asr_protocol.md](./asr_protocol.md)
-- 主服务切换：`config.yaml` 的 `asr.provider`（`internal` 默认 / `external`），
-  或环境变量 `ASR_PROVIDER`；`external` 时装配 `HttpAsrAdapter`
-  （`infrastructure/asr/http_adapter.py`），`is_valid_text` 文本过滤保持本地执行
-- 原进程内 `FunAsrAdapter` 保留，切换只改配置；external 不可达时 `transcribe`
-  抛 `RuntimeError`（上层已有 LLM 降级路径）
-- 注意：funasr 与主服务**各自持有模型副本，互不依赖**；安装/卸载由独立服务管理
-  后台执行（install.sh 幂等：venv 自愈 + 模型 copy 跳过 + warmup 预验）；
-  ONNX 推理串行化由 server 内锁保证
+- **ASR 为设备级路由**：每个设备在 device 表 `asr_provider` 列配置（`funasr` 默认 /
+  `doubao`），查不到默认 funasr（`infrastructure/asr/resolve.py::resolve_asr_adapter`
+  每次调用动态解析，无状态 adapter）；`config.yaml` 的 asr 段仅保留
+  `external_url` / `text_filter` 基础设施参数。funasr 时装配 `FunAsrAdapter`
+  （`infrastructure/asr/funasr_adapter.py`），`is_valid_text` 文本过滤保持本地执行；
+  funasr 不可达时 `transcribe` 抛 `RuntimeError`（上层已有 LLM 降级路径）
+- 安装/卸载由独立服务管理后台执行（install.sh 幂等：venv 自愈 + 模型双路径跳过 +
+  warmup 预验）；ONNX 推理串行化由 server 内锁保证
 
 ### funasr 代码副本同步
 
-`externals/funasr/deskbot_server/` 是主服务 `src/deskbot_server/` 的**运行子集副本**
-（13 个文件，全部 stdlib+numpy；3 个分叉文件：`utils/paths.py`（PROJECT_ROOT 指向服务根）、
-`model/__init__.py`、`utils/__init__.py`）。主服务改动相关代码后需同步：
+`externals/funasr/deskbot_server/` 是 **funasr 服务自身的运行时**（13 个文件，
+全部 stdlib+numpy；3 个分叉文件：`utils/paths.py`（PROJECT_ROOT 指向服务根）、
+`model/__init__.py`、`utils/__init__.py`）。**主服务已删除 funasr.py/model_dir.py，
+本副本是这些代码的唯一来源**（不再存在"从主服务同步"的方向；主服务其余共享文件如
+`protocol.py`/`settings.py` 改动后仍按需手动同步）：
 
-1. 改 `src/deskbot_server/` 下对应文件（10 个非分叉文件可 `cp` 直接覆盖）
-2. 手工重放 3 个分叉文件的差异（见各文件头「分叉点」注释）
-3. 更新副本文件头的 `synced:` 日期；`git log --diff-filter=M -- externals/funasr/deskbot_server/`
+1. 主服务 `src/deskbot_server/` 相关文件改动后，按各文件头「来源」标记手动 `cp` 覆盖
+   （注意「分叉点」差异需手工重放：paths.py 的 parents[2]、两个 `__init__.py` 精简版）
+2. 更新副本文件头的 `synced:` 日期；`git log --diff-filter=M -- externals/funasr/deskbot_server/`
    可快速发现是否漂移
 
 install.sh **不会**在安装期从主服务源码生成副本（避免覆盖分叉文件、保持安装离线）。
@@ -245,10 +250,11 @@ install.sh **不会**在安装期从主服务源码生成副本（避免覆盖�
 端点，在 `bootstrap` 装配时按 `config.yaml` 的 `tts.provider` 切换。当前 `provider: doubao`
 为进程内实现，`provider: external` 预留。
 
-ASR 同构：`asr.provider` 三态——`internal`（进程内 FunASR）/ `external`（funasr
-进程，协议见 [asr_protocol.md](./asr_protocol.md)）/ `doubao`（火山云端一句话识别，
-`infrastructure/asr/doubao_adapter.py`，配置走 env `DOUBAO_ASR_*`）。云端 provider
-不建 externals 目录（无本地进程），直连云 API。
+ASR 同构：设备级两态——`funasr`（独立进程，协议见
+[asr_protocol.md](./asr_protocol.md)）/ `doubao`（火山云端一句话识别，
+`infrastructure/asr/doubao_adapter.py`，配置走 env `DOUBAO_ASR_*`）。进程内
+FunASR 已移除（v1.2.0）；provider 存 device 表（v1.3.0 起），非 config.yaml。
+云端 provider 不建 externals 目录（无本地进程），直连云 API。
 
 外部服务只解决"进程怎么活"，业务接入走既有 port/adapter 模式：
 `TtsPort`（`ports/tts.py`）保持不变，新增 HTTP 适配器调用外部服务的 `/api/generate*`

@@ -52,13 +52,9 @@ vad:
   silero_threshold: 0.5
   silero_threshold_low: 0.2
 asr:
-  provider: external
+  # 设备级 ASR provider 存 device 表（funasr 默认 / doubao，见 infrastructure/asr/resolve.py）；
+  # 此处仅保留基础设施参数。进程内 FunASR 已移除（funasr 完全独立化，见 externals/funasr）
   external_url: http://127.0.0.1:9102
-  model_dir: ''
-  hub: hf
-  language: zh
-  use_quant_onnx: true
-  onnx_intra_op_threads: 4
   text_filter:
     min_text_len: 2
     min_chinese_ratio: 0.0

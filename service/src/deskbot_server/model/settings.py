@@ -42,7 +42,6 @@ class ServerSettings:
     send_face_info_to_asr_chat: bool = False
     web_public_host: str = ""
     # 0 = 启动时按 CPU 核数推导（见 core/concurrency.py）
-    max_concurrent_asr: int = 0
     max_concurrent_face_infer: int = 0
 
 
@@ -74,8 +73,7 @@ class AsrTextFilterSettings:
 
 @dataclass(frozen=True)
 class AsrSettings:
-    # external=独立 funasr 进程（HTTP，默认）；doubao=火山云端 ASR（进程内 FunASR 已移除）
-    provider: str = "external"
+    # 设备级 ASR provider 存 device 表（默认 funasr）；此处仅保留基础设施参数
     external_url: str = "http://127.0.0.1:9102"
     text_filter: AsrTextFilterSettings = field(default_factory=AsrTextFilterSettings)
 
@@ -140,8 +138,6 @@ class AppSettings:
             tts["spk_id"] = env
         if env := _env_int("TTS_SAMPLE_RATE"):
             tts["sample_rate"] = env
-        if env := _env_str("ASR_PROVIDER"):
-            asr["provider"] = env
         if env := _env_str("ASR_EXTERNAL_URL"):
             asr["external_url"] = env
 
@@ -174,7 +170,6 @@ class AppSettings:
                 asr_chat_minimal_device_downlink=minimal,
                 send_face_info_to_asr_chat=face_info and not pb_only,
                 web_public_host=str(srv.get("web_public_host") or ""),
-                max_concurrent_asr=int(srv.get("max_concurrent_asr", 0)),
                 max_concurrent_face_infer=int(srv.get("max_concurrent_face_infer", 0)),
             ),
             audio=AudioSettings(
@@ -194,12 +189,6 @@ class AppSettings:
                 silero_threshold_low=float(vad.get("silero_threshold_low", 0.2)),
             ),
             asr=AsrSettings(
-                model_dir=str(asr.get("model_dir", "")),
-                hub=str(asr.get("hub", "hf")),
-                language=str(asr.get("language", "zh")),
-                use_quant_onnx=bool(asr.get("use_quant_onnx", True)),
-                onnx_intra_op_threads=max(1, int(asr.get("onnx_intra_op_threads", 4))),
-                provider=str(asr.get("provider") or "internal").strip().lower(),
                 external_url=str(asr.get("external_url") or "http://127.0.0.1:9102"),
                 text_filter=AsrTextFilterSettings(
                     min_text_len=int(tf.get("min_text_len", 2)),

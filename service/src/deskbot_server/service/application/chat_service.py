@@ -30,15 +30,15 @@ class ChatService:
     def asr_chat_device_pb_only(self) -> bool:
         return self.settings.server.asr_chat_device_pb_only
 
-    async def asr(self, pcm_bytes: bytes, sample_rate: int) -> str:
+    async def asr(self, pcm_bytes: bytes, sample_rate: int, *, device_id: str | None = None) -> str:
         try:
-            return await AsrService().transcribe(pcm_bytes, sample_rate)
+            return await AsrService().transcribe(pcm_bytes, sample_rate, device_id=device_id)
         except RuntimeError:
             return await self._asr.transcribe(pcm_bytes, sample_rate)
 
-    def is_valid_asr_text(self, text: str) -> bool:
+    def is_valid_asr_text(self, text: str, *, device_id: str | None = None) -> bool:
         try:
-            return AsrService().is_valid_text(text)
+            return AsrService().is_valid_text(text, device_id=device_id)
         except RuntimeError:
             return self._asr.is_valid_text(text)
 

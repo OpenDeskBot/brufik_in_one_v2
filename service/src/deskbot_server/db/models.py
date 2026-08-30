@@ -49,6 +49,8 @@ class Device(Base):
     auto_reply: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     servo_mode: Mapped[str] = mapped_column(String(16), default="", nullable=False)
     live_mode: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # 设备级 ASR provider：funasr（默认）/ doubao；空/NULL 按 funasr 处理
+    asr_provider: Mapped[str] = mapped_column(String(32), default="funasr", server_default="funasr", nullable=False)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

@@ -9,13 +9,10 @@ description = "OpenDesk voice robot backend (ASR + LLM + TTS + ESP32 pb protocol
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "funasr==1.2.7",
-    "funasr-onnx>=0.4.1",
     "websockets==14.2",
     "PyYAML==6.0.2",
     "numpy==1.26.4",
     "opuslib_next==1.1.5",
-    "librosa>=0.10.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "python-multipart>=0.0.9",

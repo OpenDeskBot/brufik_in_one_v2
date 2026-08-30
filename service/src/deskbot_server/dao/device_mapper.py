@@ -28,8 +28,8 @@ def device_ids_for_user(user_id: str) -> list[str]:
 
 @execute(
     """
-    INSERT INTO devices (id, device_id, owner_user_id, display_name, volume, fps, version, auto_reply, servo_mode, live_mode, claimed_at, created_at)
-    VALUES (:uid, :device_id, :user_id, :display_name, :volume, :fps, :version, 1, '', 1, datetime('now'), datetime('now'))
+    INSERT INTO devices (id, device_id, owner_user_id, display_name, volume, fps, version, auto_reply, servo_mode, live_mode, asr_provider, claimed_at, created_at)
+    VALUES (:uid, :device_id, :user_id, :display_name, :volume, :fps, :version, 1, '', 1, 'funasr', datetime('now'), datetime('now'))
     """
 )
 def insert(
@@ -79,6 +79,25 @@ def update_servo_mode(device_id: str, servo_mode: str) -> int:
 @execute("UPDATE devices SET live_mode = :live_mode WHERE device_id = :device_id")
 def update_live_mode(device_id: str, live_mode: bool) -> int:
     """更新活体模式开关。"""
+
+
+@execute("UPDATE devices SET asr_provider = :asr_provider WHERE device_id = :device_id")
+def update_asr_provider(device_id: str, asr_provider: str) -> int:
+    """更新设备级 ASR provider。"""
+
+
+def get_asr_provider(device_id: str) -> str:
+    """设备级 ASR provider；设备不存在或未设置 → 默认 funasr。"""
+    dev = get_by_device_id(device_id)
+    if dev is None:
+        return "funasr"
+    provider = str(dev.asr_provider or "").strip().lower()
+    return provider or "funasr"
+
+
+def set_asr_provider(device_id: str, provider: str) -> None:
+    """设置设备级 ASR provider（funasr / doubao）。"""
+    update_asr_provider(device_id, str(provider or "").strip().lower())
 
 
 @execute("DELETE FROM devices WHERE device_id = :device_id AND owner_user_id = :user_id")

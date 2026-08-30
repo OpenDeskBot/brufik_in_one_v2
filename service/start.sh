@@ -12,8 +12,7 @@
 #   FAST_START=1            跳过 pip 安装（venv 须已完整）；未设置时若依赖已就绪也会自动跳过
 #   DESKBOT_START_WEB=1     同时启动 Flask 调试台（默认 1，DESKBOT_WEB_PORT=5050）
 #   DESKBOT_START_WEB=0     不启动调试台
-#   SKIP_MODEL_DOWNLOAD=1   跳过 ASR / 人脸模型自动下载
-#   USE_CPU_TORCH=1         使用 CPU 版 torch（默认 1）
+#   SKIP_MODEL_DOWNLOAD=1   跳过人脸 / Silero VAD 模型自动下载
 #   SKIP_SYSTEM_CHECK=1     跳过 ffmpeg 等系统依赖警告
 
 set -euo pipefail
@@ -59,13 +58,12 @@ ensure_python() {
 }
 
 setup_venv() {
-  echo "[setup] venv（FunASR + torch ${PYTHON_MM} + requirements.txt）..."
+  echo "[setup] venv（${PYTHON_MM} + requirements.txt）..."
   (
     cd "$ROOT"
     export PYTHON_BIN
     export SETUP_ONLY=1
     export FAST_START="${FAST_START:-0}"
-    export USE_CPU_TORCH="${USE_CPU_TORCH:-1}"
     platform_run_sh "$ROOT/scripts/setup_venv.sh"
   )
 }
@@ -73,7 +71,7 @@ setup_venv() {
 venvs_look_ready() {
   local py
   py="$(platform_venv_python "$ROOT" 2>/dev/null)" || return 1
-  "$py" -c "import numpy, websockets, yaml, opuslib_next, torch, torchaudio, funasr, croniter, fastapi, uvicorn, deskbot_server" >/dev/null 2>&1 || return 1
+  "$py" -c "import numpy, websockets, yaml, opuslib_next, croniter, fastapi, uvicorn, deskbot_server" >/dev/null 2>&1 || return 1
 }
 
 ensure_local_scripts() {
@@ -83,17 +81,10 @@ ensure_local_scripts() {
   fi
 }
 
-ASR_MODEL_DIR="$ROOT/models/SenseVoiceSmall"
 FACE_MODEL_PATH="$ROOT/models/mediapipe/face_landmarker.task"
 FACE_MODEL_URL="https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 SILERO_VAD_MODEL_PATH="$ROOT/models/silero_vad/silero_vad.onnx"
 SILERO_VAD_MODEL_URL="https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
-
-asr_model_ready() {
-  local py
-  py="$(deskbot_venv_python 2>/dev/null)" || return 1
-  "$py" "$ROOT/scripts/check_asr_model.py" "$ASR_MODEL_DIR"
-}
 
 face_model_ready() {
   [[ -f "$FACE_MODEL_PATH" ]]
@@ -128,14 +119,6 @@ ensure_deskbot_env() {
   fi
 }
 
-download_asr_model() {
-  echo "[setup] 下载 SenseVoiceSmall ASR 模型（约 900MB，首次较慢）..."
-  local py
-  py="$(deskbot_venv_python)"
-  "$py" -m pip install -U modelscope
-  "$py" "$ROOT/scripts/download_model.py"
-}
-
 download_face_model() {
   echo "[setup] 下载 MediaPipe 人脸模型（约 3.6MB）..."
   mkdir -p "$(dirname "$FACE_MODEL_PATH")"
@@ -165,27 +148,11 @@ download_silero_vad_model() {
 ensure_models() {
   if [[ "${SKIP_MODEL_DOWNLOAD:-0}" == "1" ]]; then
     echo "SKIP_MODEL_DOWNLOAD=1，跳过模型下载检查。"
-    if ! asr_model_ready; then
-      echo "ASR 模型缺失: $ASR_MODEL_DIR" >&2
-      exit 1
-    fi
     if ! silero_vad_model_ready; then
       echo "Silero VAD 模型缺失: $SILERO_VAD_MODEL_PATH" >&2
       exit 1
     fi
     return 0
-  fi
-
-  if ! asr_model_ready; then
-    download_asr_model
-  else
-    echo "[setup] ASR 模型已就绪: $ASR_MODEL_DIR"
-  fi
-
-  if [[ -f "$ASR_MODEL_DIR/model.pt" ]] && [[ ! -f "$ASR_MODEL_DIR/model_quant.onnx" ]]; then
-    echo "[setup] 导出 ASR 量化 ONNX（model_quant.onnx，首次约 1 分钟）..."
-    "$(deskbot_venv_python)" "$ROOT/scripts/export_asr_quant_onnx.py" "$ASR_MODEL_DIR" || \
-      echo "[warn] 量化 ONNX 导出失败，将回退 PyTorch model.pt 推理。" >&2
   fi
 
   if ! face_model_ready; then

@@ -7,7 +7,7 @@
 一模块服务两端：
 - 服务端（externals/*-engine server.py）：解析 /transcribe 请求（PCM/WAV → 归一化
   PCM + sr）、构造标准成功/失败响应。
-- 客户端（HttpAsrAdapter 等）：校验成功响应结构、提取错误码。
+- 客户端（FunAsrAdapter 等）：校验成功响应结构、提取错误码。
 
 纯 dict 级，无 pydantic 依赖。协议演进（加可选字段）只改 ok_response 与
 parse_transcribe_response。

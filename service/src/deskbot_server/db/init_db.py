@@ -46,6 +46,8 @@ def _migrate_devices_schema(engine) -> None:
             conn.execute(text("ALTER TABLE devices ADD COLUMN servo_mode VARCHAR(16) NOT NULL DEFAULT ''"))
         if "live_mode" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN live_mode BOOLEAN NOT NULL DEFAULT 1"))
+        if "asr_provider" not in cols:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN asr_provider VARCHAR(32) NOT NULL DEFAULT 'funasr'"))
 
 
 def _migrate_scheduled_tasks_schema(engine) -> None:

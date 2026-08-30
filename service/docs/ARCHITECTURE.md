@@ -6,7 +6,7 @@
 
 ```
 /asr_chat
-  → VAD + FunASR（ChatService.asr）
+  → VAD + 外部 funasr 服务（FunAsrAdapter，9102）
   → run_chat_turn
       → ensure_active_session（按 device 加载历史）
       → complete_llm_with_tool_loop（多轮 tools，最多 8 轮）
@@ -55,7 +55,7 @@ ScheduledTaskScheduler（60s 轮询）
 | `/asr_chat?device_id=` | 是（`device_id` 必须，仅此一项鉴权） |
 | `/camera_view`、`/device_pipeline` | 否（调试；Web 侧 debug token + 设备归属） |
 
-单进程 asyncio；`ChatService`（含 FunASR）全进程共享。重 CPU 走 `asyncio.to_thread`；`config.yaml` 的 `max_concurrent_asr` / `max_concurrent_face_infer` 限流。
+单进程 asyncio；ASR 推理在外部 funasr 独立进程（funasr 完全独立化，v1.2.0 起主服务不再加载 FunASR）。重 CPU 走 `asyncio.to_thread`；人脸推理由 `max_concurrent_face_infer` 限流。
 
 ## 装配（`main.py`）
 

@@ -1,6 +1,6 @@
 # deskbot-server
 
-主服务：VAD → FunASR → LLM（多轮 tools）→ TTS → pb 下行。环境搭建见 [../README.md](../README.md)。
+主服务：VAD → 外部 funasr 服务（独立进程，9102）→ LLM（多轮 tools）→ TTS → pb 下行。环境搭建见 [../README.md](../README.md)。
 
 ## 启动
 

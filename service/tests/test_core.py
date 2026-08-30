@@ -48,11 +48,3 @@ def test_parse_llm_reply_plain_text_fallback():
     assert parsed["json_ok"] is False
 
 
-def test_asr_model_dir_ready_nested_weight(tmp_path):
-    from deskbot_server.infrastructure.asr.model_dir import asr_model_dir_ready
-
-    nested = tmp_path / "iic" / "SenseVoiceSmall"
-    nested.mkdir(parents=True)
-    assert asr_model_dir_ready(tmp_path) is False
-    (nested / "model_quant.onnx").write_bytes(b"x")
-    assert asr_model_dir_ready(tmp_path) is True

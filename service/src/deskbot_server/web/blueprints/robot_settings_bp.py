@@ -30,10 +30,21 @@ def api_robot_settings_status(request: Request, user: RequireUser):
 
 
 @router.post("/api/robot-settings/asr")
-async def api_robot_settings_apply_asr(request: Request, user: RequireUser):
+def api_robot_settings_apply_asr(request: Request, user: RequireUser):
     body = get_json(request) or {}
     try:
-        status = await _svc().apply_asr(str(body.get("provider") or ""), get_current_device_id(request))
+        status = _svc().apply_asr(str(body.get("provider") or ""), get_current_device_id(request))
+        return jsonify({"ok": True, **status})
+    except CapabilityError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@router.post("/api/robot-settings/asr/clear-device-override")
+def api_robot_settings_clear_device_asr_override(request: Request, user: RequireUser):
+    try:
+        status = _svc().clear_device_asr_override(get_current_device_id(request))
         return jsonify({"ok": True, **status})
     except CapabilityError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400

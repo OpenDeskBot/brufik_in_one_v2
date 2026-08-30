@@ -848,9 +848,9 @@ class DeviceWsService(metaclass=SingletonMeta):
         t_asr_start = time.monotonic()
 
         try:
-            text = await AsrService().transcribe(pcm_segment, sample_rate)
+            text = await AsrService().transcribe(pcm_segment, sample_rate, device_id=device_id)
         except Exception:
-            text = await pipeline.asr(pcm_segment, sample_rate=sample_rate)
+            text = await pipeline.asr(pcm_segment, sample_rate=sample_rate, device_id=device_id)
         t_asr_text = time.monotonic()
         asr_ms = (t_asr_text - t_asr_start) * 1000
 
@@ -862,9 +862,9 @@ class DeviceWsService(metaclass=SingletonMeta):
             return
 
         try:
-            asr_ok = AsrService().is_valid_text(text)
+            asr_ok = AsrService().is_valid_text(text, device_id=device_id)
         except Exception:
-            asr_ok = pipeline.is_valid_asr_text(text)
+            asr_ok = pipeline.is_valid_asr_text(text, device_id=device_id)
         if not asr_ok:
             logger.info(
                 "[ASR] 结果被过滤 device_id=%s req=%s audio_ms=%d asr_ms=%.0f text=%r",

@@ -94,7 +94,7 @@
 
 ## 主服务消费侧约定（客户端）
 
-`HttpAsrAdapter`（`infrastructure/asr/http_adapter.py`）是实现本协议的客户端：
+`FunAsrAdapter`（`infrastructure/asr/http_adapter.py`）是实现本协议的客户端：
 
 - 默认发 PCM（主服务手里就是 PCM），`X-Sample-Rate` 带上真实采样率
 - 超时 30s（音频上行 + 推理）
@@ -125,20 +125,19 @@
 1. `infrastructure/asr/<name>_adapter.py`：实现 `AsrPort`（`ports/asr.py`）——
    `transcribe(pcm, sr)` 内部：pcm → 该云所需格式（如 wav，复用 `pcm_to_wav_bytes`）
    → 调云 API → 解析出 text（并归一化 language/confidence 可选字段）
-2. `model/settings.py`：`asr.provider` 接受新值 + 新增该云配置段（认证等），
-   与 `external_url` 平级
-3. `infrastructure/bootstrap.py`：`build_asr_adapter` 加分支
-4. `is_valid_text` 复用 `infrastructure/asr/text_filter.py`
+2. `infrastructure/asr/resolve.py`：`SUPPORTED_ASR_PROVIDERS` 注册新 provider 名，
+   `resolve_asr_adapter` 加分支（设备表 `asr_provider` 列存该值）
+3. `is_valid_text` 复用 `infrastructure/asr/text_filter.py`
 
 可选：认证/限流想集中管理时，可加 `externals/<name>-engine/` 薄网关进程，
-实现本协议（此时主服务走 `provider: external` + URL，零适配代码）。
+实现本协议（此时设备配置 `provider: funasr` + URL，零适配代码）。
 
 ### 本地独立服务（externals）
 
 1. `externals/<name>-engine/`：`server.py`（加载模型 + 实现协议两端点）、
    `service.yaml`（type: asr + 端口 + healthcheck）、`config.yaml`（自治快照）
-2. 主服务零代码改动：`asr.provider: external` + `external_url` 指向新引擎
-   （`HttpAsrAdapter` 不动）
+2. 主服务零代码改动：设备 `asr_provider=funasr`（默认）且 `external_url` 指向新引擎
+   （`FunAsrAdapter` 不动）
 
 ## 已接入后端注册表
 

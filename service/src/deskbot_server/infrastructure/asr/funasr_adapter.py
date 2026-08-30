@@ -1,7 +1,6 @@
-"""AsrPort 的 HTTP 实现：转写转发到外部 funasr 进程。
+"""AsrPort 的 HTTP 实现：转写转发到外部 funasr 进程（默认 ASR provider）。
 
-进程内实现（FunAsrAdapter）保留，本适配器按 config.yaml 的 asr.provider=external
-启用；is_valid_text 是纯文本过滤逻辑，保持本地执行（无需远程往返）。
+is_valid_text 是纯文本过滤逻辑，保持本地执行（无需远程往返）。
 请求/响应格式遵循 ASR 外部服务协议 v1（docs/asr_protocol.md），
 解析与错误提取走 infrastructure.asr.protocol。
 """
@@ -27,13 +26,13 @@ logger = logging.getLogger("deskbot-server")
 TRANSCRIBE_TIMEOUT_S = 30.0  # 转写含音频上行与推理，宽限
 
 
-class HttpAsrAdapter:
-    """转外部 funasr 进程的 AsrPort 实现（无状态，可复用单例）。"""
+class FunAsrAdapter:
+    """外部 funasr 进程的 AsrPort 客户端（无状态，可每次调用构造）。"""
 
     def __init__(self, base_url: str, text_filter: AsrTextFilterSettings) -> None:
         self.base_url = base_url.rstrip("/")
         self._text_filter = text_filter
-        logger.info("[ASR] provider=external base_url=%s", self.base_url)
+        logger.info("[ASR] provider=funasr base_url=%s", self.base_url)
 
     def is_valid_text(self, text: str) -> bool:
         return is_asr_text_acceptable(

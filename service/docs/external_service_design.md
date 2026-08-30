@@ -25,9 +25,10 @@
 `CameraFaceDetector` / `face_identity` / `face_embedding`），主服务进程内实现保留。
 独立进程只是**运行形态**变化，不是重写——切换成本 = 1 个 manifest。
 
-> **例外：funasr 已 fork 独立**（v1.1.0）。`externals/funasr/` 改为完全自包含：
-> 独立 venv + 模型副本 + `deskbot_server/` 运行子集副本（各文件头带同步标记），
-> 运行期零依赖主服务。新增外部服务若无独立化诉求，仍按本条"复用原代码"执行。
+> **例外：funasr 已 fork 独立**（v1.1.0 独立化，v1.2.0 主服务 internal 移除）。
+> `externals/funasr/` 完全自包含：独立 venv + 模型副本 + `deskbot_server/` 运行子集副本
+> （各文件头带同步标记；主服务已删 funasr.py/model_dir.py，副本为唯一来源）。
+> 新增外部服务若无独立化诉求，仍按本条"复用原代码"执行。
 
 ### 2. 双引擎 + 优雅降级
 
