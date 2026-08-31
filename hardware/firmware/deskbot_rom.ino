@@ -40,7 +40,7 @@ void setup() {
    * 3s 足够 Linux/macOS 完成 USB CDC 枚举并让 flash_rom.sh 启动监视器。
    * 独立运行（无 USB）时同样只多等 3s，不影响正常功能。 */
   delay(3000);
-  log_set_level(LOG_LEVEL_INFO);
+  log_set_level(LOG_LEVEL_WARN);
   log_info("Initializing Deskbot...");
   log_info("[BOOT] device_id=%s", get_device_id());
 
@@ -115,6 +115,7 @@ void setup() {
   task_setup_mic();
 
   /* ---- 阶段 C：执行器就绪后再启动 pb 泵 / camera 上行 ---- */
+  /* 渲染任务停用在 task_setup_display 内部（TEMP-DISABLE），队列创建保留 */
   task_setup_display();
   task_setup_head();
   if (!task_setup_pb_runtime()) {
@@ -137,7 +138,7 @@ void setup() {
   log_info("%s is Ready. http://%s", PRODUCT_NAME, WiFi.localIP().toString().c_str());
   log_warn("[BOOT] ready device=%s ws=%s wifi_ip=%s",
            get_device_id(), ws_url, WiFi.localIP().toString().c_str());
-  log_set_level(LOG_LEVEL_INFO);
+  log_set_level(LOG_LEVEL_WARN);
 }
 
 void loop() {

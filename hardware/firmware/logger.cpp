@@ -1,8 +1,8 @@
 #include "logger.h"
 #include <stdarg.h>
 
-// Default log level is INFO
-uint8_t global_log_level = LOG_LEVEL_INFO;
+// Default log level is WARN（INFO 刷屏，排查时再开）
+uint8_t global_log_level = LOG_LEVEL_WARN;
 
 // Set the global log level
 void log_set_level(uint8_t level) {

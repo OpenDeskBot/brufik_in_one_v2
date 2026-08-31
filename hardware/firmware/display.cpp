@@ -523,6 +523,7 @@ void task_setup_display() {
     log_error("[DISPLAY] StoredLayer pool unavailable");
     return;
   }
+  /* 队列/信号量必须先建：display_signal_task_done 等接口对 NULL 队列断言崩溃。 */
   if (!s_queue)       s_queue       = xQueueCreate(kPbDisplayQueueDepth, sizeof(DisplayRequest));
   if (!s_done_sem)    s_done_sem    = xSemaphoreCreateBinary();
   if (!s_caller_lock) s_caller_lock = xSemaphoreCreateMutex();
@@ -559,6 +560,12 @@ void display_render_submit_pb_anim_frames_owned(pb_anim_frame* frames, size_t fr
                                                 bool wait_done) {
   if (!frames || frame_count == 0) {
     if (frames) pb_anim_frames_free(frames, frame_count);
+    return;
+  }
+  /* 防御：渲染任务未启动时直接释放，勿置 task_done=false，
+   * 否则 pb_runtime 的 pb_end 会等 display_task_done() 卡死。 */
+  if (!s_task) {
+    pb_anim_frames_free(frames, frame_count);
     return;
   }
   s_task_done.store(false, std::memory_order_release);
