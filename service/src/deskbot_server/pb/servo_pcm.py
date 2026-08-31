@@ -77,7 +77,12 @@ def normalize_row_anim_list(row: dict[str, Any]) -> list[dict[str, Any]]:
 def merge_pb_subchunks(
     rows: list[dict[str, Any]], pcm_list: list[bytes], *, sample_rate: int, max_chunk_ms: int = PB_CHUNK_MS_MAX
 ) -> tuple[list[dict[str, Any]], list[bytes]]:
-    """将细粒度分片合并为 ``chunk_ms <= max_chunk_ms`` 的 pb 行。"""
+    """将细粒度分片合并为 ``chunk_ms <= max_chunk_ms`` 的 pb 行。
+
+    块边界对齐到 20ms opus 帧：合并时块尾不足一帧的 PCM **预借给下一块**开头
+    （``carry``），保证每块 PCM 都是整帧长度 → 下行 opus 编码零补零、块间无静音
+    插入、时间轴零漂移。末块不切尾（流结束无承接者，避免丢尾巴）。
+    """
     if not rows:
         return [], []
 
@@ -87,14 +92,48 @@ def merge_pb_subchunks(
     batch_servos: list[dict[str, Any]] = []
     batch_pcm = b""
     batch_ms = 0
+    carry_pcm = b""
+    carry_ms = 0
 
-    def _flush() -> None:
-        nonlocal batch_anim, batch_servos, batch_pcm, batch_ms
+    def _prepend_carry(pcm: bytes, ms: int, anim_items: list[dict[str, Any]]) -> tuple[bytes, int, list[dict[str, Any]]]:
+        """把上一块切下的帧余量并入当前行（PCM 头 + 时长 + 首条 anim）。"""
+        nonlocal carry_pcm, carry_ms
+        if not carry_ms:
+            return pcm, ms, anim_items
+        merged = carry_pcm + pcm
+        total_ms = carry_ms + ms
+        if anim_items:
+            anim_items = [
+                {**anim_items[0], "ms": int(anim_items[0].get("ms") or 0) + carry_ms},
+                *anim_items[1:],
+            ]
+        carry_pcm, carry_ms = b"", 0
+        return merged, total_ms, anim_items
+
+    def _flush(*, final: bool = False) -> None:
+        nonlocal batch_anim, batch_servos, batch_pcm, batch_ms, carry_pcm, carry_ms
         if not batch_anim:
             batch_servos = []
             batch_pcm = b""
             batch_ms = 0
             return
+        if not final:
+            # 帧对齐：块尾不足 20ms 的部分切给下一块，避免 opus 编码补零产生块间静音
+            excess = batch_ms % 20
+            if excess and batch_pcm:
+                tail_bytes = excess * sample_rate * 2 // 1000
+                if 0 < tail_bytes < len(batch_pcm):
+                    carry_pcm = batch_pcm[-tail_bytes:]
+                    carry_ms = excess
+                    batch_pcm = batch_pcm[:-tail_bytes]
+                    if batch_anim:
+                        last = batch_anim[-1]
+                        last["ms"] = max(1, int(last.get("ms") or 0) - excess)
+                    batch_ms -= excess
+                else:
+                    carry_pcm, carry_ms = b"", 0
+        else:
+            carry_pcm, carry_ms = b"", 0
         row: dict[str, Any] = {"chunk_ms": batch_ms, "anim": batch_anim}
         if batch_servos:
             row["servo"] = batch_servos
@@ -138,22 +177,29 @@ def merge_pb_subchunks(
 
         if row_ms > max_chunk_ms:
             _flush()
-            one_row: dict[str, Any] = {"chunk_ms": row_ms, "anim": anim_items}
+            pcm2, ms2, anim2 = _prepend_carry(pcm, row_ms, anim_items)
+            one_row: dict[str, Any] = {"chunk_ms": ms2, "anim": anim2}
             if servo_items:
                 one_row["servo"] = servo_items
             merged_rows.append(one_row)
-            merged_pcm.append(pcm)
+            merged_pcm.append(pcm2)
             continue
 
         if batch_ms and batch_ms + row_ms > max_chunk_ms:
             _flush()
 
+        batch_pcm = batch_pcm + carry_pcm + pcm
+        batch_ms = batch_ms + carry_ms + row_ms
+        if carry_ms and anim_items:
+            anim_items = [
+                {**anim_items[0], "ms": int(anim_items[0].get("ms") or 0) + carry_ms},
+                *anim_items[1:],
+            ]
+        carry_pcm, carry_ms = b"", 0
         batch_anim.extend(copy.deepcopy(anim_items))
         batch_servos.extend(servo_items)
-        batch_pcm += pcm
-        batch_ms += row_ms
 
-    _flush()
+    _flush(final=True)
 
     for i, row in enumerate(merged_rows):
         raw_pcm = merged_pcm[i] if i < len(merged_pcm) else b""
