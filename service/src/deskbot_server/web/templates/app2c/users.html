@@ -1,0 +1,108 @@
+{% extends "base_2c.html" %}
+{% block page_title %}用户管理 · 小歪{% endblock %}
+{% block content %}
+<style>
+.usr-table{width:100%;border-collapse:collapse;background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);overflow:hidden}
+.usr-table th{font-size:12px;letter-spacing:.06em;color:var(--dim);text-align:left;padding:10px 14px;border-bottom:var(--bw) solid var(--line);font-weight:600;white-space:nowrap}
+.usr-table td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
+.usr-table tr:last-child td{border-bottom:none}
+.usr-table tr:hover{background:rgba(255,90,0,.04)}
+.usr-email{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--ink)}
+.usr-name{font-size:13px;color:var(--dim)}
+.usr-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-family:var(--mono);white-space:nowrap}
+.usr-badge.dev{background:#0f2b1c;color:#4ade80}
+.usr-badge.no{background:#1f232d;color:#8a8a94}
+.usr-badge.off{background:#2b1010;color:#ff6b6b}
+.usr-st{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.usr-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.usr-actions .btn{padding:5px 10px;font-size:11px}
+.usr-msg{margin-top:12px;font-size:12px;color:var(--faint)}
+.usr-msg.err{color:#ff6b6b;font-weight:600}
+.usr-msg.ok{color:#4ade80;font-weight:600}
+</style>
+<div class="pagehd">
+  <div>
+    <div class="eyebrow">DEVELOPER · USERS</div>
+    <h1>用户管理</h1>
+    <p>管理注册用户，设置或取消开发者权限。至少保留一名开发者，取消自己的权限后需其他开发者恢复。</p>
+  </div>
+  <div class="btngroup">
+    <button type="button" class="btn ghost" onclick="location.reload()">刷新</button>
+  </div>
+</div>
+
+<div style="overflow:hidden">
+  <table class="usr-table">
+    <thead>
+      <tr>
+        <th>邮箱</th>
+        <th>名称</th>
+        <th>开发者</th>
+        <th>状态</th>
+        <th>注册时间</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for user in users %}
+      <tr data-user-id="{{ user.id }}">
+        <td class="usr-email">{{ user.email }}</td>
+        <td class="usr-name">{{ user.display_name or '—' }}</td>
+        <td>
+          {% if user.is_developer %}
+          <span class="usr-badge dev">开发者</span>
+          {% else %}
+          <span class="usr-badge no">普通用户</span>
+          {% endif %}
+        </td>
+        <td>{% if user.is_active %}<span class="usr-badge dev">正常</span>{% else %}<span class="usr-badge off">已禁用</span>{% endif %}</td>
+        <td class="usr-st">{{ user.created_at.strftime('%Y-%m-%d %H:%M') if user.created_at else '—' }}</td>
+        <td class="usr-actions">
+          {% if user.is_developer %}
+          <button type="button" class="btn ghost" data-developer="0"
+            {% if user.id == current_user_id %}title="取消自己的开发者权限后需其他开发者恢复"{% endif %}>
+            取消开发者
+          </button>
+          {% else %}
+          <button type="button" class="btn primary" data-developer="1">设为开发者</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="usr-st" style="text-align:center;padding:32px 0">暂无用户</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="usr-msg" id="usrMsg"></p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    var msg = document.getElementById('usrMsg');
+    document.querySelectorAll('[data-developer]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var row = btn.closest('tr');
+        var userId = row && row.getAttribute('data-user-id');
+        if (!userId) return;
+        var isDeveloper = btn.getAttribute('data-developer') === '1';
+        var label = isDeveloper ? '设为开发者' : '取消开发者';
+        if (!confirm('确认' + label + '？')) return;
+        btn.disabled = true;
+        msg.className = 'usr-msg';
+        msg.textContent = '处理中…';
+        fetch('/api/debug/users/' + encodeURIComponent(userId) + '/developer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ is_developer: isDeveloper })
+        }).then(function (r) { return r.json(); }).then(function (d) {
+          if (d.ok) { msg.className = 'usr-msg ok'; msg.textContent = '已' + label; location.reload(); }
+          else { msg.className = 'usr-msg err'; msg.textContent = d.error || '操作失败'; btn.disabled = false; }
+        }).catch(function () {
+          msg.className = 'usr-msg err'; msg.textContent = '网络错误，请重试'; btn.disabled = false;
+        });
+      });
+    });
+  })();
+</script>
+{% endblock %}

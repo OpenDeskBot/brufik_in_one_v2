@@ -236,8 +236,10 @@
 
   <p class="cap-hint" style="margin-top:14px">
     ASR 为设备级配置（device 表，立即生效）；LLM 为系统默认 + 设备覆盖；TTS / 人脸识别写入
-    <code>config.yaml</code>（重启后保持；YAML 注释不保留）。依赖的外部服务请先在
+    <code>config.yaml</code>（重启后保持；YAML 注释不保留）。依赖的外部服务
+    {% if nav_is_developer %}请先在
     <a href="{{ url_for('services.page') }}" style="color:var(--accent)">独立服务管理</a> 中安装并启动。
+    {% else %}需由具备开发者权限的账号在「独立服务管理」中安装并启动。{% endif %}
   </p>
 
   <!-- TTS 测试对话框 -->

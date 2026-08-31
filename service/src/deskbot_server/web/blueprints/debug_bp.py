@@ -168,6 +168,13 @@ def debug_users(request: Request, user: RequireDeveloper):
     return render_template(request, "debug_users.html", active_nav="users", users=rows, current_user_id=user.id)
 
 
+@router.get("/dev/users")
+def dev_users_page(request: Request, user: RequireDeveloper):
+    """2C 后台「开发者选项 → 用户管理」页面。"""
+    rows = UserService().list_users()
+    return render_template(request, "app2c/users.html", active_nav="users", users=rows, current_user_id=user.id)
+
+
 @router.post("/api/debug/users/{user_id}/developer")
 def api_set_user_developer(request: Request, user: RequireDeveloper, user_id: str):
     payload = get_json(request, silent=True) or {}
@@ -1107,6 +1114,7 @@ def health(request: Request):
 ENDPOINTS = {
     "debug.api_debug_ws_token": "/api/debug/ws_token",
     "debug.debug_users": "/debug/users",
+    "debug.dev_users_page": "/dev/users",
     "debug.api_set_user_developer": "/api/debug/users/{user_id}/developer",
     "debug.debug_devices": "/debug/devices",
     "debug.debug_tts": "/debug/tts",

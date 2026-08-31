@@ -10,8 +10,8 @@ import re
 
 from fastapi import APIRouter, Request
 
+from deskbot_server.auth.permissions import RequireDeveloper
 from deskbot_server.service.external.manager import ExternalServiceManager, ServiceError
-from deskbot_server.web.deps import RequireUser
 from deskbot_server.web.view_helpers import ViewAPIRoute, args_get, get_json, jsonify, render_template
 
 router = APIRouter(route_class=ViewAPIRoute, tags=["services"])
@@ -35,12 +35,12 @@ def _validate_name(name: str) -> str:
 
 
 @router.get("/services")
-def services_page(request: Request, user: RequireUser):
+def services_page(request: Request, user: RequireDeveloper):
     return render_template(request, "app2c/services.html", active_nav="services")
 
 
 @router.get("/api/services")
-def api_services_list(request: Request, user: RequireUser):
+def api_services_list(request: Request, user: RequireDeveloper):
     try:
         return jsonify({"ok": True, "services": [s.to_dict() for s in _manager().status_all()]})
     except ServiceError as exc:
@@ -48,7 +48,7 @@ def api_services_list(request: Request, user: RequireUser):
 
 
 @router.get("/api/services/{name}/logs")
-def api_service_logs(request: Request, name: str, user: RequireUser):
+def api_service_logs(request: Request, name: str, user: RequireDeveloper):
     name = _validate_name(name)
     since = args_get(request, "since", 0, type=int)
     try:
@@ -58,7 +58,7 @@ def api_service_logs(request: Request, name: str, user: RequireUser):
 
 
 @router.post("/api/services/{name}/install")
-async def api_service_install(request: Request, name: str, user: RequireUser):
+async def api_service_install(request: Request, name: str, user: RequireDeveloper):
     name = _validate_name(name)
     try:
         return _after_action(await _manager().install(name))
@@ -67,7 +67,7 @@ async def api_service_install(request: Request, name: str, user: RequireUser):
 
 
 @router.post("/api/services/{name}/uninstall")
-async def api_service_uninstall(request: Request, name: str, user: RequireUser):
+async def api_service_uninstall(request: Request, name: str, user: RequireDeveloper):
     name = _validate_name(name)
     try:
         return _after_action(await _manager().uninstall(name))
@@ -76,7 +76,7 @@ async def api_service_uninstall(request: Request, name: str, user: RequireUser):
 
 
 @router.post("/api/services/{name}/start")
-async def api_service_start(request: Request, name: str, user: RequireUser):
+async def api_service_start(request: Request, name: str, user: RequireDeveloper):
     name = _validate_name(name)
     try:
         return _after_action(await _manager().start(name))
@@ -85,7 +85,7 @@ async def api_service_start(request: Request, name: str, user: RequireUser):
 
 
 @router.post("/api/services/{name}/stop")
-async def api_service_stop(request: Request, name: str, user: RequireUser):
+async def api_service_stop(request: Request, name: str, user: RequireDeveloper):
     name = _validate_name(name)
     try:
         return _after_action(await _manager().stop(name))
@@ -94,7 +94,7 @@ async def api_service_stop(request: Request, name: str, user: RequireUser):
 
 
 @router.post("/api/services/{name}/restart")
-async def api_service_restart(request: Request, name: str, user: RequireUser):
+async def api_service_restart(request: Request, name: str, user: RequireDeveloper):
     name = _validate_name(name)
     try:
         return _after_action(await _manager().restart(name))
@@ -103,7 +103,7 @@ async def api_service_restart(request: Request, name: str, user: RequireUser):
 
 
 @router.get("/api/services/{name}/test-info")
-async def api_service_test_info(request: Request, name: str, user: RequireUser):
+async def api_service_test_info(request: Request, name: str, user: RequireDeveloper):
     """测试契约元信息（不发请求）：契约描述 / 请求 / 可复制 curl 命令。
 
     管理后台「测试」对话框打开时调用；点「执行测试」才真正发请求（POST test）。
@@ -116,7 +116,7 @@ async def api_service_test_info(request: Request, name: str, user: RequireUser):
 
 
 @router.post("/api/services/{name}/test")
-async def api_service_test(request: Request, name: str, user: RequireUser):
+async def api_service_test(request: Request, name: str, user: RequireDeveloper):
     """按测试规格（manifest test 覆盖或类型契约）发标准样本请求并校验响应（对话框展示）。
 
     fr 额外支持 JSON body 传 {"image_base64": "..."} 指定测试图片；
@@ -148,7 +148,7 @@ async def api_service_test(request: Request, name: str, user: RequireUser):
 
 
 @router.put("/api/services/{name}/autostart")
-def api_service_autostart(request: Request, name: str, user: RequireUser):
+def api_service_autostart(request: Request, name: str, user: RequireDeveloper):
     name = _validate_name(name)
     body = get_json(request, silent=True) or {}
     try:
