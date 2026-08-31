@@ -7,8 +7,9 @@
 #include <SPI.h>
 
 #ifndef DESKBOT_DISPLAY_SPI_HZ
-/* v2 板走线验证值为 40MHz（新固件同值）；如实机 80MHz 稳定可自行调回。 */
-#define DESKBOT_DISPLAY_SPI_HZ 40000000UL
+/* 试验:40→80MHz,推屏耗时减半(理论 27ms→13.6ms)。若实机花屏/纹路
+ * 不稳定再调回 40MHz(v2 板走线验证值)。 */
+#define DESKBOT_DISPLAY_SPI_HZ 80000000UL
 #endif
 
 #define DESKBOT_DISPLAY_COLOR_BLACK ST77XX_BLACK
