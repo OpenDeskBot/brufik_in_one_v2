@@ -15,7 +15,7 @@ import yaml
 from deskbot_server.service.robot_capability import (
     ASR_CANDIDATES,
     LLM_CANDIDATES,
-    LLM_ENGINE_BASE_URL,
+    MINICPM_LLM_BASE_URL,
     TTS_CANDIDATES,
     CapabilityError,
     RobotCapabilityService,
@@ -104,14 +104,14 @@ def bound_asr():
 
 def test_capability_catalogs_structure():
     assert [c.id for c in ASR_CANDIDATES] == ["funasr", "doubao"]
-    assert [c.id for c in LLM_CANDIDATES] == ["ark", "local"]
+    assert [c.id for c in LLM_CANDIDATES] == ["ark", "minicpm"]
     assert [c.id for c in TTS_CANDIDATES] == ["moss-tts-nano", "doubao"]
 
     ark = LLM_CANDIDATES[0]
-    local = LLM_CANDIDATES[1]
+    minicpm = LLM_CANDIDATES[1]
     assert ark.experimental is False
-    assert local.experimental is True
-    assert local.requires_service == "llm-engine"
+    assert minicpm.experimental is True
+    assert minicpm.requires_service == "llm-minicpm"
     assert ASR_CANDIDATES[0].requires_service == "funasr"
     assert TTS_CANDIDATES[0].requires_service == "moss-tts-nano"
     for cap in (*ASR_CANDIDATES, *LLM_CANDIDATES, *TTS_CANDIDATES):
@@ -196,27 +196,32 @@ def test_asr_status_default_when_no_device(svc, temp_db):
 
 # ---------- 3. LLM 切换 ----------
 
-def test_apply_llm_local_snapshots_ark(svc, clean_llm_env):
+def test_apply_llm_minicpm_snapshots_ark(svc, clean_llm_env):
     from deskbot_server.config import load_config
 
-    svc.apply_llm("local")
+    svc.apply_llm("minicpm")
 
     llm = load_config(svc._config_path)["llm"]
     assert llm["protocol"] == "openai"
-    assert llm["base_url"] == LLM_ENGINE_BASE_URL
-    assert llm["model_name"] == "cactus-needle-2"
+    assert llm["base_url"] == "http://127.0.0.1:9105/v1"
+    assert llm["model_name"] == "minicpm5-1b"
     assert llm["ark_base_url"] == "https://ark.cn-beijing.volces.com/api/v3"  # 快照
     assert llm["ark_model_name"] == "ep-test"
 
     status = svc.get_status()
-    assert status["capabilities"]["llm"]["current"] == "local"
-    assert status["capabilities"]["llm"]["effective"]["base_url"] == LLM_ENGINE_BASE_URL
+    assert status["capabilities"]["llm"]["current"] == "minicpm"
+    assert status["capabilities"]["llm"]["effective"]["base_url"] == "http://127.0.0.1:9105/v1"
+    # minicpm → ark 恢复快照
+    svc.apply_llm("ark")
+    llm = load_config(svc._config_path)["llm"]
+    assert llm["protocol"] == "ark_responses"
+    assert llm["model_name"] == "ep-test"
 
 
 def test_apply_llm_ark_restores_from_snapshot(svc, clean_llm_env):
     from deskbot_server.config import load_config
 
-    svc.apply_llm("local")
+    svc.apply_llm("minicpm")
     svc.apply_llm("ark")
 
     llm = load_config(svc._config_path)["llm"]
@@ -239,7 +244,7 @@ def test_apply_llm_clears_env_override_keeps_api_key(svc, clean_llm_env, monkeyp
     monkeypatch.setenv("LLM_BASE_URL", "https://env.example.com/v1")
     monkeypatch.setenv("ARK_API_KEY", "ark-secret")
 
-    svc.apply_llm("local")
+    svc.apply_llm("minicpm")
 
     # 协议类覆盖被清除，密钥保留
     assert not os.environ.get("LLM_PROTOCOL")
@@ -250,11 +255,11 @@ def test_apply_llm_clears_env_override_keeps_api_key(svc, clean_llm_env, monkeyp
     assert "LLM_PROTOCOL" not in text
     assert "ARK_API_KEY" in text
 
-    # 系统级生效为 local 配置（同一份 config 真源）
+    # 系统级生效为 minicpm 配置（同一份 config 真源）
     from deskbot_server.infrastructure.llm.runtime import resolve_system_llm_config
 
     resolved = resolve_system_llm_config(svc._load_cfg())
-    assert resolved.api_base == LLM_ENGINE_BASE_URL
+    assert resolved.api_base == MINICPM_LLM_BASE_URL
 
 
 # ---------- 4. 本地 URL 判定 / key 豁免 / 流式禁用 ----------
@@ -301,7 +306,7 @@ def test_local_llm_forces_non_stream(monkeypatch):
     monkeypatch.setattr(llm_runtime, "_request_chat_completion", fake_plain)
 
     cfg = llm_runtime.ResolvedLlmConfig(
-        model="cactus-needle-2", api_key="", api_base="http://127.0.0.1:9104/v1", protocol="openai", source="system", display_name="local"
+        model="minicpm5-1b", api_key="", api_base="http://127.0.0.1:9105/v1", protocol="openai", source="system", display_name="minicpm"
     )
 
     import asyncio
@@ -381,7 +386,7 @@ def test_api_robot_settings_endpoints(temp_db):
     assert payload["ok"] is True
     assert payload["capabilities"]["asr"]["current"] in ("funasr", "doubao")
     assert payload["capabilities"]["tts"]["current"] in ("moss-tts-nano", "doubao")
-    assert payload["capabilities"]["llm"]["current"] in ("ark", "local", "device", "custom")
+    assert payload["capabilities"]["llm"]["current"] in ("ark", "minicpm", "device", "custom")
 
     # 非法 provider → 400
     bad = client.post("/api/robot-settings/asr", json={"provider": "bogus"})

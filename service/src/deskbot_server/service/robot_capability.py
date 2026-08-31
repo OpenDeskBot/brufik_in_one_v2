@@ -50,7 +50,6 @@ from deskbot_server.infrastructure.llm.runtime import (
     VOLCENGINE_PROTOCOLS,
     _entry_to_config,
     _normalized_protocol,
-    is_local_llm_url,
     resolve_system_llm_config,
 )
 from deskbot_server.infrastructure.tts.env_store import read_env_file
@@ -68,9 +67,9 @@ SERVICE_ROOT = Path(__file__).resolve().parents[3]
 MOSS_VOICES_FILE = SERVICE_ROOT / "externals" / "moss-tts-nano" / "checkout" / "assets" / "demo.jsonl"
 TTS_TEST_DEFAULT_TEXT = "你好，这是语音合成测试。"
 
-# 本地 llm-engine（Cactus Needle 2）端点；服务端不校验 Authorization、不支持 stream
-LLM_ENGINE_BASE_URL = "http://127.0.0.1:9104/v1"
-LLM_ENGINE_MODEL = "cactus-needle-2"
+# 本地 llm-minicpm（MiniCPM5-1B · llama-server）端点；服务端不校验 Authorization、不支持 stream
+MINICPM_LLM_BASE_URL = "http://127.0.0.1:9105/v1"
+MINICPM_LLM_MODEL = "minicpm5-1b"
 
 # 页面提示用环境变量清单（存在即表示 config.yaml 被覆盖；ASR 已设备级化，不在其中）
 ENV_OVERRIDE_KEYS = ("TTS_PROVIDER", "LLM_PROTOCOL", "LLM_MODEL", "LLM_BASE_URL")
@@ -113,10 +112,10 @@ ASR_CANDIDATES = [
 LLM_CANDIDATES = [
     CapabilityCandidate("ark", "火山方舟 Ark（云端）", "默认 LLM，支持工具调用（提醒 / 记忆 / 实验台）"),
     CapabilityCandidate(
-        "local",
-        "本地 llm-engine（Cactus Needle 2）",
-        "实验性：模型较小，不支持工具调用，定时提醒 / 长期记忆会失效；需 llm-engine 服务运行（9104）",
-        requires_service="llm-engine",
+        "minicpm",
+        "本地 MiniCPM5-1B（Q4_K_M）",
+        "独立 llama-server 进程（HTTP 9105，OpenAI 兼容，Metal 加速）；实验性：1B 模型工具调用不可靠，定时提醒 / 长期记忆可能失效；需 llm-minicpm 服务运行",
+        requires_service="llm-minicpm",
         experimental=True,
     ),
 ]
@@ -242,14 +241,16 @@ class RobotCapabilityService:
             protocol = _normalized_protocol(effective.get("protocol"))
             if protocol in VOLCENGINE_PROTOCOLS:
                 current = "ark"
-            elif protocol == "openai" and is_local_llm_url(effective.get("base_url")):
-                current = "local"
+            elif protocol == "openai":
+                # 本地端点精确匹配 minicpm（9105）；其他（用户自定义本地服务）归 custom
+                base_url = str(effective.get("base_url") or "").strip().rstrip("/")
+                current = "minicpm" if base_url == MINICPM_LLM_BASE_URL else "custom"
             else:
                 current = "custom"
 
         warning = None
-        if current == "local" and not self._service_running("llm-engine"):
-            warning = "llm-engine 未在运行，切换后对话将失败；请先在「独立服务管理」中启动"
+        if current == "minicpm" and not self._service_running("llm-minicpm"):
+            warning = "llm-minicpm 未在运行，切换后对话将失败；请先在「独立服务管理」中启动"
         elif current == "ark" and not effective.get("api_key_set"):
             warning = "未配置火山方舟 API Key，云端 LLM 不可用；请在「高级 → 大模型」中设置"
 
@@ -268,7 +269,7 @@ class RobotCapabilityService:
             manager = None
         out: dict[str, dict[str, Any]] = {}
         if manager is not None:
-            for name in ("funasr", "llm-engine", "moss-tts-nano"):
+            for name in ("funasr", "moss-tts-nano"):
                 snap = manager.snapshot(name)
                 if snap is not None:
                     out[name] = snap.to_dict()
@@ -706,15 +707,15 @@ class RobotCapabilityService:
         _candidate("llm", provider)
         cfg = self._load_cfg()
         llm = cfg.setdefault("llm", {})
-        if provider == "local":
+        if provider == "minicpm":
             # 快照当前 ark 配置，切回时恢复（随 config 持久化，重启后仍可切回）
             protocol = _normalized_protocol(llm.get("protocol"))
             if protocol in VOLCENGINE_PROTOCOLS and not llm.get("ark_base_url"):
                 llm["ark_base_url"] = str(llm.get("base_url") or "").strip() or ARK_OPENAI_BASE_URL
                 llm["ark_model_name"] = str(llm.get("model_name") or "").strip()
             llm["protocol"] = "openai"
-            llm["base_url"] = LLM_ENGINE_BASE_URL
-            llm["model_name"] = LLM_ENGINE_MODEL
+            llm["base_url"] = MINICPM_LLM_BASE_URL
+            llm["model_name"] = MINICPM_LLM_MODEL
         else:  # ark
             llm["protocol"] = "ark_responses"
             llm["base_url"] = str(llm.pop("ark_base_url", "") or "").strip() or ARK_OPENAI_BASE_URL

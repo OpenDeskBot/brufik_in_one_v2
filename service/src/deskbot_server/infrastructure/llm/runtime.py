@@ -238,7 +238,7 @@ LOCAL_LLM_HOSTS = {"127.0.0.1", "localhost", "::1"}
 def is_local_llm_url(api_base: str | None) -> bool:
     """判断 base_url 是否为本地/内网地址。
 
-    本地引擎（如 llm-engine）不需要 API Key、不支持流式，据此走豁免与降级路径。
+    本地引擎（如 llm-minicpm）不需要 API Key、不支持流式，据此走豁免与降级路径。
     """
     raw = str(api_base or "").strip().rstrip("/")
     if not raw:
@@ -654,7 +654,7 @@ async def chat_acompletion(
     cfg = config or resolve_llm_config(device_id)
     if first_token_timeout is None:
         first_token_timeout = resolve_first_token_timeout(cfg.protocol)
-    # 本地引擎（llm-engine 等）不支持 stream；任何调用路径都强制走非流式
+    # 本地引擎（llm-minicpm 等）不支持 stream；任何调用路径都强制走非流式
     use_stream = bool(stream or on_tts_ready) and not is_local_llm_url(cfg.api_base)
     usage_dict: dict[str, Any] | None = None
     tts_extractor: JsonTtsStreamExtractor | None = None
