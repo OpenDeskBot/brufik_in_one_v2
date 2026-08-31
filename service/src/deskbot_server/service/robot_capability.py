@@ -25,10 +25,16 @@ from typing import Any
 
 from deskbot_server.config import load_config, save_config
 from deskbot_server.controller.runtime import get_runtime
-from deskbot_server.dao.device_mapper import set_asr_provider
+from deskbot_server.dao.device_mapper import get_asr_param, set_asr_provider, update_asr_param
 from deskbot_server.dao.llm_config_store import get_active_llm_model, set_active_llm_model
 from deskbot_server.infrastructure.asr.audio_norm import DEFAULT_PCM_SAMPLE_RATE, normalize_test_audio
-from deskbot_server.infrastructure.asr.doubao import DoubaoAsrConfig, transcribe_doubao_detailed
+from deskbot_server.infrastructure.asr.doubao import (
+    DOUBAO_ASR_FIELDS,
+    STATUS_OK,
+    STATUS_SILENCE,
+    DoubaoAsrConfig,
+    transcribe_doubao_detailed,
+)
 from deskbot_server.infrastructure.asr.env_store import (
     _is_masked_secret,
     _mask_secret,
@@ -47,6 +53,7 @@ from deskbot_server.infrastructure.llm.runtime import (
     is_local_llm_url,
     resolve_system_llm_config,
 )
+from deskbot_server.infrastructure.tts.env_store import read_env_file
 from deskbot_server.infrastructure.tts.factory import build_tts_adapter
 from deskbot_server.infrastructure.tts.speakers import list_doubao_tts_consumer_speaker_presets
 from deskbot_server.model.settings import AppSettings
@@ -70,7 +77,7 @@ ENV_OVERRIDE_KEYS = ("TTS_PROVIDER", "LLM_PROTOCOL", "LLM_MODEL", "LLM_BASE_URL"
 
 # ASR 测试默认音频样本（与 external/manager.DEFAULT_ASR_TEST_AUDIO 同路径）
 DEFAULT_ASR_TEST_AUDIO = SERVICE_ROOT / "data" / "test" / "asr.wav"
-DOUBAO_ASR_FIELDS = ("app_id", "access_token", "cluster", "url", "uid", "workflow")
+# DOUBAO_ASR_FIELDS 常量见 infrastructure/asr/doubao.py（resolve 与蓝图共用，避免循环依赖）
 
 
 class CapabilityError(RuntimeError):
@@ -99,7 +106,9 @@ ASR_CANDIDATES = [
     CapabilityCandidate(
         "funasr", "FunASR 独立进程", "独立 funasr 进程（HTTP 9102，默认），需先安装并启动该服务", requires_service="funasr"
     ),
-    CapabilityCandidate("doubao", "豆包云端 ASR", "火山一句话识别；需要 DOUBAO_ASR_* 环境变量凭证"),
+    CapabilityCandidate(
+        "doubao", "豆包云端 ASR 2.0", "新版控制台 Seed-ASR（x-api-key 鉴权）；可在「配置」中为该设备填写凭证（未填写时回落环境变量）"
+    ),
 ]
 LLM_CANDIDATES = [
     CapabilityCandidate("ark", "火山方舟 Ark（云端）", "默认 LLM，支持工具调用（提醒 / 记忆 / 实验台）"),
@@ -174,7 +183,12 @@ class RobotCapabilityService:
         warning = None
         if current == "funasr" and not self._service_running("funasr"):
             warning = "funasr 未在运行，语音识别将失败；请先在「独立服务管理」中启动"
-        return {"current": current, "candidates": [c.to_dict() for c in ASR_CANDIDATES], "warning": warning}
+        return {
+            "current": current,
+            "candidates": [c.to_dict() for c in ASR_CANDIDATES],
+            "warning": warning,
+            "device_params": {"configured": bool(get_asr_param(device_id)) if device_id else False},
+        }
 
     def _tts_status(self, cfg: dict[str, Any]) -> dict[str, Any]:
         current = str((cfg.get("tts") or {}).get("provider") or "moss-tts-nano")
@@ -279,16 +293,21 @@ class RobotCapabilityService:
         return self.get_status(device_id)
 
     def clear_device_asr_override(self, device_id: str | None) -> dict[str, Any]:
-        """重置设备 ASR 为默认 funasr。"""
+        """重置设备 ASR 为默认 funasr，并清空该设备 asr_param（回到全局配置）。"""
         if not device_id:
             raise CapabilityError("未选择当前设备")
         set_asr_provider(device_id, "funasr")
+        update_asr_param(device_id, None)
+        logger.info("[robot-settings] ASR 设备覆盖已清除 device_id=%s（provider=funasr，asr_param 清空）", device_id)
         return self.get_status(device_id)
 
     # ---------- ASR 配置 / 测试（对话框） ----------
 
-    def asr_config_info(self) -> dict[str, Any]:
-        """ASR 配置对话框元信息：默认音频样本、funasr 端点、豆包 env 当前值（token 掩码）。"""
+    def asr_config_info(self, device_id: str | None = None) -> dict[str, Any]:
+        """ASR 配置对话框元信息：默认音频样本、funasr 端点、豆包当前值（api_key 掩码）。
+
+        读链：设备 asr_param > 全局 env > 默认（url/uid/resource_id 有兜底）。
+        """
         audio: dict[str, Any] = {"path": "data/test/asr.wav", "exists": False}
         if DEFAULT_ASR_TEST_AUDIO.is_file():
             audio = {
@@ -307,24 +326,84 @@ class RobotCapabilityService:
                 pass  # 元信息展示失败不阻塞测试
         env = load_doubao_asr_env()
         cfg = self._load_cfg()
+        params = get_asr_param(device_id) if device_id else {}
+        doubao_params = params.get("doubao") if isinstance(params.get("doubao"), dict) else {}
+        funasr_params = params.get("funasr") if isinstance(params.get("funasr"), dict) else {}
+
+        def _doubao_value(key: str) -> str:
+            return str(doubao_params.get(key) or "").strip() or env["DOUBAO_ASR_" + key.upper()]
+
+        api_key = _doubao_value("api_key")
         return {
             "default_audio": audio,
-            "funasr_url": str((cfg.get("asr") or {}).get("external_url") or "http://127.0.0.1:9102"),
+            "funasr_url": str(funasr_params.get("url") or "").strip()
+            or str((cfg.get("asr") or {}).get("external_url") or "http://127.0.0.1:9102"),
             "doubao": {
-                "app_id": env["DOUBAO_ASR_APP_ID"],
-                "access_token": _mask_secret(env["DOUBAO_ASR_ACCESS_TOKEN"]),
-                "access_token_set": bool((env["DOUBAO_ASR_ACCESS_TOKEN"] or "").strip()),
-                "cluster": env["DOUBAO_ASR_CLUSTER"],
-                "url": env["DOUBAO_ASR_URL"],
-                "uid": env["DOUBAO_ASR_UID"],
-                "workflow": env["DOUBAO_ASR_WORKFLOW"],
+                "api_key": _mask_secret(api_key),
+                "api_key_set": bool(api_key.strip()),
+                "resource_id": _doubao_value("resource_id"),
+                "uid": _doubao_value("uid"),
+                "url": _doubao_value("url"),
             },
         }
 
+    def save_device_asr_config(self, device_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+        """保存设备级 ASR 配置到 device 表 asr_param（JSON），不再写全局 .env。
+
+        payload 嵌套格式 ``{"funasr": {"url"}, "doubao": {api_key/resource_id/uid/url}}``；
+        旧平铺 doubao 字段（脚本兼容）也会归一。空值/掩码按回填链保留：
+        payload > 设备已有 asr_param > 全局 env；解析后全空 → 清空 asr_param。
+        """
+        if not device_id:
+            raise CapabilityError("未选择当前设备，无法保存 ASR 配置")
+        if isinstance(payload.get("funasr"), dict) or isinstance(payload.get("doubao"), dict):
+            nested = payload
+        else:
+            logger.warning("[robot-settings] 旧平铺 ASR 配置 payload，按 doubao 字段归一（Deprecated）")
+            nested = {"doubao": payload}
+
+        existing = get_asr_param(device_id)
+        raw_env = read_env_file()  # .env 真实值（不经默认兜底，避免默认值污染落库）
+        existing_doubao = existing.get("doubao") if isinstance(existing.get("doubao"), dict) else {}
+        existing_funasr = existing.get("funasr") if isinstance(existing.get("funasr"), dict) else {}
+
+        doubao_in = nested.get("doubao") if isinstance(nested.get("doubao"), dict) else {}
+        doubao_out: dict[str, str] = {}
+        for key in DOUBAO_ASR_FIELDS:
+            raw = str(doubao_in.get(key) or "").strip()
+            if key == "api_key" and _is_masked_secret(raw):
+                raw = ""  # 掩码占位 → 回填链取已有值
+            if not raw:
+                raw = str(existing_doubao.get(key) or "").strip()
+            if not raw:
+                raw = (raw_env.get("DOUBAO_ASR_" + key.upper()) or "").strip()
+            if raw:
+                doubao_out[key] = raw
+
+        funasr_in = nested.get("funasr") if isinstance(nested.get("funasr"), dict) else {}
+        funasr_out: dict[str, str] = {}
+        raw_url = str(funasr_in.get("url") or "").strip()
+        if not raw_url:
+            raw_url = str(existing_funasr.get("url") or "").strip()
+        if raw_url:
+            funasr_out["url"] = raw_url  # funasr.url 无 env 可回填：留空则不落键，运行时回落 config.yaml
+
+        out: dict[str, dict[str, str]] = {}
+        if funasr_out:
+            out["funasr"] = funasr_out
+        if doubao_out:
+            out["doubao"] = doubao_out
+        update_asr_param(device_id, json.dumps(out, ensure_ascii=False) if out else None)
+        logger.info(
+            "[robot-settings] 设备级 ASR 配置已保存 device_id=%s fields=%s",
+            device_id, sorted({k for d in out.values() for k in d}),
+        )
+        return self.asr_config_info(device_id)
+
     def save_doubao_asr_config(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """保存豆包 ASR 配置到 .env（掩码/空值不覆盖已有），返回最新 info。"""
+        """Deprecated: 前端已改为设备级 save_device_asr_config；本方法写全局 .env，仅脚本/运维兜底。"""
         save_doubao_asr_env({k: str(payload.get(k) or "") for k in DOUBAO_ASR_FIELDS})
-        logger.info("[robot-settings] 豆包 ASR 配置已保存到 .env")
+        logger.warning("[robot-settings] Deprecated: save_doubao_asr_config 写全局 .env，请改用设备级保存")
         return self.asr_config_info()
 
     async def asr_test(
@@ -334,6 +413,7 @@ class RobotCapabilityService:
         *,
         use_default: bool = False,
         doubao_overrides: dict[str, str] | None = None,
+        device_id: str | None = None,
     ) -> dict[str, Any]:
         """按指定 provider 测试转写（不改配置、不落盘）。
 
@@ -358,9 +438,9 @@ class RobotCapabilityService:
 
         t0 = time.monotonic()
         if provider == "funasr":
-            result = await self._funasr_test(pcm, sample_rate)
+            result = await self._funasr_test(pcm, sample_rate, device_id)
         else:
-            result = await self._doubao_test(pcm, sample_rate, doubao_overrides or {})
+            result = await self._doubao_test(pcm, sample_rate, doubao_overrides or {}, device_id)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         result.update(
             {
@@ -381,13 +461,16 @@ class RobotCapabilityService:
         )
         return result
 
-    async def _funasr_test(self, pcm: bytes, sample_rate: int) -> dict[str, Any]:
-        """直连 funasr 引擎 /transcribe，捕获 HTTP 状态码与协议错误。"""
+    async def _funasr_test(self, pcm: bytes, sample_rate: int, device_id: str | None = None) -> dict[str, Any]:
+        """直连 funasr 引擎 /transcribe（url 优先设备 asr_param），捕获 HTTP 状态码与协议错误。"""
         import urllib.error
         import urllib.request
 
         settings = AppSettings.from_config(self._load_cfg())
-        url = f"{settings.asr.external_url.rstrip('/')}/transcribe"
+        params = get_asr_param(device_id) if device_id else {}
+        funasr_params = params.get("funasr") if isinstance(params.get("funasr"), dict) else {}
+        base_url = str(funasr_params.get("url") or "").strip() or settings.asr.external_url
+        url = f"{base_url.rstrip('/')}/transcribe"
         req = urllib.request.Request(
             url,
             data=pcm,
@@ -423,26 +506,28 @@ class RobotCapabilityService:
         return {"success": True, "http_code": http_code, "text": parsed["text"], "error": "", "business_code": 0}
 
     async def _doubao_test(
-        self, pcm: bytes, sample_rate: int, overrides: dict[str, str]
+        self, pcm: bytes, sample_rate: int, overrides: dict[str, str], device_id: str | None = None
     ) -> dict[str, Any]:
-        """用覆盖字段（空/掩码回落 env）构造临时配置测试豆包，错误进结果不抛。"""
+        """按"设备实际生效配置"测试豆包 2.0：覆盖字段 > 设备 asr_param > env，错误进结果不抛。"""
         env = load_doubao_asr_env()
+        params = get_asr_param(device_id) if device_id else {}
+        dev_params = params.get("doubao") if isinstance(params.get("doubao"), dict) else {}
 
         def _pick(field: str) -> str:
             val = (overrides.get(field) or "").strip()
-            if field == "access_token" and _is_masked_secret(val):
+            if field == "api_key" and _is_masked_secret(val):
                 val = ""
+            if not val:
+                val = str(dev_params.get(field) or "").strip()
             if not val:
                 val = (env.get("DOUBAO_ASR_" + field.upper()) or "").strip()
             return val
 
         cfg = DoubaoAsrConfig(
-            app_id=_pick("app_id"),
-            access_token=_pick("access_token"),
-            cluster=_pick("cluster"),
-            url=_pick("url"),
+            api_key=_pick("api_key"),
+            resource_id=_pick("resource_id"),
             uid=_pick("uid"),
-            workflow=_pick("workflow"),
+            url=_pick("url"),
         )
         try:
             cfg.validate()
@@ -450,9 +535,9 @@ class RobotCapabilityService:
             return {"success": False, "http_code": 0, "text": "", "error": str(exc), "business_code": None}
         try:
             detail = await transcribe_doubao_detailed(pcm, sample_rate, cfg)
-        except RuntimeError as exc:  # 配置缺失 / 超时上限
+        except RuntimeError as exc:  # 配置缺失 / 时长超上限 / 响应异常
             return {"success": False, "http_code": 0, "text": "", "error": str(exc), "business_code": None}
-        ok = detail["http_code"] == 200 and detail["business_code"] == 0 and bool(detail["text"])
+        ok = detail["http_code"] == 200 and detail["business_code"] in (STATUS_OK, STATUS_SILENCE)
         return {
             "success": ok,
             "http_code": detail["http_code"],

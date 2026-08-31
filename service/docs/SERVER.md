@@ -107,7 +107,7 @@ cp .env.example .env   # 必填 ARK_API_KEY / ARK_MODEL（火山方舟）
 
 ## 配置
 
-- **`.env`**：`ARK_API_KEY` / `ARK_MODEL`（火山方舟 LLM，必填；兼容旧版 `LLM_API_KEY` / `DASHSCOPE_API_KEY`）、`DOUBAO_TTS_*`（豆包 TTS）、`ASR_MODEL_DIR`、`DESKBOT_WEB_PUBLIC_HOST`（多网卡时填局域网 IP）、`DESKBOT_WEB_SECRET_KEY`（生产必设）
+- **`.env`**：`ARK_API_KEY` / `ARK_MODEL`（火山方舟 LLM，必填；兼容旧版 `LLM_API_KEY` / `DASHSCOPE_API_KEY`）、`DOUBAO_TTS_*`（豆包 TTS）、`DOUBAO_ASR_API_KEY` / `DOUBAO_ASR_RESOURCE_ID` / `DOUBAO_ASR_UID`（豆包 ASR 2.0 全局兜底凭证；设备级配置优先存 `devices.asr_param`）、`ASR_MODEL_DIR`、`DESKBOT_WEB_PUBLIC_HOST`（多网卡时填局域网 IP）、`DESKBOT_WEB_SECRET_KEY`（生产必设）
 - **`config.yaml`**：`audio.input_codec`、`llm.model_name`、`tts.provider`（`moss-tts-nano` 默认 / `doubao`）、`server.asr_chat_device_pb_only`、`debug.asr_auto_reply`
 
 架构概要：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。

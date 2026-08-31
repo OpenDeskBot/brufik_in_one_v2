@@ -1,6 +1,6 @@
-"""AsrPort 的豆包实现：转写转发到火山一句话识别 v1（云端 API）。
+"""AsrPort 的豆包实现：转写转发到火山 Seed-ASR 2.0 极速版（云端 API）。
 
-按 config.yaml 的 asr.provider=doubao 启用；配置走 env（见 doubao.py）。
+配置优先设备级 overrides（resolve.py 从 asr_param 注入），兜底走 env（见 doubao.py）。
 is_valid_text 是纯文本过滤逻辑，保持本地执行（无需远程往返）。
 """
 
@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import logging
 
-from deskbot_server.infrastructure.asr.doubao import load_doubao_asr_config, transcribe_doubao
+from deskbot_server.infrastructure.asr.doubao import (
+    load_doubao_asr_config,
+    merge_doubao_config,
+    transcribe_doubao,
+)
 from deskbot_server.infrastructure.asr.text_filter import is_asr_text_acceptable
 from deskbot_server.model.settings import AppSettings
 
@@ -16,14 +20,18 @@ logger = logging.getLogger("deskbot-server")
 
 
 class DoubaoAsrAdapter:
-    """转豆包 ASR 的 AsrPort 实现（无状态，可复用单例；配置 env 热读）。"""
+    """转豆包 ASR 2.0 的 AsrPort 实现（无状态，可每次调用构造）。
 
-    def __init__(self, settings: AppSettings) -> None:
+    overrides 为设备级参数（asr_param["doubao"]，已过滤掩码/空值），
+    非空字段覆盖 env 配置；均缺时由 DoubaoAsrConfig.validate() 抛 RuntimeError。
+    """
+
+    def __init__(self, settings: AppSettings, overrides: dict[str, str] | None = None) -> None:
         self._text_filter = settings.asr.text_filter
-        cfg = load_doubao_asr_config()
-        cfg.validate()
-        self._cfg = cfg
-        logger.info("[ASR] provider=doubao url=%s", cfg.url)
+        base = load_doubao_asr_config()
+        self._cfg = merge_doubao_config(base, overrides or {})
+        self._cfg.validate()
+        logger.info("[ASR] provider=doubao url=%s", self._cfg.url)
 
     def is_valid_text(self, text: str) -> bool:
         return is_asr_text_acceptable(

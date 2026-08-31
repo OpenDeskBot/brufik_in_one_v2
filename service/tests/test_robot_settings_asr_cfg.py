@@ -21,8 +21,11 @@ import numpy as np
 import pytest
 import yaml
 
+from deskbot_server.dao.device_mapper import get_asr_param, set_asr_provider, update_asr_param
 from deskbot_server.infrastructure.asr.audio_norm import DEFAULT_PCM_SAMPLE_RATE, parse_audio_pcm, resample_pcm
 from deskbot_server.infrastructure.asr.env_store import _mask_secret
+from deskbot_server.infrastructure.asr.resolve import resolve_asr_adapter
+from deskbot_server.model.settings import AppSettings
 from deskbot_server.service.robot_capability import CapabilityError, RobotCapabilityService
 
 MINIMAL_ASR_CFG = {
@@ -170,14 +173,22 @@ def _asr_svc(tmp_path: Path, url: str = "http://127.0.0.1:9102") -> RobotCapabil
 def _clean_doubao_env(monkeypatch):
     """置空并登记清理：save_* 会直接写 os.environ，setenv 保证 teardown 时被还原。"""
     for name in (
-        "DOUBAO_ASR_APP_ID",
-        "DOUBAO_ASR_ACCESS_TOKEN",
-        "DOUBAO_ASR_CLUSTER",
-        "DOUBAO_ASR_URL",
+        "DOUBAO_ASR_API_KEY",
+        "DOUBAO_ASR_RESOURCE_ID",
         "DOUBAO_ASR_UID",
-        "DOUBAO_ASR_WORKFLOW",
+        "DOUBAO_ASR_URL",
     ):
         monkeypatch.setenv(name, "")
+
+
+def _insert_device(device_id: str = "dev-1"):
+    """建用户并绑定设备（temp_db fixture 下，先置为在线）。"""
+    from tests._auth_compat import create_user
+    from tests.device_bind_helpers import bind_device_online
+
+    user = create_user(f"{device_id}@example.com", "password1234")
+    bind_device_online(user.id, device_id)
+    return user
 
 
 # ---------- audio_norm 单测 ----------
@@ -247,51 +258,81 @@ def test_asr_config_info_shape(tmp_path, monkeypatch, tmp_env):
     info = svc.asr_config_info()
     assert info["funasr_url"] == "http://127.0.0.1:9102"
     assert info["default_audio"]["path"] == "data/test/asr.wav"
-    assert info["doubao"]["app_id"] == ""
-    assert info["doubao"]["access_token"] == ""
-    assert info["doubao"]["access_token_set"] is False
-    assert info["doubao"]["url"] == "https://openspeech.bytedance.com/api/v1/asr"  # 默认兜底
+    assert info["doubao"]["api_key"] == ""
+    assert info["doubao"]["api_key_set"] is False
+    assert info["doubao"]["url"].startswith("https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash")
+    assert info["doubao"]["resource_id"] == "volc.seedasr.auc"
     assert info["doubao"]["uid"] == "deskbot"
 
 
-def test_save_doubao_asr_config_writes_env(tmp_path, monkeypatch, tmp_env):
+def test_asr_config_info_device_param_wins(temp_db, tmp_path, monkeypatch, tmp_env):
     _clean_doubao_env(monkeypatch)
+    _insert_device()
     svc = _asr_svc(tmp_path)
-    info = svc.save_doubao_asr_config({"app_id": "app-1", "access_token": "tok-1", "cluster": "cl-1"})
-    text = tmp_env.read_text(encoding="utf-8")
-    assert "DOUBAO_ASR_APP_ID=app-1" in text
-    assert "DOUBAO_ASR_ACCESS_TOKEN=tok-1" in text
-    assert "DOUBAO_ASR_CLUSTER=cl-1" in text
-    assert "# 豆包云 ASR" in text
-    assert info["doubao"]["app_id"] == "app-1"
-    assert info["doubao"]["access_token"] == "*****"  # 掩码展示
-    assert info["doubao"]["access_token_set"] is True
-    assert os.environ.get("DOUBAO_ASR_APP_ID") == "app-1"  # 进程内同步
-
-
-def test_save_doubao_asr_config_masked_token_keeps_existing(tmp_path, monkeypatch, tmp_env):
-    _clean_doubao_env(monkeypatch)
-    tmp_env.write_text("DOUBAO_ASR_ACCESS_TOKEN=secret-token\n", encoding="utf-8")
-    svc = _asr_svc(tmp_path)
-    svc.save_doubao_asr_config({"app_id": "app-1", "access_token": "sec*****ken", "cluster": "cl-1"})
-    text = tmp_env.read_text(encoding="utf-8")
-    assert "DOUBAO_ASR_ACCESS_TOKEN=secret-token" in text
-    assert "sec*****ken" not in text
-
-
-def test_save_doubao_asr_config_empty_fields_keep_existing(tmp_path, monkeypatch, tmp_env):
-    _clean_doubao_env(monkeypatch)
-    tmp_env.write_text(
-        "DOUBAO_ASR_APP_ID=old-app\nDOUBAO_ASR_CLUSTER=old-cluster\nDOUBAO_ASR_URL=https://custom.example.com/asr\n",
-        encoding="utf-8",
+    svc.save_device_asr_config(
+        "dev-1",
+        {"funasr": {"url": "http://127.0.0.1:9999"}, "doubao": {"api_key": "dev-key", "uid": "dev-uid"}},
     )
+    info = svc.asr_config_info("dev-1")
+    assert info["funasr_url"] == "http://127.0.0.1:9999"  # 设备 url > config.yaml
+    assert info["doubao"]["api_key"] == _mask_secret("dev-key")
+    assert info["doubao"]["api_key_set"] is True
+    assert info["doubao"]["uid"] == "dev-uid"
+
+
+def test_save_device_asr_config_writes_db_not_env(temp_db, tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    _insert_device()
     svc = _asr_svc(tmp_path)
-    info = svc.save_doubao_asr_config({"app_id": "new-app"})  # 其余留空 → 保留
-    text = tmp_env.read_text(encoding="utf-8")
-    assert "DOUBAO_ASR_APP_ID=new-app" in text
-    assert "DOUBAO_ASR_CLUSTER=old-cluster" in text
-    assert "DOUBAO_ASR_URL=https://custom.example.com/asr" in text
-    assert info["doubao"]["cluster"] == "old-cluster"
+    info = svc.save_device_asr_config(
+        "dev-1", {"funasr": {"url": "http://127.0.0.1:9102"}, "doubao": {"api_key": "key-1", "uid": "u"}}
+    )
+    params = get_asr_param("dev-1")
+    assert params["doubao"]["api_key"] == "key-1"
+    assert params["funasr"]["url"] == "http://127.0.0.1:9102"
+    assert info["doubao"]["api_key"] == _mask_secret("key-1")  # 掩码展示
+    assert info["doubao"]["api_key_set"] is True
+    assert tmp_env.read_text(encoding="utf-8") == ""  # 不再写 .env
+    assert not os.environ.get("DOUBAO_ASR_API_KEY")
+
+
+def test_save_device_asr_config_masked_api_key_keeps_existing(temp_db, tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    _insert_device()
+    svc = _asr_svc(tmp_path)
+    svc.save_device_asr_config("dev-1", {"doubao": {"api_key": "secret-key"}})
+    svc.save_device_asr_config("dev-1", {"doubao": {"api_key": _mask_secret("secret-key")}})
+    assert get_asr_param("dev-1")["doubao"]["api_key"] == "secret-key"  # 掩码不覆盖
+
+
+def test_save_device_asr_config_empty_fields_fill_from_device_then_env(temp_db, tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    tmp_env.write_text("DOUBAO_ASR_API_KEY=env-key\n", encoding="utf-8")
+    _insert_device()
+    svc = _asr_svc(tmp_path)
+    # 首存：api_key 留空 → env 播种
+    svc.save_device_asr_config("dev-1", {"doubao": {"uid": "custom-uid"}})
+    params = get_asr_param("dev-1")
+    assert params["doubao"]["api_key"] == "env-key"
+    assert params["doubao"]["uid"] == "custom-uid"
+    # 二次存：uid 留空 → 设备已有
+    svc.save_device_asr_config("dev-1", {"doubao": {"api_key": "new-key"}})
+    assert get_asr_param("dev-1")["doubao"]["uid"] == "custom-uid"
+
+
+def test_save_device_asr_config_empty_payload_clears(temp_db, tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    _insert_device()
+    svc = _asr_svc(tmp_path)
+    svc.save_device_asr_config("dev-1", {})  # 无设备已有、无 env → 全空 → 列置 NULL
+    assert get_asr_param("dev-1") == {}
+
+
+def test_save_device_asr_config_no_device_raises(tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    svc = _asr_svc(tmp_path)
+    with pytest.raises(CapabilityError, match="未选择当前设备"):
+        svc.save_device_asr_config(None, {"doubao": {"api_key": "k"}})
 
 
 # ---------- asr_test：funasr ----------
@@ -366,93 +407,116 @@ def test_asr_test_audio_too_long_raises(tmp_path):
 def _fake_doubao_post(monkeypatch, respond):
     captured = {}
 
-    def fake_post(url, body, token):
-        header_len = struct.unpack(">I", body[:4])[0]
-        captured["payload"] = json.loads(body[4 : 4 + header_len])
+    def fake_post(url, body, cfg, reqid):
+        captured["cfg"] = cfg
+        captured["payload"] = json.loads(body.decode("utf-8"))
         return respond()
 
     monkeypatch.setattr("deskbot_server.infrastructure.asr.doubao._post", fake_post)
     return captured
 
 
+def _doubao_ok(result_text: str = "豆包识别"):
+    return lambda: (200, {"X-Api-Status-Code": "20000000"}, {"result": {"text": result_text}})
+
+
 def test_asr_test_doubao_success_with_overrides(tmp_path, monkeypatch, tmp_env):
     _clean_doubao_env(monkeypatch)
-    captured = _fake_doubao_post(
-        monkeypatch, lambda: (200, {"code": 0, "message": "Success", "result": [{"text": "豆包识别"}]})
-    )
+    captured = _fake_doubao_post(monkeypatch, _doubao_ok())
     svc = _asr_svc(tmp_path)
     result = asyncio.run(
         svc.asr_test(
             "doubao",
             _stereo_wav_bytes(4800),
-            doubao_overrides={"app_id": "a", "access_token": "t", "cluster": "c"},
+            doubao_overrides={"api_key": "k-1", "uid": "u-1"},
         )
     )
     assert result["success"] is True
     assert result["text"] == "豆包识别"
     assert result["http_code"] == 200
-    assert result["business_code"] == 0
-    assert captured["payload"]["app"] == {"appid": "a", "token": "t", "cluster": "c"}
-    assert captured["payload"]["audio"]["rate"] == DEFAULT_PCM_SAMPLE_RATE
+    assert result["business_code"] == "20000000"
+    assert captured["cfg"].api_key == "k-1"
+    assert captured["payload"]["user"]["uid"] == "u-1"
+    assert captured["payload"]["request"]["model_name"] == "bigmodel"
+    assert captured["payload"]["audio"]["format"] == "wav"
+    assert captured["payload"]["audio"]["data"]  # base64 wav
 
 
 def test_asr_test_doubao_env_fallback(tmp_path, monkeypatch, tmp_env):
     _clean_doubao_env(monkeypatch)
-    tmp_env.write_text(
-        "DOUBAO_ASR_APP_ID=env-app\nDOUBAO_ASR_ACCESS_TOKEN=env-token\nDOUBAO_ASR_CLUSTER=env-cluster\n",
-        encoding="utf-8",
-    )
-    captured = _fake_doubao_post(monkeypatch, lambda: (200, {"code": 0, "result": "ok"}))
+    tmp_env.write_text("DOUBAO_ASR_API_KEY=env-key\n", encoding="utf-8")
+    captured = _fake_doubao_post(monkeypatch, _doubao_ok())
     svc = _asr_svc(tmp_path)
     result = asyncio.run(svc.asr_test("doubao", _stereo_wav_bytes(4800)))
     assert result["success"] is True
-    assert captured["payload"]["app"] == {"appid": "env-app", "token": "env-token", "cluster": "env-cluster"}
+    assert captured["cfg"].api_key == "env-key"  # 无覆盖/设备参数 → env
 
 
-def test_asr_test_doubao_masked_token_falls_back_env(tmp_path, monkeypatch, tmp_env):
+def test_asr_test_doubao_device_param_wins_over_env(temp_db, tmp_path, monkeypatch, tmp_env):
     _clean_doubao_env(monkeypatch)
-    tmp_env.write_text("DOUBAO_ASR_ACCESS_TOKEN=env-token\n", encoding="utf-8")
-    masked = _mask_secret("env-token")
-    captured = _fake_doubao_post(monkeypatch, lambda: (200, {"code": 0, "result": "ok"}))
+    tmp_env.write_text("DOUBAO_ASR_API_KEY=env-key\n", encoding="utf-8")
+    _insert_device()
+    svc = _asr_svc(tmp_path)
+    svc.save_device_asr_config("dev-1", {"doubao": {"api_key": "dev-key"}})
+    captured = _fake_doubao_post(monkeypatch, _doubao_ok())
+    result = asyncio.run(svc.asr_test("doubao", _stereo_wav_bytes(4800), device_id="dev-1"))
+    assert result["success"] is True
+    assert captured["cfg"].api_key == "dev-key"  # 设备 asr_param > env
+
+
+def test_asr_test_doubao_masked_key_falls_back_env(tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    tmp_env.write_text("DOUBAO_ASR_API_KEY=env-key\n", encoding="utf-8")
+    masked = _mask_secret("env-key")
+    captured = _fake_doubao_post(monkeypatch, _doubao_ok())
     svc = _asr_svc(tmp_path)
     result = asyncio.run(
         svc.asr_test(
             "doubao",
             _stereo_wav_bytes(4800),
-            doubao_overrides={"app_id": "a", "access_token": masked, "cluster": "c"},
+            doubao_overrides={"api_key": masked},
         )
     )
     assert result["success"] is True
-    assert captured["payload"]["app"]["token"] == "env-token"  # 掩码回落 env
+    assert captured["cfg"].api_key == "env-key"  # 掩码回落 env
+
+
+def test_asr_test_doubao_silence_ok(tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    _fake_doubao_post(
+        monkeypatch, lambda: (200, {"X-Api-Status-Code": "20000003"}, {"result": {"text": ""}})
+    )
+    svc = _asr_svc(tmp_path)
+    result = asyncio.run(
+        svc.asr_test("doubao", _stereo_wav_bytes(4800), doubao_overrides={"api_key": "k"})
+    )
+    assert result["success"] is True  # 静音 = 成功语义
+    assert result["text"] == ""
+    assert result["business_code"] == "20000003"
 
 
 def test_asr_test_doubao_business_error(tmp_path, monkeypatch, tmp_env):
     _clean_doubao_env(monkeypatch)
-    _fake_doubao_post(monkeypatch, lambda: (200, {"code": 2207, "message": "invalid cluster", "result": []}))
+    _fake_doubao_post(
+        monkeypatch,
+        lambda: (200, {"X-Api-Status-Code": "45000000", "X-Api-Message": "invalid auth"}, {}),
+    )
     svc = _asr_svc(tmp_path)
     result = asyncio.run(
-        svc.asr_test(
-            "doubao",
-            _stereo_wav_bytes(4800),
-            doubao_overrides={"app_id": "a", "access_token": "t", "cluster": "c"},
-        )
+        svc.asr_test("doubao", _stereo_wav_bytes(4800), doubao_overrides={"api_key": "k"})
     )
     assert result["success"] is False
     assert result["http_code"] == 200
-    assert result["business_code"] == 2207
-    assert "invalid cluster" in result["error"]
+    assert result["business_code"] == "45000000"
+    assert "invalid auth" in result["error"]
 
 
 def test_asr_test_doubao_http_error(tmp_path, monkeypatch, tmp_env):
     _clean_doubao_env(monkeypatch)
-    _fake_doubao_post(monkeypatch, lambda: (401, {}))
+    _fake_doubao_post(monkeypatch, lambda: (401, {}, {}))
     svc = _asr_svc(tmp_path)
     result = asyncio.run(
-        svc.asr_test(
-            "doubao",
-            _stereo_wav_bytes(4800),
-            doubao_overrides={"app_id": "a", "access_token": "t", "cluster": "c"},
-        )
+        svc.asr_test("doubao", _stereo_wav_bytes(4800), doubao_overrides={"api_key": "k"})
     )
     assert result["success"] is False
     assert result["http_code"] == 401
@@ -463,7 +527,7 @@ def test_asr_test_doubao_missing_config_returns_result(tmp_path, monkeypatch, tm
     svc = _asr_svc(tmp_path)
     result = asyncio.run(svc.asr_test("doubao", _stereo_wav_bytes(4800)))
     assert result["success"] is False
-    assert "缺少配置" in result["error"]
+    assert "API Key" in result["error"]
     assert result["http_code"] == 0
 
 
@@ -489,8 +553,9 @@ def test_api_asr_config_info_endpoint(temp_db, monkeypatch, tmp_path):
     assert payload["ok"] is True
     assert payload["default_audio"]["path"] == "data/test/asr.wav"
     assert payload["funasr_url"]
-    assert isinstance(payload["doubao"]["access_token_set"], bool)
+    assert isinstance(payload["doubao"]["api_key_set"], bool)
     assert "url" in payload["doubao"]
+    assert "api_key" in payload["doubao"]
 
 
 def test_api_asr_default_audio_endpoint(temp_db, monkeypatch, tmp_path):
@@ -506,19 +571,45 @@ def test_api_asr_default_audio_endpoint(temp_db, monkeypatch, tmp_path):
 
 
 def test_api_asr_config_save_endpoint(temp_db, monkeypatch, tmp_path):
+    """保存 → 写当前设备 asr_param（DB），不再写 .env。"""
     env_file = tmp_path / ".env"
     monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
     _clean_doubao_env(monkeypatch)
-    client = _login_client("asr-cfg-save@example.com")
+    from deskbot_server.web.app import create_app
+    from tests._auth_compat import create_user
+    from tests.device_bind_helpers import bind_device_online
+
+    email = "asr-cfg-save@example.com"
+    user = create_user(email, "password1234")
+    bind_device_online(user.id, "brfk_asr")
+    client = create_app().test_client()
+    client.post("/login", data={"email": email, "password": "password1234"})
+    client.post("/app/api/devices/select", json={"device_id": "brfk_asr"})
+
     resp = client.post(
-        "/api/robot-settings/asr/config", json={"app_id": "app-1", "access_token": "tok-1", "cluster": "cl-1"}
+        "/api/robot-settings/asr/config",
+        json={"funasr": {"url": "http://127.0.0.1:9102"}, "doubao": {"api_key": "key-1", "uid": "u-1"}},
     )
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["ok"] is True
-    assert payload["doubao"]["app_id"] == "app-1"
-    assert payload["doubao"]["access_token_set"] is True
-    assert "DOUBAO_ASR_APP_ID=app-1" in env_file.read_text(encoding="utf-8")
+    assert payload["doubao"]["api_key_set"] is True
+    assert payload["doubao"]["uid"] == "u-1"
+    assert payload["funasr_url"] == "http://127.0.0.1:9102"
+    params = get_asr_param("brfk_asr")
+    assert params["doubao"]["api_key"] == "key-1"  # DB 落库
+    assert params["funasr"]["url"] == "http://127.0.0.1:9102"
+    assert not env_file.exists()  # .env 未创建 = 不再写全局 env
+
+
+def test_api_asr_config_save_endpoint_no_device_400(temp_db, monkeypatch, tmp_path):
+    _clean_doubao_env(monkeypatch)
+    client = _login_client("asr-cfg-nodev@example.com")  # 未选设备
+    resp = client.post(
+        "/api/robot-settings/asr/config", json={"doubao": {"api_key": "k"}}
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
 
 
 def test_api_asr_test_endpoint_multipart(temp_db, monkeypatch, tmp_path):
@@ -547,3 +638,48 @@ def test_api_asr_test_endpoint_multipart(temp_db, monkeypatch, tmp_path):
     assert "http_code" in payload
     assert "elapsed_ms" in payload
     assert "used_default" in payload
+
+
+# ---------- resolve_asr_adapter：设备 asr_param 优先级 ----------
+
+
+def _settings() -> AppSettings:
+    return AppSettings.from_config(MINIMAL_ASR_CFG)
+
+
+def test_resolve_funasr_device_url_wins(temp_db, tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    _insert_device()
+    svc = _asr_svc(tmp_path)
+    svc.save_device_asr_config("dev-1", {"funasr": {"url": "http://127.0.0.1:9999"}})
+    adapter = resolve_asr_adapter("dev-1", settings=_settings())
+    assert adapter.base_url == "http://127.0.0.1:9999"  # 设备 url > config.yaml
+
+
+def test_resolve_funasr_falls_back_config_url(temp_db, tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    _insert_device()
+    adapter = resolve_asr_adapter("dev-1", settings=_settings())
+    assert adapter.base_url == "http://127.0.0.1:9102"  # 无设备参数 → config.yaml
+
+
+def test_resolve_doubao_device_overrides_env(temp_db, tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    monkeypatch.setenv("DOUBAO_ASR_API_KEY", "env-key")
+    _insert_device()
+    set_asr_provider("dev-1", "doubao")
+    svc = _asr_svc(tmp_path)
+    svc.save_device_asr_config("dev-1", {"doubao": {"api_key": "dev-key"}})
+    adapter = resolve_asr_adapter("dev-1", settings=_settings())
+    assert adapter._cfg.api_key == "dev-key"  # 设备 asr_param > env
+
+
+def test_resolve_doubao_masked_param_skipped(temp_db, tmp_path, monkeypatch, tmp_env):
+    """防御：asr_param 里存了掩码占位（绕过保存语义）→ resolve 跳过，回落 env。"""
+    _clean_doubao_env(monkeypatch)
+    monkeypatch.setenv("DOUBAO_ASR_API_KEY", "env-key")
+    _insert_device()
+    set_asr_provider("dev-1", "doubao")
+    update_asr_param("dev-1", json.dumps({"doubao": {"api_key": _mask_secret("x")}}))
+    adapter = resolve_asr_adapter("dev-1", settings=_settings())
+    assert adapter._cfg.api_key == "env-key"

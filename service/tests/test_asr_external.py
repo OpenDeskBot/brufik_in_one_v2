@@ -113,8 +113,7 @@ def test_provider_switch(monkeypatch):
     settings = AppSettings.from_config({"asr": {"external_url": "http://127.0.0.1:9201"}})
     assert isinstance(build_asr_adapter("funasr", settings), FunAsrAdapter)
     assert isinstance(build_asr_adapter("bogus", settings), FunAsrAdapter)  # 未知回落
-    for name in ("DOUBAO_ASR_APP_ID", "DOUBAO_ASR_ACCESS_TOKEN", "DOUBAO_ASR_CLUSTER"):
-        monkeypatch.setenv(name, "test")
+    monkeypatch.setenv("DOUBAO_ASR_API_KEY", "test")  # ASR 2.0 只需 API Key
     assert isinstance(build_asr_adapter("doubao", settings), DoubaoAsrAdapter)
 
 

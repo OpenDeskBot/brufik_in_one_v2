@@ -176,13 +176,16 @@ def test_apply_asr_unknown_provider_rejected(svc, device):
 
 
 def test_clear_device_asr_override_resets_to_funasr(svc, device):
-    from deskbot_server.dao.device_mapper import get_asr_provider
+    from deskbot_server.dao.device_mapper import get_asr_param, get_asr_provider
 
     svc.apply_asr("doubao", "deskbot_asr")
+    svc.save_device_asr_config("deskbot_asr", {"doubao": {"api_key": "dev-key"}})
     assert get_asr_provider("deskbot_asr") == "doubao"
+    assert get_asr_param("deskbot_asr")["doubao"]["api_key"] == "dev-key"
 
     svc.clear_device_asr_override("deskbot_asr")
     assert get_asr_provider("deskbot_asr") == "funasr"
+    assert get_asr_param("deskbot_asr") == {}  # asr_param 一并清空
     assert svc.get_status("deskbot_asr")["capabilities"]["asr"]["current"] == "funasr"
 
 

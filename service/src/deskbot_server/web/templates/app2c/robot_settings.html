@@ -89,6 +89,10 @@
         <div class="cap-ico">🎙️</div>
         <div><b>语音识别 ASR</b><small>SPEECH RECOGNITION · 设备级</small></div>
       </div>
+      <div v-if="asr.device_params && asr.device_params.configured" class="cap-ovr">
+        <span>该设备已配置自定义 ASR 参数（asr_param），未配置的字段回落到环境变量 / 系统默认。</span>
+        <button type="button" class="btn ghost" @click="clearAsrOverride">清除覆盖</button>
+      </div>
       <label v-for="c in asr.candidates" :key="c.id" class="cap-opt" :class="{on: selected.asr===c.id}">
         <input type="radio" name="asr" :value="c.id" v-model="selected.asr" :disabled="noDevice">
         <span class="cap-opt-main">
@@ -113,7 +117,7 @@
         </button>
       </div>
       <p class="cap-hint">ASR 为设备级配置，保存在 device 表；未设置时默认 funasr 独立进程。
-      「豆包云端」需要 DOUBAO_ASR_* 环境变量凭证。</p>
+      「配置」中填写的参数保存到该设备（asr_param），未填写时回落环境变量 / 系统默认。</p>
     </div>
 
     <!-- ===== LLM ===== -->
@@ -289,41 +293,43 @@
       <div class="rts-modal-body">
         <div v-if="asrCfg.err" class="rts-fail" style="margin-bottom:10px">[[ asrCfg.err ]]</div>
 
-        <!-- 豆包：配置表单（写 .env，掩码/空值不覆盖已有） -->
+        <!-- 豆包：配置表单（保存到当前设备 asr_param，掩码/空值不覆盖已有） -->
         <template v-if="asrCfg.provider==='doubao'">
           <div class="rts-field">
-            <h4>应用 ID（DOUBAO_ASR_APP_ID）</h4>
-            <input v-model="asrCfg.form.app_id" placeholder="火山引擎控制台 → 创建应用并开通一句话识别">
+            <h4>API Key（DOUBAO_ASR_API_KEY）</h4>
+            <input v-model="asrCfg.form.api_key" type="password" placeholder="火山引擎控制台 → API Key 管理">
           </div>
           <div class="rts-field">
-            <h4>应用令牌（DOUBAO_ASR_ACCESS_TOKEN）</h4>
-            <input v-model="asrCfg.form.access_token" type="password" placeholder="Authorization: Bearer; {token}">
-          </div>
-          <div class="rts-field">
-            <h4>Cluster ID（DOUBAO_ASR_CLUSTER）</h4>
-            <input v-model="asrCfg.form.cluster" placeholder="控制台开通服务后显示的集群 ID">
-          </div>
-          <div class="rts-field">
-            <h4>端点 URL（DOUBAO_ASR_URL）</h4>
-            <input v-model="asrCfg.form.url" placeholder="https://openspeech.bytedance.com/api/v1/asr">
+            <h4>Resource ID（DOUBAO_ASR_RESOURCE_ID）</h4>
+            <input v-model="asrCfg.form.resource_id" placeholder="默认 volc.seedasr.auc">
           </div>
           <div class="rts-field">
             <h4>用户标识（DOUBAO_ASR_UID）</h4>
             <input v-model="asrCfg.form.uid" placeholder="deskbot">
           </div>
           <div class="rts-field">
-            <h4>识别流程（DOUBAO_ASR_WORKFLOW）</h4>
-            <input v-model="asrCfg.form.workflow" placeholder="留空用标准版（含标点）">
+            <h4>端点 URL（DOUBAO_ASR_URL）</h4>
+            <input v-model="asrCfg.form.url" placeholder="https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash">
           </div>
           <div class="rts-actions">
             <button type="button" class="btn" :disabled="asrCfg.saveBusy" @click="saveAsrCfg">
               [[ asrCfg.saveBusy ? '保存中…' : '保存配置' ]]
             </button>
-            <span class="rts-hint">留空字段保留已保存值；令牌为脱敏占位时不覆盖。</span>
+            <span class="rts-hint">保存到当前设备（asr_param）；留空字段保留已保存值；API Key 为脱敏占位时不覆盖。</span>
           </div>
         </template>
         <template v-else>
-          <p class="cap-meta" style="margin:0 0 12px">funasr 引擎：[[ (asrCfg.info && asrCfg.info.funasr_url) || '-' ]]</p>
+          <div class="rts-field">
+            <h4>funasr 引擎地址</h4>
+            <input v-model="asrCfg.form.funasr_url" placeholder="http://127.0.0.1:9102">
+          </div>
+          <div class="rts-actions">
+            <button type="button" class="btn" :disabled="asrCfg.saveBusy" @click="saveAsrCfg">
+              [[ asrCfg.saveBusy ? '保存中…' : '保存配置' ]]
+            </button>
+            <span class="rts-hint">保存到当前设备（asr_param）；留空使用全局 config.yaml 地址
+              （当前 [[ (asrCfg.info && asrCfg.info.funasr_url) || 'http://127.0.0.1:9102' ]]）。</span>
+          </div>
         </template>
 
         <div style="border-top:1px solid var(--line);margin:14px 0 12px"></div>
@@ -590,7 +596,7 @@ createApp({
       }finally{ t.busy = false; }
     },
     async openAsrCfg(provider){
-      // 拉取 config-info：默认音频 + funasr 端点 + 豆包 env 当前值（token 掩码回填密码框）
+      // 拉取 config-info：默认音频 + funasr 端点 + 豆包当前值（设备 asr_param 优先，api_key 掩码回填密码框）
       if(!provider) return;
       this.asrCfg = {
         provider: provider,
@@ -598,7 +604,7 @@ createApp({
         saveBusy: false,
         err: '',
         info: null,
-        form: { app_id: '', access_token: '', cluster: '', url: '', uid: '', workflow: '' },
+        form: { api_key: '', resource_id: '', uid: '', url: '', funasr_url: '' },
         file: null,
         useDefault: true,
         defaultOk: false,
@@ -612,12 +618,11 @@ createApp({
         this.asrCfg.defaultOk = !!(d.default_audio && d.default_audio.exists);
         const doubao = d.doubao || {};
         this.asrCfg.form = {
-          app_id: doubao.app_id || '',
-          access_token: doubao.access_token || '',
-          cluster: doubao.cluster || '',
-          url: doubao.url || '',
+          api_key: doubao.api_key || '',
+          resource_id: doubao.resource_id || '',
           uid: doubao.uid || '',
-          workflow: doubao.workflow || '',
+          url: doubao.url || '',
+          funasr_url: d.funasr_url || '',
         };
       }catch(e){ this.asrCfg.err = '配置信息加载失败：' + e.message; }
     },
@@ -643,14 +648,31 @@ createApp({
       if(!t || t.saveBusy) return;
       t.saveBusy = true; t.err = '';
       try{
+        const payload = {
+          funasr: { url: (t.form.funasr_url || '').trim() },
+          doubao: {
+            api_key: t.form.api_key || '',
+            resource_id: t.form.resource_id || '',
+            uid: t.form.uid || '',
+            url: t.form.url || '',
+          },
+        };
         const d = await this.api('/api/robot-settings/asr/config', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(t.form),
+          body: JSON.stringify(payload),
         });
         t.info = d;
-        this.msg = '豆包 ASR 配置已保存到 .env 并生效';
+        this.msg = 'ASR 配置已保存到当前设备并生效';
       }catch(e){ t.err = '保存失败：' + e.message; }
       finally{ t.saveBusy = false; }
+    },
+    async clearAsrOverride(){
+      // 清除设备 ASR 覆盖：provider 重置 funasr + asr_param 清空
+      try{
+        const d = await this.api('/api/robot-settings/asr/clear-device-override', { method: 'POST' });
+        this.status = d;
+        this.msg = '已清除设备 ASR 覆盖（provider=funasr，参数清空）';
+      }catch(e){ this.err = '清除失败：' + e.message; }
     },
     onAsrFile(e){
       const t = this.asrCfg;
@@ -669,7 +691,7 @@ createApp({
         fd.append('use_default', t.useDefault ? '1' : '0');
         if(!t.useDefault) fd.append('audio', t.file);
         if(t.provider === 'doubao'){
-          for(const k of ['app_id', 'access_token', 'cluster', 'url', 'uid', 'workflow']){
+          for(const k of ['api_key', 'resource_id', 'uid', 'url']){
             fd.append('doubao_' + k, t.form[k] || '');
           }
         }

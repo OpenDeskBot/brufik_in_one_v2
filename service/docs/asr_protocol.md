@@ -144,7 +144,7 @@
 | 后端 | 形态 | 接入方式 | 状态 |
 |------|------|----------|------|
 | funasr（SenseVoice） | 本地 externals（`externals/funasr`，端口 9102） | `provider: external` | 已实现：PCM/WAV 输入、`{"text", "elapsed_ms"}`、统一错误结构（复用 `infrastructure/asr/protocol.py`） |
-| doubao（豆包） | 云 API（火山一句话识别 v1，`openspeech.bytedance.com`） | `provider: doubao`（`infrastructure/asr/doubao_adapter.py`） | 已实现：配置走 env（`DOUBAO_ASR_APP_ID`/`ACCESS_TOKEN`/`CLUSTER`）；直连云 API，不走本协议 HTTP 层，但响应解析为同一 text 结构 |
+| doubao（豆包） | 云 API（火山 Seed-ASR 2.0 极速版，`openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash`） | `provider: doubao`（`infrastructure/asr/doubao_adapter.py`） | 已实现：配置优先设备级 `devices.asr_param`（`api_key`/`resource_id`/`uid`/`url`），兜底 env（`DOUBAO_ASR_API_KEY` 等）；`X-Api-Key` 鉴权，结果状态在响应头 `X-Api-Status-Code`（20000000 成功 / 20000003 静音）；直连云 API，不走本协议 HTTP 层，但响应解析为同一 text 结构 |
 
 ## 版本与兼容
 

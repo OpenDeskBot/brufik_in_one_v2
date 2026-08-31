@@ -67,9 +67,9 @@ def api_robot_settings_clear_device_asr_override(request: Request, user: Require
 
 @router.get("/api/robot-settings/asr/config-info")
 def api_robot_settings_asr_config_info(request: Request, user: RequireUser):
-    """ASR 配置对话框元信息：默认测试音频 / funasr 端点 / 豆包 env 当前值。"""
+    """ASR 配置对话框元信息：默认测试音频 / funasr 端点 / 豆包当前值（设备 asr_param 优先）。"""
     try:
-        return jsonify({"ok": True, **_svc().asr_config_info()})
+        return jsonify({"ok": True, **_svc().asr_config_info(get_current_device_id(request))})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
@@ -86,10 +86,10 @@ def api_robot_settings_asr_default_audio(request: Request, user: RequireUser):
 
 @router.post("/api/robot-settings/asr/config")
 def api_robot_settings_asr_save_config(request: Request, user: RequireUser):
-    """保存豆包 ASR 配置到 .env（掩码/空值不覆盖已有），返回最新 info。"""
+    """保存设备级 ASR 配置到 device 表 asr_param（JSON，掩码/空值保留已有），不再写全局 .env。"""
     body = get_json(request) or {}
     try:
-        return jsonify({"ok": True, **_svc().save_doubao_asr_config(body)})
+        return jsonify({"ok": True, **_svc().save_device_asr_config(get_current_device_id(request), body)})
     except CapabilityError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
@@ -100,7 +100,7 @@ def api_robot_settings_asr_save_config(request: Request, user: RequireUser):
 async def api_robot_settings_asr_test(request: Request, user: RequireUser):
     """ASR 测试：multipart 上传音频（或 use_default=1 用 data/test/asr.wav）。
 
-    doubao_* 六字段为表单覆盖值（空/掩码回落 env），可不保存直接测试。
+    doubao_* 四字段为表单覆盖值（空/掩码回落设备 asr_param → env），可不保存直接测试。
     执行结果恒 200 ok:true + success 字段；参数非法才 400。
     """
     upload = files_get(request, "audio")
@@ -113,6 +113,7 @@ async def api_robot_settings_asr_test(request: Request, user: RequireUser):
             raw,
             use_default=use_default,
             doubao_overrides=overrides,
+            device_id=get_current_device_id(request),
         )
         return jsonify(result)
     except CapabilityError as exc:
