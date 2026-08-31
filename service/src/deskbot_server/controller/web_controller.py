@@ -13,7 +13,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Request, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from websockets.exceptions import ConnectionClosed
 
 from deskbot_server.constants import FACE_DESIGN_FILE, SERVO_CFG_FILE
@@ -203,10 +203,12 @@ async def api_debug_prefs(request: Request) -> JSONResponse:
         get_auto_reply,
         get_camera_servo_auto_mode,
         get_live_mode,
+        get_record_history,
         normalize_camera_servo_auto_mode,
         set_auto_reply,
         set_camera_servo_auto_mode,
         set_live_mode,
+        set_record_history,
     )
     from deskbot_server.web.session_device import get_current_device_id
 
@@ -215,16 +217,23 @@ async def api_debug_prefs(request: Request) -> JSONResponse:
     raw_ar = qargs.get("asr_auto_reply")
     raw_live = qargs.get("live_service")
     raw_mode = qargs.get("camera_servo_auto_mode")
-    if raw_ar is None and raw_live is None and raw_mode is None:
+    raw_record = qargs.get("record_history")
+    if raw_ar is None and raw_live is None and raw_mode is None and raw_record is None:
         # GET：无 device_id 返回默认值
         if device_id:
             snap = {
                 "asr_auto_reply": get_auto_reply(device_id),
                 "live_service": get_live_mode(device_id),
                 "camera_servo_auto_mode": get_camera_servo_auto_mode(device_id),
+                "record_history": get_record_history(device_id),
             }
         else:
-            snap = {"asr_auto_reply": True, "live_service": True, "camera_servo_auto_mode": ""}
+            snap = {
+                "asr_auto_reply": True,
+                "live_service": True,
+                "camera_servo_auto_mode": "",
+                "record_history": False,
+            }
         return JSONResponse(status_code=200, content={"ok": True, **snap})
     # SET：需要 device_id
     if not device_id:
@@ -245,6 +254,14 @@ async def api_debug_prefs(request: Request) -> JSONResponse:
             set_live_mode(device_id, False)
         else:
             return JSONResponse(status_code=400, content={"ok": False, "error": "invalid live_service"})
+    if raw_record is not None:
+        se = str(raw_record).strip().lower()
+        if se in ("1", "true", "yes", "on"):
+            set_record_history(device_id, True)
+        elif se in ("0", "false", "no", "off"):
+            set_record_history(device_id, False)
+        else:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "invalid record_history"})
     if raw_mode is not None:
         if str(raw_mode).strip().lower() in ("", "off", "none"):
             set_camera_servo_auto_mode(device_id, "")
@@ -257,6 +274,7 @@ async def api_debug_prefs(request: Request) -> JSONResponse:
         "asr_auto_reply": get_auto_reply(device_id),
         "live_service": get_live_mode(device_id),
         "camera_servo_auto_mode": get_camera_servo_auto_mode(device_id),
+        "record_history": get_record_history(device_id),
     }
     return JSONResponse(status_code=200, content={"ok": True, **snap})
 
@@ -285,6 +303,111 @@ async def api_pipeline_recent(request: Request) -> JSONResponse:
         status_code=200,
         content={"items": items, "device_id": dev, "limit": limit, "max_events": bus.max_events, "t": time.time()},
     )
+
+
+def _require_turn_session(dev: str, session_id: str):
+    """校验 session 归属；返回 (session_or_None, error_response_or_None)。"""
+    from deskbot_server.dao.device_session_mapper import get_session
+
+    session = get_session(str(session_id or "").strip())
+    if session is None:
+        return None, JSONResponse(status_code=404, content={"ok": False, "error": "session not found"})
+    if str(session.device_id) != dev:
+        return None, JSONResponse(status_code=403, content={"ok": False, "error": "session 不属于该设备"})
+    return session, None
+
+
+@router.get("/api/device_turns")
+@require_api_auth
+async def api_device_turns(request: Request) -> JSONResponse:
+    """历史对话：无 session_id 返回最近会话列表；有 session_id 返回该会话轮次。"""
+    from deskbot_server.dao.device_session_mapper import list_recent_sessions
+    from deskbot_server.dao.device_turn_mapper import list_turns_as_dicts
+
+    qargs = _request_qargs(request)
+    dev = _extract_device_id(qargs)
+    if not dev:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "missing device_id"})
+    denied = device_access_denied(request.state.user_id, dev)
+    if denied is not None:
+        return denied
+
+    session_id = str(qargs.get("session_id") or "").strip()
+    if session_id:
+        session, err = _require_turn_session(dev, session_id)
+        if err is not None:
+            return err
+        try:
+            limit = int(qargs.get("limit") or 200)
+        except ValueError:
+            limit = 200
+        limit = max(1, min(500, limit))
+        turns = await run_blocking(list_turns_as_dicts, session_id, limit=limit)
+        return JSONResponse(
+            status_code=200,
+            content={"ok": True, "device_id": dev, "session_id": session_id, "turns": turns, "t": time.time()},
+        )
+
+    try:
+        limit = int(qargs.get("limit") or 20)
+    except ValueError:
+        limit = 20
+    limit = max(1, min(50, limit))
+    sessions = await run_blocking(list_recent_sessions, dev, limit=limit)
+    return JSONResponse(
+        status_code=200,
+        content={"ok": True, "device_id": dev, "sessions": sessions, "t": time.time()},
+    )
+
+
+def _resolve_turn_capture(dev: str, turn_id: str, side: str):
+    """按 turn 行解析音频/图像文件绝对路径；返回 (rel_path, error_response_or_None)。"""
+    from deskbot_server.dao.device_turn_mapper import get_turn
+
+    turn = get_turn(str(turn_id or "").strip())
+    if turn is None:
+        return None, JSONResponse(status_code=404, content={"ok": False, "error": "turn not found"})
+    if str(turn.device_id) != dev:
+        return None, JSONResponse(status_code=403, content={"ok": False, "error": "turn 不属于该设备"})
+    rel = ""
+    if side == "user":
+        rel = turn.user_audio
+    elif side == "bot":
+        rel = turn.bot_audio
+    elif side == "fr":
+        rel = turn.fr_image
+    if not rel:
+        return None, JSONResponse(status_code=404, content={"ok": False, "error": f"{side} 媒体不存在"})
+    if not rel.startswith(("audio/", "capture/")):
+        return None, JSONResponse(status_code=400, content={"ok": False, "error": "invalid media path"})
+    return rel, None
+
+
+@router.get("/api/device_turns/media")
+@require_api_auth
+async def api_device_turns_media(request: Request) -> Any:
+    """取轮次音频（side=user|bot）或人脸图像（side=fr），文件在 data/device/{device_id}/ 下。"""
+    from deskbot_server.utils.device_data import device_capture_dir
+
+    qargs = _request_qargs(request)
+    dev = _extract_device_id(qargs)
+    if not dev:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "missing device_id"})
+    denied = device_access_denied(request.state.user_id, dev)
+    if denied is not None:
+        return denied
+    side = str(qargs.get("side") or "").strip().lower()
+    if side not in ("user", "bot", "fr"):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "invalid side"})
+
+    rel, err = await run_blocking(_resolve_turn_capture, dev, qargs.get("turn_id") or "", side)
+    if err is not None:
+        return err
+    path = device_capture_dir(dev) / rel
+    if not path.is_file():
+        return JSONResponse(status_code=404, content={"ok": False, "error": "媒体文件已被清理"})
+    media_type = "image/jpeg" if side == "fr" else "audio/wav"
+    return FileResponse(path, media_type=media_type)
 
 
 @router.get("/api/device_servo")

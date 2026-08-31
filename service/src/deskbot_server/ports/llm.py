@@ -14,4 +14,5 @@ class LlmPort(Protocol):
         history_messages: list[dict[str, str]] | None = None,
         extra_messages: list[dict[str, str]] | None = None,
         on_tts_ready: Callable[[str], Awaitable[None]] | None = None,
+        on_system_prompt: Callable[[str], None] | None = None,
     ) -> str: ...

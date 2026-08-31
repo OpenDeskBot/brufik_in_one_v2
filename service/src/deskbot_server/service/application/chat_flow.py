@@ -942,13 +942,6 @@ async def _run_pb_playback(
                 text_chunks,
             )
 
-    from deskbot_server.service.pb_audio_recorder import PbAudioRecorder
-
-    recorder = PbAudioRecorder()
-    rec_idx = 0
-    if recorder.enabled:
-        recorder.begin(request_id or "tts")
-
     n_scene_pb = 0
     pb_aborted = False
     total_pb = 0
@@ -1024,12 +1017,6 @@ async def _run_pb_playback(
         )
         logger.info("[pb TX] 帧序一览 %s", json.dumps(frame_overview, ensure_ascii=False))
 
-        if recorder.enabled:
-            for m, bins in pairs:
-                if bins:
-                    recorder.add_wire(m, bins, idx=rec_idx)
-                    rec_idx += 1
-
         pb_aborted = await _send_pb_pairs(
             pairs=pairs, pb_req=pb_req, device_ws=device_ws, device_id=device_id, n_pb=n_pb, task_level=task_level,
         )
@@ -1061,10 +1048,6 @@ async def _run_pb_playback(
             scene_seq = PbSeq(req=sreq, entries=tuple(scene_blocks), level=PB_LEVEL_DEBUG)
             await device_ws.send(device_id, scene_seq)
             n_scene_pb += len(scene_blocks)
-
-    merged_path = recorder.finish() if recorder.enabled else None
-    if merged_path:
-        logger.info("[pb TX] 音频录制 merged=%s chunks=%d", merged_path, rec_idx)
 
     if record_audio and rec_pcm and device_id:
         try:

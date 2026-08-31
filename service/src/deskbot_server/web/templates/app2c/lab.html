@@ -48,6 +48,28 @@
   .lab-table th{background:var(--panel2);font-size:11px;text-transform:uppercase}
   .lab-table tr:last-child td{border-bottom:0}
   .lab-json-input{min-height:150px;font-family:var(--mono);font-size:12px}
+  .hist-sessions{display:grid;gap:8px;margin-bottom:10px;max-height:480px;overflow:auto}
+  .hist-session{border:var(--bw) solid var(--line);background:var(--panel2);border-radius:var(--r);padding:10px;cursor:pointer;text-align:left;box-shadow:var(--shadow-sm)}
+  .hist-session.on{border-color:var(--accent)}
+  .hist-session b{display:block;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hist-session small{display:block;color:var(--dim);font-size:11px;margin-top:2px}
+  .hist-chat{display:grid;gap:18px;max-height:560px;overflow:auto;padding:6px 4px}
+  .hist-turn{display:grid;gap:10px}
+  .hist-bubble{max-width:86%;padding:10px 12px;border-radius:var(--r);border:var(--bw) solid var(--line);box-shadow:var(--shadow-sm)}
+  .hist-bubble.bot{background:var(--panel2);justify-self:start;border-bottom-left-radius:2px}
+  .hist-bubble.user{background:var(--panel);justify-self:end;border-bottom-right-radius:2px;border-color:var(--accent)}
+  .hist-meta{font-size:11px;color:var(--dim);font-family:var(--mono);margin-bottom:6px;display:flex;flex-wrap:wrap;gap:4px}
+  .hist-text{margin:0 0 6px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+  .hist-audio{display:flex;align-items:center;gap:8px;margin:4px 0}
+  .hist-audio audio{height:30px;max-width:220px}
+  .hist-dur{font-family:var(--mono);font-size:12px;color:var(--accent);white-space:nowrap}
+  .hist-tools{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+  .tool-chip{font-size:11px;font-family:var(--mono);background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);padding:2px 8px;cursor:help}
+  .hist-fr{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px;color:var(--dim)}
+  .hist-fr-img{width:120px;border-radius:var(--r);border:var(--bw) solid var(--line);cursor:zoom-in;background:#111}
+  .hist-prompt{margin-top:6px;font-size:11px}
+  .hist-prompt summary{cursor:pointer;color:var(--dim)}
+  .hist-prompt pre{font-family:var(--mono);font-size:10px;background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);padding:8px;white-space:pre-wrap;max-height:180px;overflow:auto;margin:6px 0 0}
   .lab-robot-panel{overflow:hidden}
   .lab-robot-layout{display:grid;grid-template-columns:minmax(320px,1.05fr) minmax(260px,.95fr);gap:14px;align-items:stretch}
   .lab-robot-stage{border:var(--bw) solid var(--line);border-radius:var(--r);background:#111318;box-shadow:var(--shadow-sm);min-height:260px;overflow:hidden}
@@ -93,6 +115,7 @@
     <button type="button" :class="{on: active==='scene'}" @click="setActive('scene')">场景编排</button>
     <button type="button" :class="{on: active==='pb'}" @click="setActive('pb')">PB 表情</button>
     <button type="button" :class="{on: active==='logs'}" @click="setActive('logs')">ASR / 流水日志</button>
+    <button type="button" :class="{on: active==='history'}" @click="setActive('history')">历史对话</button>
   </div>
 
   <p class="lead" v-if="msg">[[ msg ]]</p>
@@ -144,7 +167,7 @@
         <select v-model="servo.config.perspective"><option value="viewer">观众视角</option><option value="robot">机器人本体视角</option></select>
         <button type="button" class="btn primary" @click="saveServoConfig">保存配置</button>
       </div>
-      <small class="lab-note">接口：/proxy/deskbot/api/servo_config</small>
+      <small class="lab-note">接口：/api/servo_config</small>
     </div>
 
     <div class="lab-panel">
@@ -159,7 +182,7 @@
         <input class="tinput" v-model.trim="servo.direct.with_scene" placeholder="with_scene / append_scene">
         <button type="button" class="btn primary" @click="sendServo">下发舵机</button>
       </div>
-      <small class="lab-note">接口：/proxy/deskbot/api/device_servo</small>
+      <small class="lab-note">接口：/api/device_servo</small>
     </div>
 
     <div class="lab-panel wide">
@@ -208,7 +231,7 @@
         <div><span>最新帧</span><b>[[ camera.frameBytes ? fmtBytes(camera.frameBytes) : '-' ]]</b></div>
         <div><span>模式</span><b>[[ camera.mode || 'off' ]]</b></div>
       </div>
-      <small class="lab-note">接口：/proxy/deskbot/api/camera_servo_auto_mode</small>
+      <small class="lab-note">接口：/api/camera_servo_auto_mode</small>
     </div>
   </section>
 
@@ -258,7 +281,7 @@
           </tbody>
         </table>
       </div>
-      <small class="lab-note">接口：/proxy/deskbot/api/scene_playbooks · /proxy/deskbot/api/scene_playbook/run</small>
+      <small class="lab-note">接口：/api/scene_playbooks · /api/scene_playbook/run</small>
     </div>
   </section>
 
@@ -273,7 +296,7 @@
         <option value="">选择 PB scene</option>
         <option v-for="s in pb.scenes" :key="s" :value="s">[[ s ]]</option>
       </select>
-      <small class="lab-note">接口：/proxy/deskbot/api/device_pb_scenes · /proxy/deskbot/api/device_pb_scene</small>
+      <small class="lab-note">接口：/api/device_pb_scenes · /api/device_pb_scene</small>
     </div>
 
     <div class="lab-panel">
@@ -285,7 +308,7 @@
         <button type="button" class="btn primary" @click="playFaceCatalog">播放</button>
       </div>
       <pre class="lab-code">[[ json(pb.catalog) ]]</pre>
-      <small class="lab-note">接口：/proxy/deskbot/api/device_face_catalog · /proxy/deskbot/api/device_face_play</small>
+      <small class="lab-note">接口：/api/device_face_catalog · /api/device_face_play</small>
     </div>
 
     <div class="lab-panel">
@@ -296,7 +319,7 @@
         <input class="tinput" v-model.trim="pb.exprScene" placeholder="expr scene name">
         <button type="button" class="btn ghost" @click="sendExprScene">下发 Expr Scene</button>
       </div>
-      <small class="lab-note">接口：/proxy/deskbot/api/device_pb_anim · /proxy/deskbot/api/device_pb_expr_scene</small>
+      <small class="lab-note">接口：/api/device_pb_anim · /api/device_pb_expr_scene</small>
     </div>
 
     <div class="lab-panel">
@@ -306,7 +329,7 @@
         <input class="tinput" v-model.trim="pb.ttsScene" placeholder="追加 scene（可选）">
         <button type="button" class="btn primary" @click="sendDeviceTts">下发 TTS</button>
       </div>
-      <small class="lab-note">接口：/proxy/deskbot/api/device_tts</small>
+      <small class="lab-note">接口：/api/device_tts</small>
     </div>
   </section>
 
@@ -318,7 +341,7 @@
         <button type="button" class="btn primary" @click="openPipeline">连接实时流水</button>
         <button type="button" class="btn ghost" @click="loadPipelineRecent">拉取最近事件</button>
       </div>
-      <small class="lab-note">接口：/proxy/deskbot/api/asr_auto_reply · /proxy/deskbot/api/pipeline_recent</small>
+      <small class="lab-note">接口：/api/asr_auto_reply · /api/pipeline_recent</small>
       <small class="lab-note">WebSocket：devicePipelineWsBase</small>
     </div>
     <div class="lab-panel">
@@ -331,6 +354,80 @@
     </div>
     <div class="lab-panel wide">
       <pre class="lab-code">[[ json(pipeline.events.slice(0, 80)) ]]</pre>
+    </div>
+  </section>
+
+  <section v-show="active==='history'" class="lab-grid">
+    <div class="lab-panel wide">
+      <div class="lab-head">
+        <div>
+          <b>调试记录</b>
+          <small>开启后每轮对话写入 device_turn 表，用户语音 / 机器人语音 / 人脸帧落盘到 data/device/{device_id}/。默认关闭。</small>
+        </div>
+        <button type="button" class="btn" :class="history.recordOn ? 'primary' : 'ghost'" @click="toggleRecordHistory" :disabled="!currentDeviceId">
+          [[ history.recordOn ? '调试记录：开' : '调试记录：关' ]]
+        </button>
+      </div>
+      <small class="lab-note">接口：/api/debug_prefs?record_history=1|0 · /api/device_turns</small>
+    </div>
+
+    <div class="lab-panel">
+      <div class="lab-head"><div><b>会话列表</b><small>点选加载该会话的轮次。</small></div></div>
+      <div class="hist-sessions" v-if="history.sessions.length">
+        <button type="button" v-for="s in history.sessions" :key="s.session_id"
+          class="hist-session" :class="{on: history.currentSession===s.session_id}"
+          @click="selectSession(s)">
+          <b>[[ s.title ]]</b>
+          <small>[[ s.message_count ]] 条 · [[ tsText(s.updated_at) ]]</small>
+        </button>
+      </div>
+      <p v-else class="lab-note">暂无会话。开启调试记录后，新对话会出现在这里。</p>
+      <div class="lab-toolbar">
+        <button type="button" class="btn ghost" @click="loadHistorySessions">刷新</button>
+      </div>
+    </div>
+
+    <div class="lab-panel">
+      <div class="lab-head"><div><b>对话记录</b><small>机器人左对齐 · 用户右对齐。</small></div></div>
+      <div class="hist-chat" ref="histChat">
+        <template v-if="history.turns.length">
+          <div v-for="t in history.turns" :key="t.id" class="hist-turn">
+            <div class="hist-bubble user">
+              <div v-if="t.user_audio" class="hist-audio">
+                <audio controls preload="none" :src="mediaUrl(t, 'user')"></audio>
+                <span class="hist-dur">[[ fmtAudio(t.user_audio_ms) ]]</span>
+              </div>
+              <p v-if="t.user_text" class="hist-text">[[ t.user_text ]]</p>
+              <div class="hist-meta" v-if="t.asr_ms !== null">
+                <span>ASR 解析 [[ fmtMs(t.asr_ms) ]]</span>
+              </div>
+            </div>
+            <div class="hist-bubble bot">
+              <div class="hist-meta">
+                <span>🤔 [[ fmtMs(t.llm_ms) ]]</span>
+                <span v-if="t.llm_model" class="dim">· [[ t.llm_model ]]</span>
+                <span v-if="t.asr_model" class="dim">· ASR [[ t.asr_model ]]</span>
+              </div>
+              <div v-if="t.tools && t.tools.length" class="hist-tools">
+                <span v-for="(tool, i) in t.tools" :key="i" class="tool-chip" :title="json(tool.args)">🔧 [[ tool.tool ]]</span>
+              </div>
+              <p v-if="t.bot_text" class="hist-text">[[ t.bot_text ]]</p>
+              <div v-if="t.bot_audio" class="hist-audio">
+                <audio controls preload="none" :src="mediaUrl(t, 'bot')"></audio>
+                <span class="hist-dur">[[ fmtAudio(t.bot_audio_ms) ]]</span>
+              </div>
+              <div v-if="t.fr_image || (t.fr_result && t.fr_result.length)" class="hist-fr">
+                <img v-if="t.fr_image" :src="mediaUrl(t, 'fr')" alt="人脸帧" class="hist-fr-img" @click="zoomFr(t)">
+                <span v-if="t.fr_result && t.fr_result.length">
+                  👤 [[ frLabel(t.fr_result) ]] · [[ fmtMs(t.fr_ms) ]]
+                </span>
+              </div>
+              <details v-if="t.system_prompt" class="hist-prompt"><summary>system prompt</summary><pre>[[ t.system_prompt ]]</pre></details>
+            </div>
+          </div>
+        </template>
+        <p v-else class="lab-note">选择左侧会话查看轮次；无记录时为空。</p>
+      </div>
     </div>
   </section>
 </div>
@@ -352,7 +449,7 @@ const EXPR_DEFAULT_ANIM = LAB_FACE.defaultAnim || {
 };
 const ROBOT_SERVO_CENTER = 90;
 function initialLabTab(){
-  const allowed = ['servo','camera','scene','pb','logs'];
+  const allowed = ['servo','camera','scene','pb','logs','history'];
   const params = new URLSearchParams(window.location.search);
   const tab = params.get('tab') || '';
   return allowed.includes(tab) ? tab : 'servo';
@@ -364,7 +461,6 @@ createApp({
     cameraViewWsBase: {{ camera_view_ws_base|tojson }},
     devicePipelineWsBase: {{ device_pipeline_ws_base|tojson }},
     devices:[], currentDeviceId:'',
-    token:'',
     simServo:{x:90,y:90},
     robotViewYawDeg:0,
     robot3dError:'',
@@ -382,6 +478,7 @@ createApp({
       animJson:'{"anim":[{"ms":500,"elements":{"mouth":[],"nose":[],"eye_l":[],"eye_r":[],"extra":[]}}]}',
     },
     pipeline:{ws:null,status:'',events:[]},
+    history:{sessions:[],turns:[],currentSession:'',recordOn:false},
   }; },
   computed:{
     robotServoXLabel(){
@@ -423,18 +520,12 @@ createApp({
       return d;
     },
     proxyPath(path, params){
-      const url = new URL('/proxy/deskbot' + path, window.location.origin);
+      const url = new URL(path, window.location.origin);
       if(this.currentDeviceId) url.searchParams.set('device_id', this.currentDeviceId);
       for(const [k,v] of Object.entries(params||{})){
         if(v !== undefined && v !== null && String(v) !== '') url.searchParams.set(k, v);
       }
       return url.toString();
-    },
-    async ensureToken(){
-      if(this.token) return this.token;
-      const d = await this.api('/api/debug/ws_token');
-      this.token = d.token || '';
-      return this.token;
     },
     requireDevice(options){
       const silent = !!(options && options.silent);
@@ -449,6 +540,7 @@ createApp({
       if(tab==='servo') this.$nextTick(()=>{ if(!this._robot3d) void this.robotInit3d(); });
       if(tab==='camera') this.loadCameraMode({silent:true});
       if(tab==='logs') this.loadRuntimeToggles({silent:true});
+      if(tab==='history') this.loadHistory({silent:true});
     },
     async loadDevices(){
       const d=await this.api('/app/api/devices');
@@ -468,10 +560,52 @@ createApp({
           this.loadPbScenes({silent:true}),
           this.loadScenePlaybooks({silent:true}),
           this.loadRuntimeToggles({silent:true}),
-          this.loadCameraMode({silent:true})
+          this.loadCameraMode({silent:true}),
+          this.loadHistory({silent:true})
         ]);
       }catch(e){ this.msg=e.message||'刷新失败'; }
     },
+    // ── 历史对话 ──
+    async loadHistory(options){
+      if(!this.requireDevice(options)) return;
+      try{
+        const [d, prefs] = await Promise.all([
+          this.api(this.proxyPath('/api/device_turns', {})),
+          this.api(this.proxyPath('/api/debug_prefs', {})),
+        ]);
+        this.history.recordOn = !!prefs.record_history;
+        const sessions = d.sessions || [];
+        const cur = this.history.currentSession;
+        const stillThere = cur && sessions.some(s=>s.session_id===cur);
+        this.history.sessions = sessions;
+        if(stillThere){ this.selectSession({session_id: cur}, {silent:true}); }
+        else if(sessions.length && !this.history.turns.length){ this.selectSession(sessions[0], {silent:true}); }
+        else if(!sessions.length){ this.history.turns = []; }
+      }catch(e){ if(!(options && options.silent)) this.msg=e.message||'加载历史失败'; }
+    },
+    async toggleRecordHistory(){
+      if(!this.requireDevice()) return;
+      const on = !this.history.recordOn;
+      try{
+        await this.api(this.proxyPath('/api/debug_prefs', {record_history: on ? 1 : 0}));
+        this.history.recordOn = on;
+        this.msg = on ? '调试记录已开启：新一轮对话开始写入 device_turn' : '调试记录已关闭';
+      }catch(e){ this.msg=e.message||'切换失败'; }
+    },
+    async selectSession(s, options){
+      this.history.currentSession = s.session_id;
+      try{
+        const d = await this.api(this.proxyPath('/api/device_turns', {session_id: s.session_id}));
+        this.history.turns = d.turns || [];
+        this.$nextTick(()=>{ const el=this.$refs.histChat; if(el) el.scrollTop=el.scrollHeight; });
+      }catch(e){ if(!(options && options.silent)) this.msg=e.message||'加载轮次失败'; }
+    },
+    mediaUrl(t, side){ return this.proxyPath('/api/device_turns/media', {turn_id: t.id, side: side}); },
+    frLabel(faces){ return (faces||[]).map(f=>f.person_name || ('ID '+f.face_id)).join(', '); },
+    zoomFr(t){ window.open(this.mediaUrl(t, 'fr'), '_blank'); },
+    fmtMs(v){ if(v===null || v===undefined) return '-'; v=Number(v); if(v>=1000) return (v/1000).toFixed(3)+'s'; return v+'ms'; },
+    fmtAudio(v){ if(v===null || v===undefined) return '-'; return (Number(v)/1000).toFixed(3)+'s'; },
+    tsText(ts){ if(!ts) return ''; const d=new Date(ts*1000); const p=n=>String(n).padStart(2,'0'); return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); },
     normalizeServoConfig(cfg){
       const c = cfg || {};
       this.servo.config = Object.assign({}, this.servo.config, {
@@ -713,10 +847,8 @@ createApp({
     async openCamera(){
       if(!this.requireDevice()) return;
       this.closeCamera();
-      const token=await this.ensureToken();
       const url=new URL(this.cameraViewWsBase);
       url.searchParams.set('device_id', this.currentDeviceId);
-      url.searchParams.set('debug_token', token);
       this.camera.status='connecting';
       const ws=new WebSocket(url.toString());
       ws.binaryType='blob';
@@ -825,10 +957,8 @@ createApp({
     async openPipeline(){
       if(!this.requireDevice()) return;
       if(this.pipeline.ws){ try{ this.pipeline.ws.close(); }catch(_e){} }
-      const token=await this.ensureToken();
       const url=new URL(this.devicePipelineWsBase);
       url.searchParams.set('device_id', this.currentDeviceId);
-      url.searchParams.set('debug_token', token);
       this.pipeline.status='connecting';
       const ws=new WebSocket(url.toString());
       ws.onopen=()=>{ this.pipeline.status='connected'; };

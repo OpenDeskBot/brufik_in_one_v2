@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from deskbot_server.db.models import Device
 from deskbot_server.db.sql_decorators import execute, select, select_one
 
@@ -28,8 +30,8 @@ def device_ids_for_user(user_id: str) -> list[str]:
 
 @execute(
     """
-    INSERT INTO devices (id, device_id, owner_user_id, display_name, volume, fps, version, auto_reply, servo_mode, live_mode, asr_provider, claimed_at, created_at)
-    VALUES (:uid, :device_id, :user_id, :display_name, :volume, :fps, :version, 1, '', 1, 'funasr', datetime('now'), datetime('now'))
+    INSERT INTO devices (id, device_id, owner_user_id, display_name, volume, fps, version, auto_reply, servo_mode, live_mode, record_history, asr_provider, claimed_at, created_at)
+    VALUES (:uid, :device_id, :user_id, :display_name, :volume, :fps, :version, 1, '', 1, 0, 'funasr', datetime('now'), datetime('now'))
     """
 )
 def insert(
@@ -81,6 +83,11 @@ def update_live_mode(device_id: str, live_mode: bool) -> int:
     """更新活体模式开关。"""
 
 
+@execute("UPDATE devices SET record_history = :record_history WHERE device_id = :device_id")
+def update_record_history(device_id: str, record_history: bool) -> int:
+    """更新调试记录开关。"""
+
+
 @execute("UPDATE devices SET asr_provider = :asr_provider WHERE device_id = :device_id")
 def update_asr_provider(device_id: str, asr_provider: str) -> int:
     """更新设备级 ASR provider。"""
@@ -98,6 +105,24 @@ def get_asr_provider(device_id: str) -> str:
 def set_asr_provider(device_id: str, provider: str) -> None:
     """设置设备级 ASR provider（funasr / doubao）。"""
     update_asr_provider(device_id, str(provider or "").strip().lower())
+
+
+@execute("UPDATE devices SET asr_param = :asr_param WHERE device_id = :device_id")
+def update_asr_param(device_id: str, asr_param: str | None) -> int:
+    """更新设备级 ASR 参数（JSON 文本；None 置 NULL 表示清除）。"""
+
+
+def get_asr_param(device_id: str) -> dict:
+    """设备 asr_param 解析为 dict；无 / 坏 JSON / 设备不存在 → {}。"""
+    dev = get_by_device_id(device_id)
+    raw = dev.asr_param if dev is not None else None
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 @execute("DELETE FROM devices WHERE device_id = :device_id AND owner_user_id = :user_id")
@@ -146,3 +171,13 @@ def get_live_mode(device_id: str) -> bool:
 
 def set_live_mode(device_id: str, enabled: bool) -> None:
     update_live_mode(device_id, bool(enabled))
+
+
+def get_record_history(device_id: str) -> bool:
+    """设备调试记录开关；设备不存在 → False（默认不记录）。"""
+    dev = get_by_device_id(device_id)
+    return bool(dev.record_history) if dev else False
+
+
+def set_record_history(device_id: str, enabled: bool) -> None:
+    update_record_history(device_id, bool(enabled))

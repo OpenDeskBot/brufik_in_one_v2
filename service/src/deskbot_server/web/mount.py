@@ -31,14 +31,13 @@ def _register_endpoints_from_modules() -> None:
         auth_bp,
         debug_bp,
         flash_bp,
-        proxy_bp,
         quest_bp,
         robot_settings_bp,
         services_bp,
         site,
     )
 
-    for mod in (site, auth_bp, app_bp, app2c_bp, debug_bp, flash_bp, proxy_bp, services_bp, quest_bp, robot_settings_bp):
+    for mod in (site, auth_bp, app_bp, app2c_bp, debug_bp, flash_bp, services_bp, quest_bp, robot_settings_bp):
         for name, path in getattr(mod, "ENDPOINTS", {}).items():
             register_endpoint(name, path)
 
@@ -79,7 +78,9 @@ def mount_web(app: FastAPI) -> None:
     load_dotenv()
     init_database()
 
-    secret = (os.environ.get("DESKBOT_WEB_SECRET_KEY") or "").strip() or "dev-insecure-change-me"
+    from deskbot_server.auth.web_secret import resolve_web_secret_key
+
+    secret = resolve_web_secret_key()
 
     templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
     templates.env.globals["url_for"] = url_for
@@ -96,7 +97,6 @@ def mount_web(app: FastAPI) -> None:
     from deskbot_server.web.blueprints.auth_bp import router as auth_router
     from deskbot_server.web.blueprints.debug_bp import router as debug_router
     from deskbot_server.web.blueprints.flash_bp import router as flash_router
-    from deskbot_server.web.blueprints.proxy_bp import router as proxy_router
     from deskbot_server.web.blueprints.quest_bp import router as quest_router
     from deskbot_server.web.blueprints.robot_settings_bp import router as robot_settings_router
     from deskbot_server.web.blueprints.services_bp import router as services_router
@@ -111,7 +111,6 @@ def mount_web(app: FastAPI) -> None:
                 public = path == "/" or path.startswith(_PUBLIC_PREFIXES) or path.startswith("/static/")
                 web_protected = (
                     path.startswith("/app/")
-                    or path.startswith("/proxy/")
                     or path.startswith("/debug/")
                     or path.startswith("/dev/")
                     or path.startswith("/home")
@@ -174,7 +173,6 @@ def mount_web(app: FastAPI) -> None:
     app.include_router(quest_router)
     app.include_router(robot_settings_router)
     app.include_router(debug_router)
-    app.include_router(proxy_router)
 
     app.add_middleware(
         SessionMiddleware,

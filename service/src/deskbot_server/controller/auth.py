@@ -134,10 +134,11 @@ require_device_ws_auth = require_device_ws
 
 
 async def _ws_require_debug_auth(
-    websocket, qargs: dict, *, device_id: str | None = None, require_device: bool = False
+    websocket, *, device_id: str | None = None, require_device: bool = False
 ) -> bool:
-    """调试订阅 WS：web session debug_token。成功返回 True。"""
-    uid = _resolve_user_id_from_session(qargs)
+    """调试订阅 WS：仅 session cookie（浏览器同源 WS 握手自动携带）。成功返回 True。"""
+    raw_ws = getattr(websocket, "raw", websocket)
+    uid = str((getattr(raw_ws, "session", None) or {}).get("user_id") or "").strip()
     if not uid:
         import logging
 
@@ -190,7 +191,7 @@ def require_web_ws_subscriber_auth(fn: F) -> F:
         if websocket is None:
             return
         compat, qargs, device_id = await _accept_ws_context(websocket)
-        ok = await _ws_require_debug_auth(compat, qargs, device_id=device_id, require_device=True)
+        ok = await _ws_require_debug_auth(compat, device_id=device_id, require_device=True)
         if not ok:
             return
         websocket.state.ws = compat
@@ -213,7 +214,7 @@ def require_web_ws_pipeline_auth(fn: F) -> F:
         role = (qargs.get("role") or "").lower()
         is_subscriber = role in ("subscriber", "sub", "viewer", "consumer")
         if is_subscriber:
-            ok = await _ws_require_debug_auth(compat, qargs, device_id=device_id, require_device=True)
+            ok = await _ws_require_debug_auth(compat, device_id=device_id, require_device=True)
             if not ok:
                 return
         else:

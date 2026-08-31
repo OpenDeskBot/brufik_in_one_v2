@@ -6,7 +6,6 @@
     window.__DEVICE_PIPELINE_WS_BASE__ = {{ device_pipeline_ws_base|tojson }};
     window.__CAMERA_VIEW_WS_BASE__ = {{ camera_view_ws_base|tojson }};
     window.__DESKBOT_HTTP_BASE__ = {{ deskbot_http_base|tojson }};
-    window.__DESKBOT_DEBUG_WS_TOKEN__ = {{ (deskbot_debug_ws_token.token if deskbot_debug_ws_token else '')|tojson }};
     window.__CURRENT_DEVICE_ID__ = {{ (current_device_id or '')|tojson }};
     window.__OWNED_DEVICES__ = {{ (owned_device_rows or [])|tojson }};
     window.__FACE_LCD__ = { w: {{ face_lcd_w|int }}, h: {{ face_lcd_h|int }} };
@@ -1777,24 +1776,18 @@
       return "—";
     }
 
-    function _appendDeskbotWsDebugToken(url, token) {
-      const tok = String(token || window.__DESKBOT_DEBUG_WS_TOKEN__ || "").trim();
-      if (tok) url.searchParams.set("debug_token", tok);
-      return url;
-    }
-
-    function buildDpWsUrl(base, device_id, debugToken) {
+    function buildDpWsUrl(base, device_id) {
       const url = new URL(base);
       url.searchParams.set("role", "subscriber");
       if (device_id) url.searchParams.set("device", device_id);
-      return _appendDeskbotWsDebugToken(url, debugToken).toString();
+      return url.toString();
     }
 
-    function buildCvWsUrl(base, device_id, debugToken) {
+    function buildCvWsUrl(base, device_id) {
       const url = new URL(base);
       if (device_id) url.searchParams.set("device_id", device_id);
       else url.searchParams.delete("device_id");
-      return _appendDeskbotWsDebugToken(url, debugToken).toString();
+      return url.toString();
     }
 
     /** 固定镜头水平视场（°），用于画面角 → 舵机绝对位。 */
@@ -1973,7 +1966,6 @@
             window.__CAMERA_VIEW_WS_BASE__ || "ws://127.0.0.1:9000/camera_view",
           ),
           httpBase: window.__DESKBOT_HTTP_BASE__ || "http://127.0.0.1:9000",
-          debugWsToken: window.__DESKBOT_DEBUG_WS_TOKEN__ || "",
 
           selected: window.__CURRENT_DEVICE_ID__ || "",
           devices: [],
@@ -2185,8 +2177,8 @@
         this._sceneExprTimelineState = null;
       },
       computed: {
-        dpWsUrl() { return buildDpWsUrl(this.dpBase, this.selected, this.debugWsToken); },
-        cvWsUrl() { return buildCvWsUrl(this.cvBase, this.selected, this.debugWsToken); },
+        dpWsUrl() { return buildDpWsUrl(this.dpBase, this.selected); },
+        cvWsUrl() { return buildCvWsUrl(this.cvBase, this.selected); },
         // 把图像坐标 (0..cvFrameW, 0..cvFrameH) 映射到 wrap 像素 (0..cvDispW, 0..cvDispH)，
         // 与 <img object-fit:contain> 在 wrap 中实际渲染出的几何位置一致：
         //   - 图与 wrap 比例相同 → 满铺，offset=0
@@ -2961,37 +2953,11 @@
           this.dpDisconnect();
           this.cvDisconnect();
           await this.refreshDevices();
-          if (this.selected && !this.debugWsToken) {
-            await this.refreshDebugWsToken();
-          }
           if (this.debugEnabled && this.selected) {
             this.$nextTick(() => this.reconnect());
           }
         },
 
-        async refreshDebugWsToken() {
-          try {
-            const res = await deskbotFetch("/api/debug/ws_token", { cache: "no-store" });
-            if (!res.ok) return false;
-            const d = await res.json();
-            const tok = String(d.token || "").trim();
-            if (!d.ok || !tok) return false;
-            this.debugWsToken = tok;
-            window.__DESKBOT_DEBUG_WS_TOKEN__ = tok;
-            return true;
-          } catch (_) {
-            return false;
-          }
-        },
-        async _ensureDebugWsToken() {
-          if (String(this.debugWsToken || "").trim()) return true;
-          return await this.refreshDebugWsToken();
-        },
-        _wsAuthShouldRefresh(ev) {
-          const code = ev && ev.code;
-          const reason = String((ev && ev.reason) || "");
-          return code === 1008 && /token|auth|forbidden|device_id/i.test(reason);
-        },
         async refreshDevices() {
           try {
             const res = await deskbotFetch(this.httpBase + "/api/devices", { cache: "no-store" });
@@ -3483,20 +3449,12 @@
             this.dpError = "";
             return;
           }
-          if (!(await this._ensureDebugWsToken())) {
-            this.dpStatus = "鉴权失败";
-            this.dpError = "无法获取调试令牌，请刷新页面或重新登录";
-            return;
-          }
           this.dpError = ""; this.dpStatus = "连接中…";
           try {
             const ws = new WebSocket(this.dpWsUrl); this.dpWs = ws;
             ws.onopen = () => { this.dpConnected = true; this.dpStatus = "已连接"; };
             ws.onclose = async (ev) => {
               this.dpConnected = false; this.dpStatus = "已断开";
-              if (this._wsAuthShouldRefresh(ev)) {
-                await this.refreshDebugWsToken();
-              }
               if (this.debugEnabled && !this._dpManualDisconnect && !this._dpStopReconnect && !document.hidden) {
                 clearTimeout(this._dpReconnectTimer);
                 this._dpReconnectTimer = setTimeout(() => this.dpConnect(), 2000);
@@ -4694,11 +4652,6 @@
             this.cvError = "勾选「开始调试」前请先在页顶选择 device_id";
             return;
           }
-          if (!(await this._ensureDebugWsToken())) {
-            this.cvStatus = "鉴权失败";
-            this.cvError = "无法获取调试令牌，请刷新页面或重新登录";
-            return;
-          }
           this.cvError = ""; this.cvStatus = "连接中…";
           try {
             const ws = new WebSocket(this.cvWsUrl);
@@ -4710,15 +4663,10 @@
               const reason = String((ev && ev.reason) || "");
               if (reason === "forbidden_device") {
                 this.cvError = "当前账号未绑定该设备，请刷新页面后重选设备";
-              } else if (reason === "invalid_debug_token") {
-                this.cvError = "调试令牌无效或已过期，正在刷新…";
               } else if (reason === "auth_required") {
-                this.cvError = "缺少调试令牌，请刷新页面";
+                this.cvError = "未登录或会话过期，请刷新页面";
               }
               this.cvStatus = "已断开";
-              if (this._wsAuthShouldRefresh(ev)) {
-                await this.refreshDebugWsToken();
-              }
               if (this.debugEnabled && !this._cvManualDisconnect && !this._cvStopReconnect && !document.hidden) {
                 clearTimeout(this._cvReconnectTimer);
                 this._cvReconnectTimer = setTimeout(() => this.cvConnect(), 2000);
@@ -6104,9 +6052,6 @@
         }, 1000);
 
         await this.refreshDevices();
-        if (this.selected && !this.debugWsToken) {
-          await this.refreshDebugWsToken();
-        }
         if (this.debugEnabled && this.selected) {
           this.$nextTick(() => this.reconnect());
         }

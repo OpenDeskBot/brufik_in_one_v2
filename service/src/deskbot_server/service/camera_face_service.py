@@ -22,6 +22,23 @@ logger = logging.getLogger("deskbot-server")
 
 VideoStreamCallback = Callable[[str, bytes, dict[str, Any]], Awaitable[None]]
 
+# 最近一次人脸识别落盘记录：device_id -> {ts, image, fr_ms, faces, face_count}
+# 供 turn_recorder 把识别结果挂到对话轮次上（调试记录）。
+_fr_capture_cache: dict[str, dict[str, Any]] = {}
+
+
+def get_recent_fr_capture(device_id: str, *, max_age_sec: float = 10.0) -> dict[str, Any] | None:
+    """取设备最近一次人脸识别落盘记录；超过 max_age_sec 视为过期返回 None。"""
+    dev = str(device_id or "").strip()
+    if not dev:
+        return None
+    entry = _fr_capture_cache.get(dev)
+    if entry is None:
+        return None
+    if time.monotonic() - entry.get("ts", 0) > max_age_sec:
+        return None
+    return dict(entry)
+
 
 @dataclass(frozen=True)
 class CameraFaceRuntime:
@@ -391,6 +408,7 @@ class CameraFaceService(metaclass=SingletonMeta):
             faces=faces,
             frame_source=frame_source,
             log_channel=log_channel,
+            infer_ms=infer_ms,
         )
 
     def _preview_meta(self, *, frame_source: str, detect: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -423,7 +441,14 @@ class CameraFaceService(metaclass=SingletonMeta):
         }
 
     async def _after_recognize(
-        self, *, device_id: str, frame_bytes: bytes, faces: list[dict[str, Any]], frame_source: str, log_channel: str
+        self,
+        *,
+        device_id: str,
+        frame_bytes: bytes,
+        faces: list[dict[str, Any]],
+        frame_source: str,
+        log_channel: str,
+        infer_ms: float = 0.0,
     ) -> None:
         from deskbot_server.service.application.camera_frame import analyze_face_detections
         from deskbot_server.service.application.camera_servo_follower import camera_servo_follower_tick
@@ -443,6 +468,7 @@ class CameraFaceService(metaclass=SingletonMeta):
 
         if not detect or not detect.get("landmarks"):
             clear_face_analysis(device_id)
+            _fr_capture_cache.pop(device_id, None)
             try:
                 from deskbot_server.service.live_service import LiveService
 
@@ -453,6 +479,7 @@ class CameraFaceService(metaclass=SingletonMeta):
             return
 
         note_face_analysis(device_id, detect)
+        await self._record_fr_capture(device_id=device_id, frame_bytes=frame_bytes, detect=detect, infer_ms=infer_ms)
         try:
             from deskbot_server.controller.runtime import get_runtime
             from deskbot_server.service.live_service import LiveService
@@ -471,6 +498,49 @@ class CameraFaceService(metaclass=SingletonMeta):
         await self.try_emit_video_frame(
             device_id, frame_bytes, meta=self._preview_meta(frame_source=frame_source, detect=detect)
         )
+
+    async def _record_fr_capture(
+        self, *, device_id: str, frame_bytes: bytes, detect: dict[str, Any], infer_ms: float
+    ) -> None:
+        """调试记录：保存人脸原帧 JPEG + 识别时长 + 结果摘要，供 turn_recorder 引用。"""
+        if not device_id or not frame_bytes:
+            return
+        from deskbot_server.dao.device_mapper import get_record_history
+
+        if not get_record_history(device_id):
+            return
+        try:
+            from deskbot_server.utils.device_data import device_capture_dir
+
+            fr_dir = device_capture_dir(device_id) / "capture" / "fr"
+            fr_dir.mkdir(parents=True, exist_ok=True)
+            name = uuid.uuid4().hex[:16]
+            rel = f"capture/fr/{name}.jpg"
+            (fr_dir / f"{name}.jpg").write_bytes(frame_bytes)
+            faces_slim: list[dict[str, Any]] = []
+            for f in (detect.get("faces") or []):
+                if not isinstance(f, dict):
+                    continue
+                slim: dict[str, Any] = {
+                    "person_name": f.get("person_name"),
+                    "identity_score": f.get("identity_score"),
+                    "face_id": f.get("face_id"),
+                    "face_score": f.get("face_score"),
+                }
+                faces_slim.append({k: v for k, v in slim.items() if v is not None})
+            _fr_capture_cache[device_id] = {
+                "ts": time.monotonic(),
+                "image": rel,
+                "fr_ms": int(infer_ms),
+                "faces": faces_slim,
+                "face_count": int(detect.get("face_count") or len(faces_slim)),
+            }
+            logger.info(
+                "[record] 人脸识别落盘 device_id=%s path=%s fr_ms=%d faces=%d",
+                device_id, rel, int(infer_ms), len(faces_slim),
+            )
+        except Exception:
+            logger.exception("[record] 人脸识别落盘失败 device_id=%s", device_id)
 
 
 # ---------- 相机抓拍辅助函数 ----------

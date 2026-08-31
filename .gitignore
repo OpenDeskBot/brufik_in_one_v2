@@ -63,8 +63,13 @@ service/data/.free_api_key
 # --- Service device runtime data ---
 service/data/deskbot_*/
 service/data/brfk_*/
+service/data/dev-*/
 # SQLite 运行时数据库（用户/设备/会话数据，不入库）
 service/data/*.db
+# 自动生成的会话/调试令牌（安全敏感，绝不入库）
+service/data/global/web_secret_key
+# 固件 pb 调试录音
+service/data/record/
 
 # --- Service large / generated ---
 service/models/

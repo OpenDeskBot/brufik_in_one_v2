@@ -20,7 +20,9 @@ def _default_ttl_days() -> int:
 
 
 def _secret_key() -> str:
-    return (os.environ.get("DESKBOT_WEB_SECRET_KEY") or "").strip() or "dev-insecure-change-me"
+    from deskbot_server.auth.web_secret import resolve_web_secret_key
+
+    return resolve_web_secret_key()
 
 
 def _serializer() -> URLSafeTimedSerializer:

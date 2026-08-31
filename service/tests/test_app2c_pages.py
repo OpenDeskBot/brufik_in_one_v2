@@ -205,21 +205,21 @@ def test_2c_lab_surfaces_device_runtime_features(temp_db):
     assert "场景编排" in html
     assert "PB 表情" in html
     assert "ASR / 流水日志" in html
-    assert "/proxy/deskbot/api/servo_config" in html
-    assert "/proxy/deskbot/api/device_servo" in html
-    assert "/proxy/deskbot/api/device_tts" in html
-    assert "/proxy/deskbot/api/device_pb_scenes" in html
-    assert "/proxy/deskbot/api/device_pb_scene" in html
-    assert "/proxy/deskbot/api/device_face_catalog" in html
-    assert "/proxy/deskbot/api/device_face_play" in html
-    assert "/proxy/deskbot/api/device_pb_anim" in html
-    assert "/proxy/deskbot/api/device_pb_expr_scene" in html
-    assert "/proxy/deskbot/api/scene_playbooks" in html
-    assert "/proxy/deskbot/api/scene_playbook/run" in html
-    assert "/proxy/deskbot/api/asr_auto_reply" in html
-    assert "/proxy/deskbot/api/asr_auto_reply" in html
-    assert "/proxy/deskbot/api/camera_servo_auto_mode" in html
-    assert "/proxy/deskbot/api/pipeline_recent" in html
+    assert "/api/servo_config" in html
+    assert "/api/device_servo" in html
+    assert "/api/device_tts" in html
+    assert "/api/device_pb_scenes" in html
+    assert "/api/device_pb_scene" in html
+    assert "/api/device_face_catalog" in html
+    assert "/api/device_face_play" in html
+    assert "/api/device_pb_anim" in html
+    assert "/api/device_pb_expr_scene" in html
+    assert "/api/scene_playbooks" in html
+    assert "/api/scene_playbook/run" in html
+    assert "/api/asr_auto_reply" in html
+    assert "/api/asr_auto_reply" in html
+    assert "/api/camera_servo_auto_mode" in html
+    assert "/api/pipeline_recent" in html
     assert "cameraViewWsBase" in html
     assert "devicePipelineWsBase" in html
 
@@ -375,7 +375,6 @@ def test_2c_home_embeds_live_camera_view_under_stage(temp_db):
     assert "cameraViewWsBase" in html
     assert "openHomeCamera()" in html
     assert "closeHomeCamera()" in html
-    assert "debug_token" in html
 
 
 def test_2c_home_integrates_robot_motion_preview(temp_db):
@@ -455,7 +454,7 @@ def test_2c_lab_accepts_initial_tab_from_query(temp_db):
     html = resp.get_data(as_text=True)
     assert "initialLabTab()" in html
     assert "URLSearchParams(window.location.search)" in html
-    assert "['servo','camera','scene','pb','logs']" in html
+    assert "['servo','camera','scene','pb','logs','history']" in html
 
 
 def test_2c_scene_playbook_export_plan_is_available_to_regular_user(temp_db):

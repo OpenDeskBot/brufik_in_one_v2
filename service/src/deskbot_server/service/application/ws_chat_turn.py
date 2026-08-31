@@ -24,6 +24,8 @@ async def run_ws_chat_turn(
     device_id: str | None = None,
     t_asr_start: float | None = None,
     t_asr_text: float | None = None,
+    user_audio: str | None = None,
+    user_audio_ms: int | None = None,
     on_llm_error: Any | None = None,
     bus_service: BusService | None = None,
 ) -> dict:
@@ -37,6 +39,8 @@ async def run_ws_chat_turn(
         device_ws=device_ws,
         t_asr_start=t_asr_start,
         t_asr_text=t_asr_text,
+        user_audio=user_audio,
+        user_audio_ms=user_audio_ms,
         on_llm_error=on_llm_error,
         bus_service=bus_service,
     )

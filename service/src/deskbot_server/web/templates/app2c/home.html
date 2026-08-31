@@ -174,7 +174,6 @@ createApp({
     scenes:[], emotionMap:{}, faceLabel:'待机',
     homeRobotError:'', homeRobotServo:{x:90,y:90},
     cameraViewWsBase: {{ camera_view_ws_base|tojson }},
-    debugToken:'',
     camera:{ws:null,status:'idle',statusText:'选择设备后显示摄像头画面',imageUrl:'',frameBytes:0},
   }; },
   computed:{
@@ -197,12 +196,6 @@ createApp({
   methods:{
     async j(u){ try{ return await (await fetch(u)).json(); }catch(e){ return {}; } },
     async api(u){ const r=await fetch(u,{cache:'no-store'}); return await r.json(); },
-    async ensureDebugToken(){
-      if(this.debugToken) return this.debugToken;
-      const d = await this.api('/api/debug/ws_token');
-      this.debugToken = d.token || '';
-      return this.debugToken;
-    },
     closeHomeCamera(){
       if(this.camera.ws){ try{ this.camera.ws.close(); }catch(_e){} }
       this.camera.ws = null;
@@ -216,10 +209,8 @@ createApp({
       }
       this.closeHomeCamera();
       try{
-        const token = await this.ensureDebugToken();
         const url = new URL(this.cameraViewWsBase);
         url.searchParams.set('device_id', this.deviceId);
-        url.searchParams.set('debug_token', token);
         this.camera.status='connecting';
         this.camera.statusText='正在连接摄像头';
         const ws = new WebSocket(url.toString());

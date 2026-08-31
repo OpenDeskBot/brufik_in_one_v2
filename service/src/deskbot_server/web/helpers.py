@@ -78,7 +78,8 @@ def camera_view_ws_base(request: Request | None = None) -> str:
 
 
 def deskbot_http_base() -> str:
-    return "/proxy/deskbot"
+    """同源直连后端（proxy 转发层已移除）：相对根路径。"""
+    return "/"
 
 
 def _fetch_registry_devices(*, user_id: str | None = None) -> list[dict] | None:
