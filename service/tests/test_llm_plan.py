@@ -156,7 +156,7 @@ def test_llm_face_context_prompt_appendix():
 
 
 def test_build_llm_user_message():
-    from deskbot_server.infrastructure.llm.user_message import build_llm_user_message
+    from deskbot_server.infrastructure.llm.utils import build_llm_user_message
     from deskbot_server.service.application.face_snapshot_cache import update_device_faces
 
     dev = "test_device_user_msg"

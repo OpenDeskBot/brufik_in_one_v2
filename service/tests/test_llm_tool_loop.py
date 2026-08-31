@@ -24,7 +24,7 @@ def temp_db(monkeypatch):
 
 
 def test_complete_llm_with_tool_loop_two_rounds(temp_db):
-    from deskbot_server.service.application.llm_tool_loop import complete_llm_with_tool_loop
+    from deskbot_server.service.application.chat_flow import complete_llm_with_tool_loop
 
     round1 = json.dumps(
         {"tts": "", "tools": [{"tool": "memory_add", "text": "喜欢猫"}], "moves": [], "anims": []}, ensure_ascii=False
@@ -37,18 +37,19 @@ def test_complete_llm_with_tool_loop_two_rounds(temp_db):
     async def _run():
         return await complete_llm_with_tool_loop(chat, "记住我喜欢猫", device_id="deskbot_a", request_id="req1")
 
-    parsed, tools, results, raw = asyncio.run(_run())
-    assert parsed["reply"] == "已记住你喜欢猫"
-    assert len(tools) == 1
-    assert tools[0]["tool"] == "memory_add"
-    assert len(results) == 1
-    assert results[0]["ok"] is True
+    turn = asyncio.run(_run())
+    assert turn.parsed["reply"] == "已记住你喜欢猫"
+    assert len(turn.tools) == 1
+    assert turn.tools[0]["tool"] == "memory_add"
+    assert len(turn.tool_results) == 1
+    assert turn.tool_results[0]["ok"] is True
     assert chat.llm.call_count == 2
-    assert raw == round2
+    assert turn.answer == round2
+    assert turn.system_prompt is None
 
 
 def test_complete_llm_with_tool_loop_single_round():
-    from deskbot_server.service.application.llm_tool_loop import complete_llm_with_tool_loop
+    from deskbot_server.service.application.chat_flow import complete_llm_with_tool_loop
 
     answer = json.dumps({"tts": "你好", "tools": [], "moves": [], "anims": []})
 
@@ -62,13 +63,17 @@ def test_complete_llm_with_tool_loop_single_round():
             history_messages=None,
             extra_messages=None,
             on_tts_ready=None,
+            on_system_prompt=None,
         ):
+            if on_system_prompt:
+                on_system_prompt("system")
             return answer
 
     async def _run():
         return await complete_llm_with_tool_loop(_FakeChat(), "你好", device_id="deskbot_a")
 
-    parsed, tools, results, _raw = asyncio.run(_run())
-    assert parsed["reply"] == "你好"
-    assert tools == []
-    assert results == []
+    turn = asyncio.run(_run())
+    assert turn.parsed["reply"] == "你好"
+    assert turn.tools == []
+    assert turn.tool_results == []
+    assert turn.system_prompt == "system"

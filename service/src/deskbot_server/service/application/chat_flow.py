@@ -6,12 +6,15 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from deskbot_server.dao import device_mapper
+from deskbot_server.infrastructure.llm.utils import parse_llm_reply
 from deskbot_server.infrastructure.tts.text_split import split_tts_by_punctuation
-from deskbot_server.model.chat import ChatTurnResult
+from deskbot_server.model.chat import ChatTurnResult, LlmTurnResult
 from deskbot_server.pb.scenes import _pb_scene_entry_by_name, _prepare_pb_scene_chain_frames
+from deskbot_server.pb.servo_pcm import parse_pb_cam_fps
 from deskbot_server.pb.shapes import PB_ACTION_APPEND, PB_ACTION_REPLACE, PB_LEVEL_TASK
 from deskbot_server.pb.wire import build_pb_wire_pairs
 from deskbot_server.ports.downlink import DownlinkPort, PipelineEventsPort
@@ -20,7 +23,9 @@ from deskbot_server.service.application.llm_error_fallback import (
     start_llm_error_motion_feedback,
     stop_llm_error_motion_feedback,
 )
-from deskbot_server.service.application.llm_tool_loop import complete_llm_with_tool_loop
+from deskbot_server.service.application.llm_tool_runner import execute_llm_tools
+from deskbot_server.service.application.tool_interim_tts import build_tool_interim_tts
+from deskbot_server.service.camera_face_service import request_camera_fps_boost
 from deskbot_server.dao.device_mapper import get_auto_reply
 from deskbot_server.utils.util import _ms_between
 
@@ -209,6 +214,190 @@ def _voice_was_played(result: ChatTurnResult) -> bool:
     return result.t_tts_synth_end > result.t_llm_end + 0.05
 
 
+MAX_LLM_TOOL_ROUNDS = 8
+
+_CAPTURE_TOOLS = frozenset({"capture_camera", "get_camera_frame", "camera_capture"})
+_TOOL_RESULT_STRIP_KEYS = frozenset({"jpeg_base64", "image_display"})
+
+
+def _tool_result_for_llm(result: dict[str, Any]) -> dict[str, Any]:
+    out = dict(result)
+    for key in _TOOL_RESULT_STRIP_KEYS:
+        if key not in out:
+            continue
+        val = out.pop(key)
+        if isinstance(val, str) and val:
+            out[f"{key}_len"] = len(val)
+        elif isinstance(val, dict) and val:
+            out[f"{key}_ok"] = True
+    return out
+
+
+def _tools_need_camera(tools: list[dict[str, Any]]) -> bool:
+    for raw in tools:
+        if not isinstance(raw, dict):
+            continue
+        tool = str(raw.get("tool") or raw.get("name") or "").strip()
+        if tool in _CAPTURE_TOOLS:
+            return True
+    return False
+
+
+def build_llm_tool_followup_message(tool_results: list[dict[str, Any]]) -> str:
+    """工具执行后反馈给 LLM 的 user 消息。"""
+    slim = [_tool_result_for_llm(r) for r in tool_results]
+    payload = json.dumps(slim, ensure_ascii=False)
+    return (
+        "[工具执行结果]\n"
+        f"{payload}\n\n"
+        "请根据结果继续。若还需调用工具，请输出 JSON 且 ``tools`` 非空，"
+        "并在 ``tts`` 写一句口语化过渡语（如「稍等，我帮你查一下」）以便立刻播报；"
+        "若已完成，请输出最终 JSON，``tools`` 写 [] 并填写 ``tts`` 等字段。"
+    )
+
+
+async def _execute_tools_round(
+    tools: list[dict[str, Any]],
+    *,
+    device_id: str,
+    session_id: str | None,
+    device_ws: DeviceWsService | None,
+    cam_fps: int | None,
+) -> list[dict[str, Any]]:
+    if cam_fps and device_ws:
+        await request_camera_fps_boost(device_id, device_ws, cam_fps=cam_fps)
+
+    return await execute_llm_tools(
+        tools, device_id=device_id, session_id=session_id, device_ws=device_ws, cam_fps=cam_fps
+    )
+
+
+async def complete_llm_with_tool_loop(
+    chat: ChatService,
+    user_text: str,
+    *,
+    device_id: str | None = None,
+    session_id: str | None = None,
+    device_context: str | None = None,
+    history_messages: list[dict[str, str]] | None = None,
+    request_id: str | None = None,
+    pipeline_source: str | None = None,
+    device_ws: DeviceWsService | None = None,
+    tts_prefetch: _TtsPrefetch | None = None,
+    on_interim_tts_play: Callable[[str, int], Awaitable[None]] | None = None,
+    bus_service: Any | None = None,
+) -> LlmTurnResult:
+    """多轮 LLM：有 tools 则执行并继续，无 tools 则返回最终 parsed。
+
+    返回 ``LlmTurnResult(parsed, tools, tool_results, answer, system_prompt)``；
+    ``system_prompt`` 为每轮 LLM 调用构建的 system prompt（取首轮即主轮）。
+    """
+    extra_messages: list[dict[str, str]] = []
+    all_tools: list[dict[str, Any]] = []
+    all_tool_results: list[dict[str, Any]] = []
+    answer = ""
+    parsed: dict[str, Any] = parse_llm_reply("")
+    system_prompt: str | None = None
+    captured_system_prompt = False
+
+    def _on_system_prompt(content: str) -> None:
+        nonlocal system_prompt, captured_system_prompt
+        if not captured_system_prompt:
+            system_prompt = content
+            captured_system_prompt = True
+
+    for round_idx in range(MAX_LLM_TOOL_ROUNDS):
+        answer = await chat.llm(
+            user_text,
+            device_context=device_context if round_idx == 0 else None,
+            device_id=device_id,
+            history_messages=history_messages if round_idx == 0 else None,
+            extra_messages=extra_messages or None,
+            on_tts_ready=tts_prefetch.on_ready if tts_prefetch is not None else None,
+            on_system_prompt=_on_system_prompt,
+        )
+        parsed = parse_llm_reply(answer)
+        tools = list(parsed.get("tools") or [])
+
+        if not tools:
+            break
+
+        if not device_id:
+            logger.warning(
+                "[LLM] tools 无 device_id，无法执行 device_id=%s req=%s tools=%s", device_id, request_id, tools
+            )
+            break
+
+        cam_fps = parse_pb_cam_fps(parsed.get("cam_fps"))
+        interim_text = (parsed.get("reply") or "").strip()
+        if interim_text:
+            # LLM 已给出完整回复，reply 即最终结果，不再继续调用 LLM
+            all_tools.extend(tools)
+            tool_results = await _execute_tools_round(
+                tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws, cam_fps=cam_fps
+            )
+            all_tool_results.extend(tool_results)
+            break
+        interim_text = build_tool_interim_tts(tools)
+        if interim_text:
+            logger.info(
+                "[LLM] tool 轮兜底过渡 TTS device_id=%s req=%s text=%r", device_id, request_id, interim_text[:80]
+            )
+
+        # 拍照须先拿到帧再播过渡 TTS（播报期间固件暂停 camera 上行）
+        if _tools_need_camera(tools):
+            if interim_text and tts_prefetch is not None:
+                tts_prefetch.cancel()
+            tool_results = await _execute_tools_round(
+                tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws, cam_fps=cam_fps
+            )
+            if interim_text and on_interim_tts_play is not None:
+                await on_interim_tts_play(interim_text, round_idx + 1)
+        else:
+            play_coro = None
+            if interim_text and on_interim_tts_play is not None:
+                play_coro = on_interim_tts_play(interim_text, round_idx + 1)
+            elif interim_text and tts_prefetch is not None:
+                tts_prefetch.cancel()
+
+            tool_coro = _execute_tools_round(
+                tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws, cam_fps=cam_fps
+            )
+            if play_coro is not None:
+                tool_results, _ = await asyncio.gather(tool_coro, play_coro)
+            else:
+                tool_results = await tool_coro
+
+        all_tools.extend(tools)
+        all_tool_results.extend(tool_results)
+        logger.info(
+            "[LLM] tool round=%d device_id=%s req=%s tools=%s results=%s",
+            round_idx + 1,
+            device_id,
+            request_id,
+            tools,
+            [_tool_result_for_llm(r) for r in tool_results],
+        )
+        if bus_service is not None and device_id and request_id:
+            tool_names = [str(t.get("tool") or "").strip() for t in tools if str(t.get("tool") or "").strip()]
+            await bus_service.pub(device_id, {
+                "request_id": request_id,
+                "source": pipeline_source or "asr",
+                "asr_text": user_text,
+                "stage": f"llm_tool_{round_idx + 1}",
+                "status": "running",
+                "llm_text": (f"执行工具: {', '.join(tool_names)}" if tool_names else "执行工具"),
+            })
+        extra_messages.append({"role": "assistant", "content": answer})
+        extra_messages.append({"role": "user", "content": build_llm_tool_followup_message(tool_results)})
+    else:
+        logger.warning("[LLM] tool 循环达到上限 %d device_id=%s req=%s", MAX_LLM_TOOL_ROUNDS, device_id, request_id)
+
+    return LlmTurnResult(
+        parsed=parsed, tools=all_tools, tool_results=all_tool_results, answer=answer, system_prompt=system_prompt
+    )
+
+
 async def run_chat_turn(
     downlink: DownlinkPort,
     chat: ChatService,
@@ -223,11 +412,43 @@ async def run_chat_turn(
     reuse_session_id: str | None = None,
     on_llm_error: Any | None = None,
     bus_service: Any | None = None,
+    user_audio: str | None = None,
+    user_audio_ms: int | None = None,
 ) -> ChatTurnResult:
     """在已有用户侧文本后执行 LLM + TTS/pb 管道（应用层，不依赖 WebSocket 类型）。"""
     result = ChatTurnResult()
+    result.user_audio = user_audio
+    result.user_audio_ms = user_audio_ms
     is_scheduled = _is_scheduled_task_user_text(user_text)
     sched_desc = _scheduled_task_description(user_text) if is_scheduled else ""
+
+    record_enabled = bool(device_id)
+    if record_enabled:
+        from deskbot_server.dao.device_mapper import get_record_history
+
+        try:
+            record_enabled = get_record_history(device_id)
+        except Exception:
+            record_enabled = False
+
+    async def _persist() -> None:
+        if not record_enabled or not session_id:
+            return
+        from deskbot_server.service.application.turn_recorder import persist_turn
+
+        try:
+            await persist_turn(
+                device_id=device_id,
+                session_id=session_id,
+                source="asr" if t_asr_start is not None else "text",
+                user_text=user_text,
+                result=result,
+                t_asr_start=t_asr_start,
+                t_asr_text=t_asr_text,
+                tts_cfg=chat.tts_cfg,
+            )
+        except Exception:
+            logger.exception("[record] persist_turn 失败 device_id=%s", device_id)
 
     try:
         if not force_voice and not get_auto_reply(device_id):
@@ -283,7 +504,7 @@ async def run_chat_turn(
                 device_ws=device_ws,
             )
 
-        parsed, llm_tools, tool_results, answer = await complete_llm_with_tool_loop(
+        llm_turn = await complete_llm_with_tool_loop(
             chat,
             user_text,
             device_id=device_id,
@@ -292,12 +513,13 @@ async def run_chat_turn(
             history_messages=history_messages,
             request_id=request_id,
             pipeline_source="asr" if t_asr_start is not None else "text",
-            on_tts_ready=tts_prefetch.on_ready,
             tts_prefetch=tts_prefetch,
             on_interim_tts_play=_on_interim_tts_play,
             device_ws=device_ws,
             bus_service=bus_service,
         )
+        parsed = llm_turn.parsed
+        result.system_prompt = llm_turn.system_prompt
 
         reply_text = parsed["reply"]
         llm_scenes = list(parsed.get("scenes") or [])
@@ -315,12 +537,12 @@ async def run_chat_turn(
                 device_mapper.update_volume(device_id, vol)
 
         result.llm_text = reply_text
-        result.llm_raw = answer or parsed.get("raw") or ""
+        result.llm_raw = llm_turn.answer or parsed.get("raw") or ""
         result.scenes = llm_scenes
         result.moves = llm_moves
         result.anims = llm_anims
-        result.tools = llm_tools
-        result.tool_results = tool_results
+        result.tools = llm_turn.tools
+        result.tool_results = llm_turn.tool_results
         result.servo = list(parsed.get("servo") or [])
         result.need_reply = need_reply
         result.json_ok = parsed["json_ok"]
@@ -390,9 +612,11 @@ async def run_chat_turn(
                     logger.exception("[LLM] need_reply=false 动作 pb 失败")
                     result.status = "error"
                     result.error = f"motion_pb: {pb_exc}"
+                await _persist()
                 return result
             logger.info("[LLM] need_reply=false，跳过 TTS/pb。device_id=%s req=%s", device_id, request_id)
             result.t_tts_end = time.monotonic()
+            await _persist()
             return result
 
         playback_text = (reply_text or "").strip()
@@ -408,6 +632,7 @@ async def run_chat_turn(
             else:
                 logger.info("[LLM] tts 为空且无 moves/anims，跳过 TTS/pb device_id=%s req=%s", device_id, request_id)
                 result.t_tts_end = time.monotonic()
+                await _persist()
                 return result
 
         await downlink.emit_stage(
@@ -433,6 +658,7 @@ async def run_chat_turn(
                 t_asr_start=t_asr_start,
                 prefetch_tts=tts_prefetch.task,
                 device_ws=device_ws,
+                record_audio=record_enabled,
             )
         except Exception as tts_exc:
             tts_prefetch.cancel()
@@ -467,6 +693,7 @@ async def run_chat_turn(
             logger.exception("[LLM] 错误兜底 TTS/pb 失败 device_id=%s req=%s", device_id, request_id)
             result.error = f"llm: {llm_exc}; fallback: {fallback_exc}"
 
+    await _persist()
     return result
 
 
@@ -495,6 +722,26 @@ async def run_device_tts_only(
         send_client=False,
         event_fields={"tts_text": reply_text, "source": "device_tts"},
     )
+
+    record_enabled = False
+    session_id: str | None = None
+    if device_id:
+        from deskbot_server.dao.device_mapper import get_record_history
+
+        try:
+            record_enabled = get_record_history(device_id)
+        except Exception:
+            record_enabled = False
+        if record_enabled:
+            from deskbot_server.dao.device_session_mapper import ensure_active_session
+            from deskbot_server.utils.async_helpers import run_blocking
+
+            try:
+                active = await run_blocking(ensure_active_session, device_id)
+                session_id = str(active.get("session_id") or "")
+            except Exception:
+                session_id = None
+
     parsed = {
         "reply": reply_text,
         "servo": [],
@@ -525,11 +772,29 @@ async def run_device_tts_only(
             t_asr_start=result.t_llm_end,
             device_ws=device_ws,
             task_level=task_level,
+            record_audio=record_enabled,
         )
     except Exception as tts_exc:
         logger.exception("[device_tts] TTS 流程失败 device_id=%s", device_id)
         result.status = "error"
         result.error = f"tts: {tts_exc}"
+
+    if record_enabled and session_id:
+        from deskbot_server.service.application.turn_recorder import persist_turn
+
+        try:
+            await persist_turn(
+                device_id=device_id,
+                session_id=session_id,
+                source="device_tts",
+                user_text="",
+                result=result,
+                t_asr_start=None,
+                t_asr_text=result.t_llm_end,
+                tts_cfg=chat.tts_cfg,
+            )
+        except Exception:
+            logger.exception("[record] device_tts 轮次落库失败 device_id=%s", device_id)
     return result
 
 
@@ -648,7 +913,9 @@ async def _run_pb_playback(
     prefetch_tts: asyncio.Task | None = None,
     device_ws: Any | None = None,
     task_level: int = PB_LEVEL_TASK,
+    record_audio: bool = False,
 ) -> None:
+    """下发 pb 音频/动作帧；``record_audio`` 开启时把合成 PCM 落盘 WAV，时长写入 result。"""
     if motion_only:
         sr_pb = int(chat.tts_cfg.get("sample_rate") or 24000)
         segs: list[dict] = []
@@ -675,11 +942,20 @@ async def _run_pb_playback(
                 text_chunks,
             )
 
+    from deskbot_server.service.pb_audio_recorder import PbAudioRecorder
+
+    recorder = PbAudioRecorder()
+    rec_idx = 0
+    if recorder.enabled:
+        recorder.begin(request_id or "tts")
+
     n_scene_pb = 0
     pb_aborted = False
     total_pb = 0
     chunk_is_last = True
     prefetch_tts_task: asyncio.Task | None = prefetch_tts
+    rec_pcm = bytearray()  # 调试记录：跨 chunk 累积合成 PCM
+    rec_sr = 0
 
     for chunk_i, chunk_text in enumerate(text_chunks):
         if motion_only:
@@ -694,6 +970,12 @@ async def _run_pb_playback(
             pcm_ok = any(len(s.get("pcm") or b"") > 0 for s in segs_local)
             if not segs_local or not pcm_ok:
                 raise RuntimeError(f"phoneme TTS 无分片或无 PCM: {chunk_text!r}")
+            if record_audio:
+                for s in segs_local:
+                    chunk_pcm = s.get("pcm")
+                    if chunk_pcm:
+                        rec_pcm.extend(chunk_pcm)
+                        rec_sr = sr_pb or rec_sr
             if chunk_i + 1 < len(text_chunks):
                 prefetch_tts_task = asyncio.create_task(chat.tts_phoneme_segments(text_chunks[chunk_i + 1]))
 
@@ -742,6 +1024,12 @@ async def _run_pb_playback(
         )
         logger.info("[pb TX] 帧序一览 %s", json.dumps(frame_overview, ensure_ascii=False))
 
+        if recorder.enabled:
+            for m, bins in pairs:
+                if bins:
+                    recorder.add_wire(m, bins, idx=rec_idx)
+                    rec_idx += 1
+
         pb_aborted = await _send_pb_pairs(
             pairs=pairs, pb_req=pb_req, device_ws=device_ws, device_id=device_id, n_pb=n_pb, task_level=task_level,
         )
@@ -773,6 +1061,29 @@ async def _run_pb_playback(
             scene_seq = PbSeq(req=sreq, entries=tuple(scene_blocks), level=PB_LEVEL_DEBUG)
             await device_ws.send(device_id, scene_seq)
             n_scene_pb += len(scene_blocks)
+
+    merged_path = recorder.finish() if recorder.enabled else None
+    if merged_path:
+        logger.info("[pb TX] 音频录制 merged=%s chunks=%d", merged_path, rec_idx)
+
+    if record_audio and rec_pcm and device_id:
+        try:
+            from deskbot_server.utils.audio import pcm_to_wav_file
+            from deskbot_server.utils.device_data import device_capture_dir
+
+            audio_dir = device_capture_dir(device_id) / "audio"
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            name = request_id or uuid.uuid4().hex[:16]
+            rel = f"audio/{name}_bot.wav"
+            audio_ms = pcm_to_wav_file(audio_dir / f"{name}_bot.wav", bytes(rec_pcm), rec_sr or 24000)
+            result.bot_audio = rel
+            result.bot_audio_ms = audio_ms
+            logger.info(
+                "[record] 机器人语音落盘 device_id=%s req=%s path=%s audio_ms=%d",
+                device_id, request_id, rel, audio_ms,
+            )
+        except Exception:
+            logger.exception("[record] 机器人语音落盘失败 device_id=%s req=%s", device_id, request_id)
 
     logger.info(
         "[pb TX] 下发结束 device_id=%s request_id=%s 语音 JSON=%d%s%s",

@@ -9,7 +9,6 @@ from deskbot_server.ports.asr import AsrPort
 from deskbot_server.ports.llm import LlmPort
 from deskbot_server.ports.tts import TtsPort
 from deskbot_server.service.asr_service import AsrService
-from deskbot_server.service.llm_service import LlmService
 from deskbot_server.service.tts_service import TtsService
 
 
@@ -51,25 +50,17 @@ class ChatService:
         history_messages: list[dict[str, str]] | None = None,
         extra_messages: list[dict[str, str]] | None = None,
         on_tts_ready: Callable[[str], Awaitable[None]] | None = None,
+        on_system_prompt: Callable[[str], None] | None = None,
     ) -> str:
-        try:
-            return await LlmService().complete(
-                text,
-                device_context=device_context,
-                device_id=device_id,
-                history_messages=history_messages,
-                extra_messages=extra_messages,
-                on_tts_ready=on_tts_ready,
-            )
-        except RuntimeError:
-            return await self._llm.complete(
-                text,
-                device_context=device_context,
-                device_id=device_id,
-                history_messages=history_messages,
-                extra_messages=extra_messages,
-                on_tts_ready=on_tts_ready,
-            )
+        return await self._llm.complete(
+            text,
+            device_context=device_context,
+            device_id=device_id,
+            history_messages=history_messages,
+            extra_messages=extra_messages,
+            on_tts_ready=on_tts_ready,
+            on_system_prompt=on_system_prompt,
+        )
 
     async def tts_phoneme_segments(self, text: str) -> tuple[int, list[dict]]:
         try:

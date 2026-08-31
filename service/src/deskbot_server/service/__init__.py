@@ -7,7 +7,6 @@ __all__ = [
     "BusService",
     "CameraFaceService",
     "LiveService",
-    "LlmService",
     "TtsService",
     "UserService",
     "VadService",
@@ -31,10 +30,6 @@ def __getattr__(name: str):
         from deskbot_server.service.live_service import LiveService
 
         return LiveService
-    if name == "LlmService":
-        from deskbot_server.service.llm_service import LlmService
-
-        return LlmService
     if name == "TtsService":
         from deskbot_server.service.tts_service import TtsService
 

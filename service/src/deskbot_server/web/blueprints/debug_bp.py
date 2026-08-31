@@ -28,7 +28,7 @@ from deskbot_server.dao.scene_playbooks_store import (
     normalize_scene_playbooks,
     save_scene_playbooks_file,
 )
-from deskbot_server.infrastructure.llm.utils import llm_pb_scenes_prompt_appendix, parse_llm_reply
+from deskbot_server.infrastructure.llm.utils import parse_llm_reply
 from deskbot_server.service.application.face_registration import register_face_for_device
 from deskbot_server.service.user_service import UserService
 from deskbot_server.utils.device_data import load_llm_system_prompt, resolve_json_path, save_llm_system_prompt
@@ -37,7 +37,6 @@ from deskbot_server.vision.camera_face_tune import apply_camera_face_tune
 from deskbot_server.web.deps import RequireUser, load_session_user
 from deskbot_server.web.helpers import (
     ALLOWED_LLM_ROLES,
-    beijing_time_str,
     camera_view_ws_base,
     deskbot_http_base,
     device_pipeline_ws_base,
@@ -223,8 +222,6 @@ def debug_devices(request: Request, user: RequireUser):
     if current and current not in owned_ids:
         current = owned[0].device_id if owned else None
 
-    debug_ws = issue_debug_ws_token(user.id)
-
     return render_template(
         request,
         "debug_devices.html",
@@ -232,7 +229,6 @@ def debug_devices(request: Request, user: RequireUser):
         device_pipeline_ws_base=device_pipeline_ws_base(),
         camera_view_ws_base=camera_view_ws_base(),
         deskbot_http_base=deskbot_http_base(),
-        deskbot_debug_ws_token=debug_ws,
         face_lcd_w=FACE_LCD_WIDTH,
         face_lcd_h=FACE_LCD_HEIGHT,
         expr_default_anim=expr_default_anim,
@@ -657,17 +653,9 @@ def llm_chat(request: Request, user: RequireUser):
             400,
         )
 
-    sys_content = f"{system_prompt}\n当前时间是: {beijing_time_str()}（北京时间，东八区）"
-    from deskbot_server.infrastructure.llm.user_message import build_llm_user_message
-    from deskbot_server.infrastructure.llm.utils import llm_device_screen_appendix, llm_static_context_prompt_appendix
+    from deskbot_server.infrastructure.llm.utils import build_llm_system_prompt, build_llm_user_message
 
-    sys_content += "\n" + llm_device_screen_appendix(debug_device_id or None)
-    px = llm_pb_scenes_prompt_appendix(device_id=debug_device_id or None)
-    if px:
-        sys_content += "\n" + px
-    fx = llm_static_context_prompt_appendix(debug_device_id or None)
-    if fx:
-        sys_content += "\n\n" + fx
+    sys_content = build_llm_system_prompt(system_prompt, device_id=debug_device_id or None)
 
     raw_ctx = payload.get("device_context")
     device_context: str | None = None

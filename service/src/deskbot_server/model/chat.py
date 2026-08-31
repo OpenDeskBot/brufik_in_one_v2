@@ -6,6 +6,17 @@ from typing import Any
 
 
 @dataclass
+class LlmTurnResult:
+    """一轮 LLM 主调用（含工具轮往返）的结果摘要。"""
+
+    parsed: dict[str, Any]
+    tools: list[Any] = field(default_factory=list)
+    tool_results: list[Any] = field(default_factory=list)
+    answer: str = ""
+    system_prompt: str | None = None
+
+
+@dataclass
 class ChatTurnResult:
     """一轮 ASR→LLM→TTS/pb 的时序与结果摘要。"""
 
@@ -25,6 +36,12 @@ class ChatTurnResult:
     error: str | None = None
     voice_auto_reply_off: bool = False
     scenes: list[str] = field(default_factory=list)
+    # 调试记录字段（turn_recorder 消费）
+    system_prompt: str | None = None
+    user_audio: str | None = None
+    user_audio_ms: int | None = None
+    bot_audio: str | None = None
+    bot_audio_ms: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

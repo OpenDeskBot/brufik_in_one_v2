@@ -1,22 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import json
 import logging
 from collections.abc import Awaitable, Callable
 
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    ZoneInfo = None  # type: ignore[misc, assignment]
-
 from deskbot_server.infrastructure.llm.runtime import chat_acompletion, is_local_llm_url, resolve_llm_config
-from deskbot_server.infrastructure.llm.user_message import build_llm_user_message
 from deskbot_server.infrastructure.llm.utils import (
-    llm_device_screen_appendix,
-    llm_pb_scenes_prompt_appendix,
-    llm_static_context_prompt_appendix,
+    build_llm_system_prompt,
+    build_llm_user_message,
     parse_llm_reply,
 )
 from deskbot_server.model.settings import AppSettings
@@ -54,30 +46,14 @@ class OpenAiLlmAdapter:
             '你是中文语音助手，请简洁回答。每次只输出 JSON：{"tts":"…","servo":[]}。'
         )
 
-    @staticmethod
-    def _beijing_time_str() -> str:
-        if ZoneInfo is not None:
-            now = dt.datetime.now(ZoneInfo("Asia/Shanghai"))
-        else:
-            now = dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
-        weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-        return now.strftime("%Y-%m-%d %H:%M:%S") + " " + weekdays[now.weekday()]
-
     def _resolve_system_prompt(self, *, device_id: str | None = None) -> str:
         from deskbot_server.utils.device_data import load_llm_system_prompt
 
         return load_llm_system_prompt(device_id) or self._default_system_prompt
 
     def _build_system_prompt(self, *, device_id: str | None = None) -> str:
-        base = f"{self._resolve_system_prompt(device_id=device_id)}\n当前时间是: {self._beijing_time_str()}（北京时间，东八区）"
-        base += "\n" + llm_device_screen_appendix(device_id)
-        px = llm_pb_scenes_prompt_appendix(device_id=device_id)
-        if px:
-            base += "\n" + px
-        fx = llm_static_context_prompt_appendix(device_id)
-        if fx:
-            base += "\n\n" + fx
-        return base
+        base = self._resolve_system_prompt(device_id=device_id)
+        return build_llm_system_prompt(base, device_id=device_id)
 
     async def complete(
         self,
@@ -88,6 +64,7 @@ class OpenAiLlmAdapter:
         history_messages: list[dict[str, str]] | None = None,
         extra_messages: list[dict[str, str]] | None = None,
         on_tts_ready: Callable[[str], Awaitable[None]] | None = None,
+        on_system_prompt: Callable[[str], None] | None = None,
     ) -> str:
         async with _device_llm_lock(device_id):
             return await self._complete_locked(
@@ -97,6 +74,7 @@ class OpenAiLlmAdapter:
                 history_messages=history_messages,
                 extra_messages=extra_messages,
                 on_tts_ready=on_tts_ready,
+                on_system_prompt=on_system_prompt,
             )
 
     async def _complete_locked(
@@ -108,6 +86,7 @@ class OpenAiLlmAdapter:
         history_messages: list[dict[str, str]] | None = None,
         extra_messages: list[dict[str, str]] | None = None,
         on_tts_ready: Callable[[str], Awaitable[None]] | None = None,
+        on_system_prompt: Callable[[str], None] | None = None,
     ) -> str:
         llm_cfg = resolve_llm_config(device_id)
         # 火山 ark_responses 流式在工具/联网阶段常长时间无 text delta，语音对话改非流式更稳。
@@ -117,6 +96,11 @@ class OpenAiLlmAdapter:
         )
 
         system_content = self._build_system_prompt(device_id=device_id)
+        if on_system_prompt is not None:
+            try:
+                on_system_prompt(system_content)
+            except Exception:
+                logger.debug("[LLM] on_system_prompt 回调异常（忽略）", exc_info=True)
         user_content = build_llm_user_message(user_text, device_id=device_id, device_context=device_context)
         messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
         if history_messages:

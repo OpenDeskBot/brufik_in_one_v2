@@ -11,7 +11,6 @@ from deskbot_server.infrastructure.tts.factory import build_tts_adapter
 from deskbot_server.model.settings import AppSettings
 from deskbot_server.service.application.chat_service import ChatService
 from deskbot_server.service.asr_service import AsrService
-from deskbot_server.service.llm_service import LlmService
 from deskbot_server.service.tts_service import TtsService
 
 logger = logging.getLogger("deskbot-server")
@@ -36,7 +35,6 @@ def build_chat_service(config: dict) -> ChatService:
     tts = build_tts_adapter(settings)
 
     AsrService().bind(asr)
-    LlmService().bind(llm)
     TtsService().bind(tts)
 
     return ChatService(settings, asr=asr, llm=llm, tts=tts)

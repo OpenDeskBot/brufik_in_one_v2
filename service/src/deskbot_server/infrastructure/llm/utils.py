@@ -4,10 +4,16 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
 from typing import Any
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # type: ignore[misc, assignment]
 
 from deskbot_server.constants import SERVO_CFG_FILE
 from deskbot_server.dao.face_design_store import resolve_face_design_path
@@ -234,6 +240,152 @@ def llm_static_context_prompt_appendix(device_id: str | None = None) -> str:
     """长期记忆 + 米家摘要 + 工具说明（传感器/人脸见每轮 user 消息）。"""
     parts = [llm_memory_prompt_appendix(device_id), llm_miot_prompt_appendix(device_id), llm_tools_prompt_appendix()]
     return "\n\n".join(p for p in parts if p)
+
+
+def _nose_xy(face: dict[str, Any]) -> tuple[float, float, int, int] | None:
+    w = int(face.get("image_w") or 0) or 320
+    h = int(face.get("image_h") or 0) or 240
+    for p in face.get("landmarks") or []:
+        if not isinstance(p, dict) or p.get("name") != "nose":
+            continue
+        try:
+            return float(p["x"]), float(p["y"]), w, h
+        except (TypeError, ValueError, KeyError):
+            continue
+    return None
+
+
+def parse_servo_angles_from_pb_ack(device_context: str | dict | None) -> tuple[str, str]:
+    """从 ``pb_ack`` JSON 提取水平/垂直舵机角度；无则返回「未知」。"""
+    ack: Any = device_context
+    if isinstance(device_context, str) and device_context.strip():
+        try:
+            ack = json.loads(device_context)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            ack = None
+    if not isinstance(ack, dict):
+        return "未知", "未知"
+    servo = ack.get("servo")
+    if not isinstance(servo, dict):
+        return "未知", "未知"
+    xs = "未知"
+    ys = "未知"
+    if "x" in servo:
+        try:
+            xs = str(int(servo["x"]))
+        except (TypeError, ValueError):
+            pass
+    if "y" in servo:
+        try:
+            ys = str(int(servo["y"]))
+        except (TypeError, ValueError):
+            pass
+    return xs, ys
+
+
+def _format_face_line(face: dict[str, Any]) -> str:
+    fid = face.get("face_id")
+    parts: list[str] = [f"faceid={fid if fid is not None else '?'}"]
+    face_score = face.get("face_score")
+    if face_score is not None:
+        try:
+            parts.append(f"人脸置信度={float(face_score):.2f}")
+        except (TypeError, ValueError):
+            pass
+    name = str(face.get("person_name") or "").strip() or "未知"
+    parts.append(f"name={name}")
+    identity_score = face.get("identity_score")
+    if identity_score is not None:
+        try:
+            parts.append(f"人物识别置信度={float(identity_score):.2f}")
+        except (TypeError, ValueError):
+            pass
+    nose = _nose_xy(face)
+    if nose is not None:
+        nx, ny = int(round(nose[0])), int(round(nose[1]))
+        parts.append(f"脸中心位置=({nx},{ny})")
+    else:
+        parts.append("脸中心位置=未知")
+    return ", ".join(parts)
+
+
+def _sorted_faces_for_message(device_id: str) -> list[dict[str, Any]]:
+    from deskbot_server.service.application.face_snapshot_cache import list_device_faces
+
+    faces = list_device_faces(device_id)
+    rows: list[dict[str, Any]] = []
+    for fid, face in faces.items():
+        if not isinstance(face, dict):
+            continue
+        row = dict(face)
+        row.setdefault("face_id", int(fid))
+        rows.append(row)
+    rows.sort(key=lambda r: (-(float(r.get("identity_score") or 0.0)), int(r.get("face_id") or 0)))
+    return rows
+
+
+def _follow_mode_label(mode: str) -> str:
+    labels = {"": "关闭", "follow": "跟随人脸", "follow_frontal": "跟随正脸", "gaze": "注视感知"}
+    return labels.get(mode, mode or "关闭")
+
+
+def build_llm_user_message(user_text: str, *, device_id: str | None = None, device_context: str | None = None) -> str:
+    """按约定格式组装 LLM ``user`` 消息正文（传感器 + 图像识别 + 用户正文）。"""
+    from deskbot_server.dao.device_mapper import get_camera_servo_auto_mode
+
+    sx, sy = parse_servo_angles_from_pb_ack(device_context)
+    lines: list[str] = [
+        "[机器人传感器信息:",
+        f"水平舵机角度: {sx}, 垂直舵机角度: {sy}",
+        f"摄像头跟随模式: {_follow_mode_label(get_camera_servo_auto_mode(device_id or ''))}",
+        "图像识别:",
+    ]
+    dev = str(device_id or "").strip()
+    face_rows: list[dict[str, Any]] = []
+    if dev:
+        face_rows = _sorted_faces_for_message(dev)
+        if face_rows:
+            for row in face_rows:
+                lines.append(f"   {_format_face_line(row)}")
+        else:
+            lines.append("   (未检测到人脸)")
+    else:
+        lines.append("   (无设备)")
+    lines.append("]")
+    body = (user_text or "").strip()
+    if not body:
+        body = "[未说话]"
+    elif dev and not face_rows:
+        lines.append("")
+        lines.append(
+            "（传感器未检测到人脸；用户已说话时须正常回答用户正文，"
+            "勿编造「正在看你」或仅回复「看不到人」而忽略用户问题。）"
+        )
+    lines.append("")
+    lines.append(f"用户正文: {body}")
+    return "\n".join(lines)
+
+
+def beijing_time_str() -> str:
+    if ZoneInfo is not None:
+        now = dt.datetime.now(ZoneInfo("Asia/Shanghai"))
+    else:
+        now = dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    return now.strftime("%Y-%m-%d %H:%M:%S") + " " + weekdays[now.weekday()]
+
+
+def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None) -> str:
+    """组装最终 system prompt：基础人设 + 时间 + 屏幕音量 + 动作/表情清单 + 记忆/米家/工具。"""
+    base = f"{base_prompt}\n当前时间是: {beijing_time_str()}（北京时间，东八区）"
+    base += "\n" + llm_device_screen_appendix(device_id)
+    px = llm_pb_scenes_prompt_appendix(device_id=device_id)
+    if px:
+        base += "\n" + px
+    fx = llm_static_context_prompt_appendix(device_id)
+    if fx:
+        base += "\n\n" + fx
+    return base
 
 
 def llm_face_context_prompt_appendix(device_id: str | None = None) -> str:
@@ -514,6 +666,9 @@ def parse_llm_reply(raw: str) -> dict:
 
 
 __all__ = [
+    "beijing_time_str",
+    "build_llm_system_prompt",
+    "build_llm_user_message",
     "llm_device_screen_appendix",
     "llm_face_context_prompt_appendix",
     "llm_memory_prompt_appendix",
@@ -524,8 +679,9 @@ __all__ = [
     "llm_recognized_faces_prompt_appendix",
     "llm_static_context_prompt_appendix",
     "llm_tools_prompt_appendix",
+    "parse_llm_reply",
+    "parse_servo_angles_from_pb_ack",
+    "parse_servo_plan_item",
     "coerce_pb_v2_downlink_payload",
     "normalize_pb_servo_dict",
-    "parse_llm_reply",
-    "parse_servo_plan_item",
 ]
