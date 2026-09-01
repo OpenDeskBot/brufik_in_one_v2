@@ -90,7 +90,7 @@ class OpenAiLlmAdapter:
     ) -> str:
         llm_cfg = resolve_llm_config(device_id)
         # 火山 ark_responses 流式在工具/联网阶段常长时间无 text delta，语音对话改非流式更稳。
-        # 本地引擎（llm-minicpm 等）不支持 stream，同样强制非流式（TTS 走完整响应后预取）。
+        # 本地引擎（llm-minicpm / llm-qwen 等）不支持 stream，同样强制非流式（TTS 走完整响应后预取）。
         use_stream_tts = (
             bool(on_tts_ready) and llm_cfg.protocol != "ark_responses" and not is_local_llm_url(llm_cfg.api_base)
         )

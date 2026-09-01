@@ -1,7 +1,6 @@
 {% macro icon(name) -%}
 {% if name == 'home' %}<svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
 {% elif name == 'expr' %}<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 14c1 1.3 6 1.3 7 0"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/></svg>
-{% elif name == 'voice' %}<svg viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M16 9a4 4 0 010 6"/><path d="M19 6a8 8 0 010 12"/></svg>
 {% elif name == 'lab' %}<svg viewBox="0 0 24 24"><path d="M8 3v5l-4 8a4 4 0 003.6 5h8.8A4 4 0 0020 16l-4-8V3"/><path d="M9 3h6"/><path d="M7 14h10"/><path d="M10 17h4"/></svg>
 {% elif name == 'memory' %}<svg viewBox="0 0 24 24"><path d="M6 3h12a1 1 0 011 1v16l-7-4-7 4V4a1 1 0 011-1z"/></svg>
 {% elif name == 'remind' %}<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
@@ -11,6 +10,7 @@
 {% elif name == 'miot' %}<svg viewBox="0 0 24 24"><path d="M4 10h16v10H4z"/><path d="M8 10V7a4 4 0 018 0v3"/><path d="M12 14v3"/></svg>
 {% elif name == 'advanced' %}<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7 7 0 000-2l2-1.5-2-3.4-2.3 1a7 7 0 00-1.7-1L15 3h-4l-.7 2.6a7 7 0 00-1.7 1l-2.3-1-2 3.4L4.6 11a7 7 0 000 2l-2 1.5 2 3.4 2.3-1a7 7 0 001.7 1L11 21h4l.7-2.6a7 7 0 001.7-1l2.3 1 2-3.4z"/></svg>
 {% elif name == 'service' %}<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><rect x="8.5" y="8.5" width="7" height="7" rx="1.5"/></svg>
+{% elif name == 'flash' %}<svg viewBox="0 0 24 24"><rect x="7" y="4" width="10" height="16" rx="2"/><path d="M9 8h6M9 12h6"/><path d="M4 10v4M20 10v4"/></svg>
 {% elif name == 'quest' %}<svg viewBox="0 0 24 24"><path d="M6 3h12a1 1 0 011 1v17l-3-2-3 2-3-2-3 2V4a1 1 0 011-1z"/><path d="M9 8h6"/><path d="M9 12h6"/><path d="M9 16h4"/></svg>
 {% elif name == 'robot' %}<svg viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="10" rx="3"/><circle cx="9.5" cy="13" r="1.2"/><circle cx="14.5" cy="13" r="1.2"/><path d="M12 8V5"/><circle cx="12" cy="4" r="1"/><path d="M9 16h6"/></svg>
 {% endif %}
@@ -25,7 +25,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='theme_2c.css') }}?v=20260708-diy-into-face">
+  <link rel="stylesheet" href="{{ url_for('static', filename='theme_2c.css') }}?v=20260901-home-quicknav">
   {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -65,25 +65,24 @@
       <div class="brand"><div class="logo">歪</div><div><b>小歪</b><small>专属于你的桌面机器人</small></div></div>
       <nav class="navi">
         <a href="{{ url_for('app2c.home') }}" class="navlink {{ 'on' if active_nav=='home' }}">{{ icon('home') }}家</a>
-        <div class="lbl">核心玩法</div>
-        <a href="{{ url_for('app2c.expr') }}" class="navlink {{ 'on' if active_nav=='expr' }}">{{ icon('expr') }}表情</a>
-        <a href="{{ url_for('app2c.voice') }}" class="navlink {{ 'on' if active_nav=='voice' }}">{{ icon('voice') }}声音</a>
+        <div class="lbl">我的小歪</div>
         <a href="{{ url_for('app2c.lab') }}" class="navlink {{ 'on' if active_nav=='lab' }}">{{ icon('lab') }}实验台</a>
-        <a href="{{ url_for('robot_settings.page') }}" class="navlink {{ 'on' if active_nav=='robot_settings' }}">{{ icon('robot') }}机器人设置</a>
+        <a href="{{ url_for('robot_settings.page') }}" class="navlink {{ 'on' if active_nav=='robot_settings' }}">{{ icon('robot') }}模型设置</a>
+        <a href="{{ url_for('flash.flash_page') }}" class="navlink {{ 'on' if active_nav=='flash' }}">{{ icon('flash') }}烧录固件</a>
         <div class="lbl">日常</div>
-        <a href="{{ url_for('app2c.memories') }}" class="navlink {{ 'on' if active_nav=='memory' }}">{{ icon('memory') }}它记得的事</a>
+        <a href="{{ url_for('app2c.memories') }}" class="navlink {{ 'on' if active_nav=='memory' }}">{{ icon('memory') }}记忆</a>
         <a href="{{ url_for('app2c.reminders') }}" class="navlink {{ 'on' if active_nav=='remind' }}">{{ icon('remind') }}提醒</a>
         <a href="{{ url_for('app2c.people') }}" class="navlink {{ 'on' if active_nav=='people' }}">{{ icon('people') }}认识的人</a>
-        <a href="{{ url_for('app2c.devices') }}" class="navlink {{ 'on' if active_nav=='device' }}">{{ icon('device') }}我的设备</a>
         <a href="{{ url_for('app2c.miot') }}" class="navlink {{ 'on' if active_nav=='miot' }}">{{ icon('miot') }}米家</a>
         {% if nav_is_developer %}
         <div class="lbl">开发者选项</div>
-        <a href="{{ url_for('debug.dev_users_page') }}" class="navlink {{ 'on' if active_nav=='users' }}">{{ icon('users') }}用户管理</a>
+        <a href="{{ url_for('app2c.expr') }}" class="navlink {{ 'on' if active_nav=='expr' }}">{{ icon('expr') }}表情设计</a>
+        <a href="{{ url_for('quest.page') }}" class="navlink {{ 'on' if active_nav=='quest' }}">{{ icon('quest') }}剧情设计</a>
         <a href="{{ url_for('services.page') }}" class="navlink {{ 'on' if active_nav=='services' }}">{{ icon('service') }}独立服务管理</a>
+        <a href="{{ url_for('debug.dev_users_page') }}" class="navlink {{ 'on' if active_nav=='users' }}">{{ icon('users') }}用户管理</a>
         {% endif %}
         <div class="gap"></div>
-        <a href="{{ url_for('app2c.advanced') }}" class="navlink {{ 'on' if active_nav=='advanced' }}">{{ icon('advanced') }}高级</a>
-        <a href="{{ url_for('quest.page') }}" class="navlink {{ 'on' if active_nav=='quest' }}">{{ icon('quest') }}剧情设计</a>
+        <a href="{{ url_for('app2c.advanced') }}" class="navlink {{ 'on' if active_nav=='advanced' }}">{{ icon('advanced') }}账户</a>
       </nav>
       <div class="foot"><div class="userchip"><div class="ua">歪</div><div><b>{{ nav_display_name or '我' }}</b><small>{{ nav_user_email or '' }}</small></div></div></div>
     </aside>
@@ -91,7 +90,6 @@
       <div
         id="globalSetup"
         class="global-setup"
-        data-suppress-model="{% block global_setup_suppress_model %}0{% endblock %}"
         data-suppress-device="{% block global_setup_suppress_device %}0{% endblock %}"
         hidden
       ></div>
@@ -274,30 +272,10 @@
         + '<span class="global-setup-action">'+esc(label)+'</span>'
         + '</a>';
     };
-    var suppressModel=String(box.getAttribute('data-suppress-model')||'').trim()==='1';
     var suppressDevice=String(box.getAttribute('data-suppress-device')||'').trim()==='1';
-    Promise.all([
-      fetch('/api/setup/llm').then(function(r){return r.json();}).catch(function(){return {};}),
-      fetch('/app/api/devices').then(function(r){return r.json();}).catch(function(){return {};}),
-      fetch('/api/doubao_tts/config').then(function(r){return r.json();}).catch(function(){return {};})
-    ]).then(function(results){
-      var setup=results[0]||{}, devicesPayload=results[1]||{}, ttsPayload=results[2]||{};
+    fetch('/app/api/devices').then(function(r){return r.json();}).catch(function(){return {};}).then(function(devicesPayload){
+      devicesPayload=devicesPayload||{};
       var html=[];
-      var ttsConfig=ttsPayload.config||{};
-      var llmMissing=!!setup.needs_config;
-      var ttsMissing=!ttsConfig.api_key_set;
-      if(!suppressModel && (llmMissing || ttsMissing)){
-        var modelBody='对话、AI 表情设计、图片生成和声音都在这里统一配置。';
-        if(llmMissing && !ttsMissing) modelBody='对话、AI 表情设计和图片生成需要先配置火山方舟模型。';
-        if(!llmMissing && ttsMissing) modelBody='试听和语音合成需要豆包语音 API Key；声音复刻还需要额外凭证。';
-        html.push(item(
-          'model',
-          '还没完成 AI 能力配置',
-          modelBody,
-          '{{ url_for("app2c.advanced") }}?tab=llm',
-          '去配置'
-        ));
-      }
       var devices=devicesPayload.devices||[];
       var currentId=devicesPayload.current_device_id||'';
       if(!suppressDevice && !devices.length){

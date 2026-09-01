@@ -70,7 +70,6 @@
     <div class="home-deck">
       <div class="readouts">
         <a class="readout" href="{{ url_for('app2c.devices') }}"><span class="k">STATUS</span><span class="v"><span class="led" :style="bound ? null : 'background:#9a9a90'"></span>[[ bound ? '在线' : '未连接' ]]</span></a>
-        <a class="readout" href="{{ url_for('app2c.voice') }}"><span class="k">VOICE</span><span class="v">[[ voiceLabel ]]</span></a>
         <a class="readout" href="{{ url_for('app2c.expr') }}"><span class="k">MOOD</span><span class="v">[[ faceLabel ]]</span></a>
         <a class="readout" href="{{ url_for('app2c.memories') }}"><span class="k">MEMORY</span><span class="v">[[ memoryCount ]] 件</span></a>
       </div>
@@ -81,70 +80,63 @@
     </div>
   </div>
 
-  <!-- 玩法 + 引导 -->
-  <div class="home-bottom">
-    <!-- 主创作动作：任何状态都能进入 -->
-    <div class="heroes heroes-stack">
-      <a class="hero" href="{{ url_for('app2c.expr') }}">
-        <div class="emoji"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 14c1 1.3 6 1.3 7 0"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/></svg></div>
-        <div><b>捏表情</b><span>换张脸 · 配情绪</span><small class="hero-subtle">含表情包生成</small></div>
-      </a>
-      <a class="hero" href="{{ url_for('app2c.voice') }}">
-        <div class="emoji"><svg viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M16 9a4 4 0 010 6"/><path d="M19 6a8 8 0 010 12"/></svg></div>
-        <div><b>调声音</b><span>挑音色 · 试听</span></div>
-      </a>
-      <a class="hero" href="{{ url_for('flash.flash_page') }}">
-        <div class="emoji"><svg viewBox="0 0 24 24"><rect x="7" y="4" width="10" height="16" rx="2"/><path d="M9 8h6M9 12h6"/><path d="M4 10v4M20 10v4"/></svg></div>
-        <div><b>烧录固件</b><span>USB 串口 · 下载 ROM</span><small class="hero-subtle">需在本机运行服务</small></div>
-      </a>
+  <!-- 快捷入口：一行 5 块 -->
+  <section class="home-quicknav" aria-label="快捷入口">
+    <a class="quicknav-tile" href="{{ url_for('flash.flash_page') }}">
+      <span class="qn-ico">{{ icon('flash') }}</span>
+      <b>烧录固件</b><small>USB 串口 · 下载 ROM</small>
+    </a>
+    <a class="quicknav-tile" href="{{ url_for('app2c.memories') }}">
+      <span class="qn-ico">{{ icon('memory') }}</span>
+      <b>记忆</b><small>记住重要的事</small>
+    </a>
+    <a class="quicknav-tile" href="{{ url_for('app2c.people') }}">
+      <span class="qn-ico">{{ icon('people') }}</span>
+      <b>认识的人</b><small>它认得了谁</small>
+    </a>
+    <a class="quicknav-tile" href="{{ url_for('app2c.reminders') }}">
+      <span class="qn-ico">{{ icon('remind') }}</span>
+      <b>提醒</b><small>到点就会播报</small>
+    </a>
+    <a class="quicknav-tile" href="{{ url_for('robot_settings.page') }}">
+      <span class="qn-ico">{{ icon('robot') }}</span>
+      <b>模型设置</b><small>ASR · LLM · TTS</small>
+    </a>
+  </section>
+
+  <!-- 快捷下发：实验台简版（仅预置动作 / 预置表情 / 指定文字 TTS） -->
+  <section class="home-quick" aria-label="快捷下发">
+    <div class="home-quick-panel">
+      <div class="home-quick-hd"><b>舵机控制</b><small>仅下发预置动作</small></div>
+      <div class="quick-presets">
+        <button type="button" class="btn ghost" v-for="p in quick.servo.presets" :key="p.id || p.label"
+          @click="runQuickServoPreset(p)" :disabled="!bound || quick.servo.busy">[[ p.label || p.id ]]</button>
+      </div>
+      <small v-if="!bound" class="home-quick-note">绑定设备后可用</small>
+      <small v-else-if="!quick.servo.presets.length" class="home-quick-note">暂无预置动作，可在实验台保存 servo.json</small>
     </div>
 
-    <!-- 状态 A：还没配置好 → 上手清单（引导下一步，而非罗列全部入口） -->
-    <section v-if="setupIncomplete" class="home-setup" aria-label="上手清单">
-      <div class="home-setup-hd"><span>GET STARTED</span><b>让小歪活起来，还差几步</b></div>
-      <a class="setup-step" :class="{done: !llmMissing}" href="{{ url_for('app2c.advanced') }}?tab=llm">
-        <span class="step-check"><svg viewBox="0 0 24 24"><path d="M5 12l4 4 10-10"/></svg></span>
-        <span class="step-copy"><b>配置对话模型</b><small>火山方舟 API Key · 本地保存，不上云</small></span>
-        <span class="step-state">[[ llmMissing ? '去配置' : '已完成' ]]</span>
-      </a>
-      <a class="setup-step" :class="{done: !ttsMissing}" href="{{ url_for('app2c.advanced') }}?tab=llm">
-        <span class="step-check"><svg viewBox="0 0 24 24"><path d="M5 12l4 4 10-10"/></svg></span>
-        <span class="step-copy"><b>选择声音能力</b><small>试听和语音合成需要豆包语音 API Key；复刻还需额外凭证</small></span>
-        <span class="step-state">[[ ttsMissing ? '去配置' : '已完成' ]]</span>
-      </a>
-      <a class="setup-step" :class="{done: bound}" href="{{ url_for('app2c.devices') }}">
-        <span class="step-check"><svg viewBox="0 0 24 24"><path d="M5 12l4 4 10-10"/></svg></span>
-        <span class="step-copy"><b>绑定你的小歪</b><small>绑定后表情、声音、记忆才会同步到设备</small></span>
-        <span class="step-state">[[ bound ? '已完成' : '去绑定' ]]</span>
-      </a>
-    </section>
+    <div class="home-quick-panel">
+      <div class="home-quick-hd"><b>PB 表情</b><small>仅下发预置表情</small></div>
+      <select v-model="quick.pb.selected" :disabled="!bound || quick.pb.busy">
+        <option value="">选择预置表情</option>
+        <option v-for="s in quick.pb.scenes" :key="s" :value="s">[[ s ]]</option>
+      </select>
+      <button type="button" class="btn primary" @click="sendQuickPbScene"
+        :disabled="!bound || !quick.pb.selected || quick.pb.busy">下发表情</button>
+      <small v-if="!bound" class="home-quick-note">绑定设备后可用</small>
+    </div>
 
-    <!-- 状态 B：已配置 → 最近动态（展示内容，而非重复入口和空数字） -->
-    <section v-else class="home-recent" aria-label="最近动态">
-      <a class="recent-block" href="{{ url_for('app2c.memories') }}">
-        <div class="recent-hd"><span>MEMORY</span><b>它记得的事</b><i>[[ memoryCount ]]</i></div>
-        <ul v-if="recentMemories.length" class="recent-list">
-          <li v-for="m in recentMemories" :key="m.id">[[ m.text ]]</li>
-        </ul>
-        <p v-else class="recent-empty">还没有记忆，多和它聊聊，它会记住重要的事。</p>
-      </a>
-      <a class="recent-block" href="{{ url_for('app2c.people') }}">
-        <div class="recent-hd"><span>FACES</span><b>认识的人</b><i>[[ peopleCount ]]</i></div>
-        <div v-if="recentPeople.length" class="avatar-row">
-          <span v-for="p in recentPeople" :key="p.person_id" class="avatar" :title="p.name || ('#'+p.person_id)">[[ (p.name||'?').slice(0,1) ]]</span>
-        </div>
-        <p v-else class="recent-empty">还没有认识的人，让它用摄像头看看你。</p>
-      </a>
-      <a class="recent-block" href="{{ url_for('app2c.reminders') }}">
-        <div class="recent-hd"><span>NEXT</span><b>下一个提醒</b><i>[[ reminderCount ]]</i></div>
-        <div v-if="nextReminder" class="recent-next">
-          <b>[[ nextReminder.description || nextReminder.title || '提醒' ]]</b>
-          <small>下次 [[ nextReminder.next_run_at || nextReminder.cron_expr || nextReminder.cron || '' ]]</small>
-        </div>
-        <p v-else class="recent-empty">还没有提醒，去设一个吧。</p>
-      </a>
-    </section>
-  </div>
+    <div class="home-quick-panel">
+      <div class="home-quick-hd"><b>TTS 下发</b><small>下发指定文字</small></div>
+      <textarea v-model="quick.tts.text" rows="3" placeholder="要播报的文字" :disabled="!bound || quick.tts.busy"></textarea>
+      <button type="button" class="btn primary" @click="sendQuickTts"
+        :disabled="!bound || !quick.tts.text.trim() || quick.tts.busy">下发 TTS</button>
+      <small v-if="!bound" class="home-quick-note">绑定设备后可用</small>
+    </div>
+
+    <p v-if="quick.msg" class="home-quick-msg" role="status">[[ quick.msg ]]</p>
+  </section>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -168,17 +160,14 @@ createApp({
   data(){ return {
     greeting:'你好', owner:{{ (nav_display_name or '主人')|tojson }},
     bound:false, deviceName:'未绑定', deviceId:'',
-    llmMissing:true, ttsMissing:true,
-    voiceLabel:'未设置音色', emotionCount:0, memoryCount:0, reminderCount:0, peopleCount:0, deviceCount:0,
-    recentMemories:[], recentPeople:[], nextReminder:null,
+    emotionCount:0, memoryCount:0, deviceCount:0,
     scenes:[], emotionMap:{}, faceLabel:'待机',
+    quick:{servo:{presets:[],busy:false},pb:{scenes:[],selected:'',busy:false},tts:{text:'你好，我是小歪。',busy:false},msg:''},
     homeRobotError:'', homeRobotServo:{x:90,y:90},
     cameraViewWsBase: {{ camera_view_ws_base|tojson }},
     camera:{ws:null,status:'idle',statusText:'选择设备后显示摄像头画面',imageUrl:'',frameBytes:0},
   }; },
   computed:{
-    // 未配置模型 或 未绑定设备 → 首页以上手清单为主，不展示日常动态
-    setupIncomplete(){ return this.llmMissing || !this.bound; },
     homeFaceSvg(){
       const preview = window.DeskbotFacePreview;
       if(!preview) return '';
@@ -475,19 +464,85 @@ createApp({
       await this.animateHomeRobotServo({x:110,y:94,xm:0,ym:0,ms:420});
       await this.animateHomeRobotServo({x:90,y:90,xm:0,ym:0,ms:520});
     },
-    async load(){
-      // 配置状态：对话模型 + 声音能力（与顶部全局提示条同源判断）
-      const setup = await this.j('/api/setup/llm');
-      this.llmMissing = !!setup.needs_config;
-      // 当前音色：火山引擎(豆包)返回 speaker id，再用音色清单解析成展示名称
-      const cfg = await this.j('/api/doubao_tts/config');
-      this.ttsMissing = !(cfg.config && cfg.config.api_key_set);
-      const sid = (cfg.config && cfg.config.speaker) || '';
-      if(sid){
-        const sp = await this.j('/api/doubao_tts/speakers');
-        const hit = (sp.speakers || []).find(x => x.id === sid);
-        this.voiceLabel = hit ? hit.label : sid;
+    // ── 快捷下发（实验台简版：仅预置动作 / 预置表情 / 指定文字 TTS）──
+    async quickSend(u, opts){
+      const r = await fetch(u, opts || {cache:'no-store'});
+      let d = {};
+      try{ d = await r.json(); }catch(_e){}
+      if(!d || d.ok === false){ throw new Error((d && (d.error || d.message)) || ('HTTP ' + r.status)); }
+      return d || {};
+    },
+    async loadQuickControls(){
+      this.quick.servo.presets = [];
+      this.quick.pb.scenes = [];
+      this.quick.pb.selected = '';
+      if(!this.bound || !this.deviceId) return;
+      const q = '?device_id=' + encodeURIComponent(this.deviceId);
+      const sc = await this.j('/api/servo_config' + q);
+      const cfg = sc.config || sc;
+      this.quick.servo.presets = Array.isArray(cfg.presets) ? cfg.presets : [];
+      const ps = await this.j('/api/device_pb_scenes' + q);
+      this.quick.pb.scenes = ps.scenes || ps.keys || [];
+      if(!this.quick.pb.selected && this.quick.pb.scenes.length) this.quick.pb.selected = this.quick.pb.scenes[0];
+    },
+    async runQuickServoPreset(p){
+      this.quick.msg = '';
+      if(!this.bound || !this.deviceId){ this.quick.msg = '请先绑定设备'; return; }
+      const steps = (Array.isArray(p.steps) && p.steps.length) ? p.steps : [p];
+      const seq = (this._quickSeq || 0) + 1;
+      this._quickSeq = seq;
+      this.quick.servo.busy = true;
+      try{
+        for(const step of steps){
+          if(this._quickSeq !== seq) return;
+          const x = step.x ?? 90, y = step.y ?? 90;
+          const u = '/api/device_servo?device_id=' + encodeURIComponent(this.deviceId)
+            + '&x=' + x + '&y=' + y + '&dyaw=' + x + '&dpitch=' + y
+            + '&xm=' + (step.xm ?? 0) + '&ym=' + (step.ym ?? 0)
+            + '&ms=' + (step.ms ?? 500) + '&action=replace';
+          await this.quickSend(u);
+          await this.animateHomeRobotServo(step); // 3D 形象同步预览
+          await new Promise((r) => setTimeout(r, 150)); // 给设备留出执行间隙，避免下一条 replace 打断
+        }
+        this.quick.msg = '已下发预置动作「' + (p.label || p.id) + '」';
+      }catch(e){
+        this.quick.msg = e.message || '下发失败';
+      }finally{
+        this.quick.servo.busy = false;
       }
+    },
+    async sendQuickPbScene(){
+      this.quick.msg = '';
+      if(!this.bound || !this.deviceId){ this.quick.msg = '请先绑定设备'; return; }
+      if(!this.quick.pb.selected) return;
+      this.quick.pb.busy = true;
+      try{
+        await this.quickSend('/api/device_pb_scene?device_id=' + encodeURIComponent(this.deviceId)
+          + '&scene=' + encodeURIComponent(this.quick.pb.selected));
+        this.quick.msg = '已下发预置表情「' + this.quick.pb.selected + '」';
+      }catch(e){
+        this.quick.msg = e.message || '下发失败';
+      }finally{
+        this.quick.pb.busy = false;
+      }
+    },
+    async sendQuickTts(){
+      this.quick.msg = '';
+      if(!this.bound || !this.deviceId){ this.quick.msg = '请先绑定设备'; return; }
+      const text = String(this.quick.tts.text || '').trim();
+      if(!text){ this.quick.msg = '请输入要播报的文字'; return; }
+      this.quick.tts.busy = true;
+      try{
+        await this.quickSend('/api/device_tts', {method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({device_id:this.deviceId, text:text})});
+        this.quick.msg = 'TTS 已提交下发';
+      }catch(e){
+        this.quick.msg = e.message || '下发失败';
+      }finally{
+        this.quick.tts.busy = false;
+      }
+    },
+    async load(){
       // 设备
       const dv = await this.j('/app/api/devices');
       const devices = dv.devices || [];
@@ -502,11 +557,8 @@ createApp({
       // 以下统计依赖已选当前设备
       if(this.bound){
         const mem = await this.j('/app/api/memories'); const memList = mem.memories || [];
-        this.memoryCount = memList.length; this.recentMemories = memList.slice(0, 3);
-        const rem = await this.j('/app/api/scheduled-tasks'); const remList = rem.tasks || [];
-        this.reminderCount = remList.length; this.nextReminder = remList[0] || null;
-        const ppl = await this.j('/app/api/face-profiles'); const pplList = ppl.profiles || [];
-        this.peopleCount = pplList.length; this.recentPeople = pplList.slice(0, 6);
+        this.memoryCount = memList.length;
+        await this.loadQuickControls();
         const q = '?device_id=' + encodeURIComponent(this.deviceId);
         const scenes = await this.j('/api/face_expr_scenes' + q);
         this.scenes = scenes.config || [];

@@ -49,12 +49,16 @@ class Device(Base):
     auto_reply: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     servo_mode: Mapped[str] = mapped_column(String(16), default="", nullable=False)
     live_mode: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    # 调试模式：开启后记录对话轮次（历史对话 tab）并落盘音频/图像
-    record_history: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
     # 设备级 ASR provider：funasr（默认）/ doubao；空/NULL 按 funasr 处理
     asr_provider: Mapped[str] = mapped_column(String(32), default="funasr", server_default="funasr", nullable=False)
     # 设备级 ASR 参数（JSON：{"funasr": {"url"}, "doubao": {"api_key", ...}}），NULL=未配置
     asr_param: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 设备级 TTS provider：moss-tts-nano（默认）/ doubao；空/NULL 按 moss-tts-nano 处理
+    tts_provider: Mapped[str] = mapped_column(String(32), default="moss-tts-nano", server_default="moss-tts-nano", nullable=False)
+    # 设备级 TTS 参数（JSON：{"moss": {"demo_id"}, "doubao": {"api_key", ...}}），NULL=未配置
+    tts_param: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 设备绑定的剧情剧本名（对应 data/quest/{quest_id}.json）；空/NULL=未绑定
+    quest_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -153,50 +157,6 @@ class DeviceSessionMessage(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-
-
-class DeviceTurn(Base):
-    """调试模式对话轮次（历史对话 tab）。
-
-    一行 = 一轮完整对话（用户气泡 + 机器人气泡），含时序 / 工具 /
-    感知（人脸、声纹）/ 模型名 / system prompt 快照。
-    音频与图像只存相对 ``data/device/{device_id}/`` 的路径，不存本体。
-    """
-
-    __tablename__ = "device_turn"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
-    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("device_session.id"), nullable=False, index=True)
-    device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    seq: Mapped[int] = mapped_column(Integer, nullable=False)
-    source: Mapped[str] = mapped_column(String(16), nullable=False, default="asr")
-    # 用户侧
-    user_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    user_audio: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    user_audio_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    asr_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    asr_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # 感知侧（人脸 / 声纹；vpr 预留，接入后填充）
-    fr_image: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    fr_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    fr_result: Mapped[str | None] = mapped_column(Text, nullable=True)
-    fr_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    vpr_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    vpr_result: Mapped[str | None] = mapped_column(Text, nullable=True)
-    vpr_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # 机器人侧
-    bot_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    bot_audio: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    bot_audio_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    llm_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    llm_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    tools: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tts_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    tts_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ok")
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
 
 
 class QuestInstance(Base):

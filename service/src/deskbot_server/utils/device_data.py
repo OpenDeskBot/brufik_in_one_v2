@@ -26,16 +26,6 @@ def global_config_dir() -> Path:
     return DATA_DIR / "global"
 
 
-def device_capture_dir(device_id: str) -> Path:
-    """调试记录文件根目录：``data/device/{device_id}/``（audio/ 与 capture/ 子目录）。"""
-    did = _normalize_device_id(device_id)
-    if not did:
-        raise ValueError("device_id required")
-    if not _DEVICE_ID_SAFE.match(did):
-        raise ValueError(f"invalid device_id: {did!r}")
-    return DATA_DIR / "device" / did
-
-
 def is_shared_config_basename(name: str) -> bool:
     return name in SHARED_CONFIG_NAMES
 

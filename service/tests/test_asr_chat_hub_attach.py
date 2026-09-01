@@ -28,6 +28,33 @@ def test_register_closes_previous_connection_for_same_device():
     asyncio.run(_run())
 
 
+def test_register_claim_slot_false_does_not_evict_asr_chat():
+    """device_pipeline 生产者（claim_slot=False）不得抢占 asr_chat 的下行槽位，
+    否则两连接互相踢形成反复重连。"""
+    async def _run() -> None:
+        DeviceWsService.reset_instance()
+        svc = DeviceWsService()
+        asr_ws = MagicMock()
+        asr_ws.close = AsyncMock()
+        producer_ws = MagicMock()
+        producer_ws.close = AsyncMock()
+
+        await svc.register("dev1", asr_ws)
+        # 生产者接入：不覆盖 entry.ws，也不关闭 asr_chat 连接
+        await svc.register("dev1", producer_ws, claim_slot=False)
+
+        entry = svc._devices["dev1"]
+        assert entry.ws is asr_ws
+        asr_ws.close.assert_not_awaited()
+        # 反向：asr_chat 重连仍可正常抢占
+        asr_ws2 = MagicMock()
+        asr_ws2.close = AsyncMock()
+        await svc.register("dev1", asr_ws2)
+        assert entry.ws is asr_ws2
+
+    asyncio.run(_run())
+
+
 def test_register_keeps_only_one_ws():
     async def _run() -> None:
         DeviceWsService.reset_instance()

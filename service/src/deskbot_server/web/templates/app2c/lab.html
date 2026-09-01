@@ -48,11 +48,6 @@
   .lab-table th{background:var(--panel2);font-size:11px;text-transform:uppercase}
   .lab-table tr:last-child td{border-bottom:0}
   .lab-json-input{min-height:150px;font-family:var(--mono);font-size:12px}
-  .hist-sessions{display:grid;gap:8px;margin-bottom:10px;max-height:480px;overflow:auto}
-  .hist-session{border:var(--bw) solid var(--line);background:var(--panel2);border-radius:var(--r);padding:10px;cursor:pointer;text-align:left;box-shadow:var(--shadow-sm)}
-  .hist-session.on{border-color:var(--accent)}
-  .hist-session b{display:block;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .hist-session small{display:block;color:var(--dim);font-size:11px;margin-top:2px}
   .hist-chat{display:grid;gap:18px;max-height:560px;overflow:auto;padding:6px 4px}
   .hist-turn{display:grid;gap:10px}
   .hist-bubble{max-width:86%;padding:10px 12px;border-radius:var(--r);border:var(--bw) solid var(--line);box-shadow:var(--shadow-sm)}
@@ -60,16 +55,13 @@
   .hist-bubble.user{background:var(--panel);justify-self:end;border-bottom-right-radius:2px;border-color:var(--accent)}
   .hist-meta{font-size:11px;color:var(--dim);font-family:var(--mono);margin-bottom:6px;display:flex;flex-wrap:wrap;gap:4px}
   .hist-text{margin:0 0 6px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
-  .hist-audio{display:flex;align-items:center;gap:8px;margin:4px 0}
-  .hist-audio audio{height:30px;max-width:220px}
-  .hist-dur{font-family:var(--mono);font-size:12px;color:var(--accent);white-space:nowrap}
   .hist-tools{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
   .tool-chip{font-size:11px;font-family:var(--mono);background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);padding:2px 8px;cursor:help}
-  .hist-fr{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px;color:var(--dim)}
-  .hist-fr-img{width:120px;border-radius:var(--r);border:var(--bw) solid var(--line);cursor:zoom-in;background:#111}
-  .hist-prompt{margin-top:6px;font-size:11px}
-  .hist-prompt summary{cursor:pointer;color:var(--dim)}
-  .hist-prompt pre{font-family:var(--mono);font-size:10px;background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);padding:8px;white-space:pre-wrap;max-height:180px;overflow:auto;margin:6px 0 0}
+  .hist-turn.live{opacity:.92}
+  .hist-turn.live .hist-bubble{border-style:dashed}
+  .live-dot{color:var(--accent);animation:live-pulse 1.2s ease-in-out infinite}
+  @keyframes live-pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  .hist-error{color:#d92d20}
   .lab-robot-panel{overflow:hidden}
   .lab-robot-layout{display:grid;grid-template-columns:minmax(320px,1.05fr) minmax(260px,.95fr);gap:14px;align-items:stretch}
   .lab-robot-stage{border:var(--bw) solid var(--line);border-radius:var(--r);background:#111318;box-shadow:var(--shadow-sm);min-height:260px;overflow:hidden}
@@ -115,7 +107,7 @@
     <button type="button" :class="{on: active==='scene'}" @click="setActive('scene')">场景编排</button>
     <button type="button" :class="{on: active==='pb'}" @click="setActive('pb')">PB 表情</button>
     <button type="button" :class="{on: active==='logs'}" @click="setActive('logs')">ASR / 流水日志</button>
-    <button type="button" :class="{on: active==='history'}" @click="setActive('history')">历史对话</button>
+    <button type="button" :class="{on: active==='convo'}" @click="setActive('convo')">实时对话</button>
   </div>
 
   <p class="lead" v-if="msg">[[ msg ]]</p>
@@ -357,76 +349,48 @@
     </div>
   </section>
 
-  <section v-show="active==='history'" class="lab-grid">
+  <section v-show="active==='convo'" class="lab-grid">
     <div class="lab-panel wide">
       <div class="lab-head">
         <div>
-          <b>调试记录</b>
-          <small>开启后每轮对话写入 device_turn 表，用户语音 / 机器人语音 / 人脸帧落盘到 data/device/{device_id}/。默认关闭。</small>
+          <b>实时对话</b>
+          <small>由流水日志驱动：WS 实时订阅 + /api/pipeline_recent 初始加载（窗口 100 条）。只显示对话轮次，自动下发事件见「流水日志」tab。</small>
         </div>
-        <button type="button" class="btn" :class="history.recordOn ? 'primary' : 'ghost'" @click="toggleRecordHistory" :disabled="!currentDeviceId">
-          [[ history.recordOn ? '调试记录：开' : '调试记录：关' ]]
-        </button>
       </div>
-      <small class="lab-note">接口：/api/debug_prefs?record_history=1|0 · /api/device_turns</small>
+      <small class="lab-note">接口：/api/pipeline_recent · /device_pipeline（role=subscriber）</small>
     </div>
 
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>会话列表</b><small>点选加载该会话的轮次。</small></div></div>
-      <div class="hist-sessions" v-if="history.sessions.length">
-        <button type="button" v-for="s in history.sessions" :key="s.session_id"
-          class="hist-session" :class="{on: history.currentSession===s.session_id}"
-          @click="selectSession(s)">
-          <b>[[ s.title ]]</b>
-          <small>[[ s.message_count ]] 条 · [[ tsText(s.updated_at) ]]</small>
-        </button>
-      </div>
-      <p v-else class="lab-note">暂无会话。开启调试记录后，新对话会出现在这里。</p>
-      <div class="lab-toolbar">
-        <button type="button" class="btn ghost" @click="loadHistorySessions">刷新</button>
-      </div>
-    </div>
-
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>对话记录</b><small>机器人左对齐 · 用户右对齐。</small></div></div>
+    <div class="lab-panel wide">
+      <div class="lab-head"><div><b>对话记录</b><small>按时间升序 · 实时刷新 · 仅本会话内存保留。机器人左对齐 · 用户右对齐。</small></div></div>
       <div class="hist-chat" ref="histChat">
-        <template v-if="history.turns.length">
-          <div v-for="t in history.turns" :key="t.id" class="hist-turn">
+        <template v-if="convoTurns.length">
+          <div v-for="t in convoTurns" :key="'row_'+t.request_id" class="hist-turn" :class="{live: !t.final}">
             <div class="hist-bubble user">
-              <div v-if="t.user_audio" class="hist-audio">
-                <audio controls preload="none" :src="mediaUrl(t, 'user')"></audio>
-                <span class="hist-dur">[[ fmtAudio(t.user_audio_ms) ]]</span>
-              </div>
-              <p v-if="t.user_text" class="hist-text">[[ t.user_text ]]</p>
-              <div class="hist-meta" v-if="t.asr_ms !== null">
+              <p v-if="t.asr_text" class="hist-text">[[ t.asr_text ]]</p>
+              <div class="hist-meta" v-if="t.asr_ms !== null && t.asr_ms !== undefined">
                 <span>ASR 解析 [[ fmtMs(t.asr_ms) ]]</span>
+                <span v-if="t.received_ts" class="dim">· [[ tsText(t.received_ts) ]]</span>
               </div>
             </div>
             <div class="hist-bubble bot">
               <div class="hist-meta">
-                <span>🤔 [[ fmtMs(t.llm_ms) ]]</span>
-                <span v-if="t.llm_model" class="dim">· [[ t.llm_model ]]</span>
-                <span v-if="t.asr_model" class="dim">· ASR [[ t.asr_model ]]</span>
+                <span v-if="t.llm_ms !== null && t.llm_ms !== undefined">🤔 LLM [[ fmtMs(t.llm_ms) ]]</span>
+                <span v-if="t.tts_ms !== null && t.tts_ms !== undefined">🔊 TTS [[ fmtMs(t.tts_ms) ]]</span>
+                <span v-if="t.e2e_ms !== null && t.e2e_ms !== undefined" class="dim">· 总耗时 [[ fmtMs(t.e2e_ms) ]]</span>
+                <span v-if="t.source">· [[ sourceLabel(t.source) ]]</span>
+                <span v-if="t.note">[[ t.note ]]</span>
+                <span v-if="!t.final" class="live-dot">进行中…</span>
               </div>
               <div v-if="t.tools && t.tools.length" class="hist-tools">
-                <span v-for="(tool, i) in t.tools" :key="i" class="tool-chip" :title="json(tool.args)">🔧 [[ tool.tool ]]</span>
+                <span v-for="(tool, i) in t.tools" :key="i" class="tool-chip" :title="json(tool.args)">🔧 [[ toolName(tool) ]]</span>
               </div>
-              <p v-if="t.bot_text" class="hist-text">[[ t.bot_text ]]</p>
-              <div v-if="t.bot_audio" class="hist-audio">
-                <audio controls preload="none" :src="mediaUrl(t, 'bot')"></audio>
-                <span class="hist-dur">[[ fmtAudio(t.bot_audio_ms) ]]</span>
-              </div>
-              <div v-if="t.fr_image || (t.fr_result && t.fr_result.length)" class="hist-fr">
-                <img v-if="t.fr_image" :src="mediaUrl(t, 'fr')" alt="人脸帧" class="hist-fr-img" @click="zoomFr(t)">
-                <span v-if="t.fr_result && t.fr_result.length">
-                  👤 [[ frLabel(t.fr_result) ]] · [[ fmtMs(t.fr_ms) ]]
-                </span>
-              </div>
-              <details v-if="t.system_prompt" class="hist-prompt"><summary>system prompt</summary><pre>[[ t.system_prompt ]]</pre></details>
+              <p v-if="t.llm_text" class="hist-text">[[ t.llm_text ]]</p>
+              <p v-if="t.tts_text && t.tts_text !== t.llm_text" class="hist-text dim">🗣 [[ t.tts_text ]]</p>
+              <p v-if="t.error" class="hist-text hist-error">⚠ [[ t.error ]]</p>
             </div>
           </div>
         </template>
-        <p v-else class="lab-note">选择左侧会话查看轮次；无记录时为空。</p>
+        <p v-else class="lab-note">暂无对话。开启一轮对话后，实时显示在这里。</p>
       </div>
     </div>
   </section>
@@ -449,7 +413,7 @@ const EXPR_DEFAULT_ANIM = LAB_FACE.defaultAnim || {
 };
 const ROBOT_SERVO_CENTER = 90;
 function initialLabTab(){
-  const allowed = ['servo','camera','scene','pb','logs','history'];
+  const allowed = ['servo','camera','scene','pb','logs','convo'];
   const params = new URLSearchParams(window.location.search);
   const tab = params.get('tab') || '';
   return allowed.includes(tab) ? tab : 'servo';
@@ -477,8 +441,8 @@ createApp({
       exprScene:'', ttsText:'你好，我是小歪。', ttsScene:'',
       animJson:'{"anim":[{"ms":500,"elements":{"mouth":[],"nose":[],"eye_l":[],"eye_r":[],"extra":[]}}]}',
     },
-    pipeline:{ws:null,status:'',events:[]},
-    history:{sessions:[],turns:[],currentSession:'',recordOn:false},
+    pipeline:{ws:null,status:'',events:[],retry:0,retryTimer:null},
+    convo:{rows:{}},
   }; },
   computed:{
     robotServoXLabel(){
@@ -502,6 +466,9 @@ createApp({
       const y=Number(this.simServo && this.simServo.y);
       if(!Number.isFinite(y)) return 0;
       return (this.servo.config.y_reverse ? -1 : 1) * (y - ROBOT_SERVO_CENTER);
+    },
+    convoTurns(){
+      return Object.values(this.convo.rows).sort((a,b)=>(a.ts||0)-(b.ts||0));
     },
   },
   watch:{
@@ -540,7 +507,7 @@ createApp({
       if(tab==='servo') this.$nextTick(()=>{ if(!this._robot3d) void this.robotInit3d(); });
       if(tab==='camera') this.loadCameraMode({silent:true});
       if(tab==='logs') this.loadRuntimeToggles({silent:true});
-      if(tab==='history') this.loadHistory({silent:true});
+      if(tab==='convo'){ this.ensurePipelineWs(); this.loadConvoRecent(); }
     },
     async loadDevices(){
       const d=await this.api('/app/api/devices');
@@ -550,7 +517,10 @@ createApp({
     async switchDevice(){
       await this.api('/app/api/devices/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:this.currentDeviceId})});
       this.msg=this.currentDeviceId ? '已切换当前设备' : '已清空当前设备';
+      this.convo.rows={};
+      this.closePipeline();
       await this.loadAll();
+      this.ensurePipelineWs();
     },
     async loadAll(){
       try{
@@ -560,51 +530,119 @@ createApp({
           this.loadPbScenes({silent:true}),
           this.loadScenePlaybooks({silent:true}),
           this.loadRuntimeToggles({silent:true}),
-          this.loadCameraMode({silent:true}),
-          this.loadHistory({silent:true})
+          this.loadCameraMode({silent:true})
         ]);
       }catch(e){ this.msg=e.message||'刷新失败'; }
     },
-    // ── 历史对话 ──
-    async loadHistory(options){
-      if(!this.requireDevice(options)) return;
-      try{
-        const [d, prefs] = await Promise.all([
-          this.api(this.proxyPath('/api/device_turns', {})),
-          this.api(this.proxyPath('/api/debug_prefs', {})),
-        ]);
-        this.history.recordOn = !!prefs.record_history;
-        const sessions = d.sessions || [];
-        const cur = this.history.currentSession;
-        const stillThere = cur && sessions.some(s=>s.session_id===cur);
-        this.history.sessions = sessions;
-        if(stillThere){ this.selectSession({session_id: cur}, {silent:true}); }
-        else if(sessions.length && !this.history.turns.length){ this.selectSession(sessions[0], {silent:true}); }
-        else if(!sessions.length){ this.history.turns = []; }
-      }catch(e){ if(!(options && options.silent)) this.msg=e.message||'加载历史失败'; }
-    },
-    async toggleRecordHistory(){
+    // ── 实时对话 ──
+    async loadConvoRecent(){
       if(!this.requireDevice()) return;
-      const on = !this.history.recordOn;
       try{
-        await this.api(this.proxyPath('/api/debug_prefs', {record_history: on ? 1 : 0}));
-        this.history.recordOn = on;
-        this.msg = on ? '调试记录已开启：新一轮对话开始写入 device_turn' : '调试记录已关闭';
-      }catch(e){ this.msg=e.message||'切换失败'; }
+        const d=await this.api(this.proxyPath('/api/pipeline_recent', {limit:100}));
+        for(const it of (d.items||[])){
+          if(!it || !it.request_id) continue;
+          if('stage' in it) this.applyStage(it);
+          else if('e2e_ms' in it) this.applyPipeEvent(it);
+        }
+      }catch(e){ this.msg=e.message||'加载实时对话失败'; }
     },
-    async selectSession(s, options){
-      this.history.currentSession = s.session_id;
+    closePipeline(){
+      if(this.pipeline.retryTimer){ clearTimeout(this.pipeline.retryTimer); this.pipeline.retryTimer=null; }
+      if(this.pipeline.ws){ try{ this.pipeline.ws.onclose=null; this.pipeline.ws.close(); }catch(_e){} this.pipeline.ws=null; }
+      this.pipeline.status='closed';
+    },
+    ensurePipelineWs(){
+      if(!this.requireDevice()) return;
+      if(this._pipelineClosed) return;
+      if(this.pipeline.ws && (this.pipeline.ws.readyState===0 || this.pipeline.ws.readyState===1)) return;
       try{
-        const d = await this.api(this.proxyPath('/api/device_turns', {session_id: s.session_id}));
-        this.history.turns = d.turns || [];
-        this.$nextTick(()=>{ const el=this.$refs.histChat; if(el) el.scrollTop=el.scrollHeight; });
-      }catch(e){ if(!(options && options.silent)) this.msg=e.message||'加载轮次失败'; }
+        const url=new URL(this.devicePipelineWsBase);
+        // 必须带 role=subscriber：不带会被服务端当作生产者抢占设备连接槽位，
+        // 把设备的真实 asr_chat 连接踢掉，导致两连接互相踢的反复重连
+        url.searchParams.set('role', 'subscriber');
+        url.searchParams.set('device_id', this.currentDeviceId);
+        this.pipeline.status='connecting';
+        const ws=new WebSocket(url.toString());
+        this.pipeline.ws=ws;
+        ws.onopen=()=>{ this.pipeline.retry=0; this.pipeline.status='connected'; };
+        ws.onclose=()=>{
+          this.pipeline.ws=null; this.pipeline.status='closed';
+          if(!this._pipelineClosed){
+            const delay=Math.min(30000, 1000*Math.pow(2, this.pipeline.retry));
+            this.pipeline.retry+=1;
+            this.pipeline.retryTimer=setTimeout(()=>this.ensurePipelineWs(), delay);
+          }
+        };
+        ws.onerror=()=>{ /* 由 onclose 统一触发退避重连 */ };
+        ws.onmessage=(ev)=>{ this.onPipelineFrame(ev); };
+      }catch(_e){ this.pipeline.status='error'; }
     },
-    mediaUrl(t, side){ return this.proxyPath('/api/device_turns/media', {turn_id: t.id, side: side}); },
-    frLabel(faces){ return (faces||[]).map(f=>f.person_name || ('ID '+f.face_id)).join(', '); },
-    zoomFr(t){ window.open(this.mediaUrl(t, 'fr'), '_blank'); },
+    onPipelineFrame(ev){
+      let frame=null;
+      try{ frame=JSON.parse(ev.data); }catch(_e){ frame=null; }
+      if(frame && frame.type==='pipeline_snapshot'){ this.onPipelineSnapshot(frame.items||[]); }
+      else if(frame && frame.type==='pipeline_stage' && frame.event){ this.applyStage(frame.event); }
+      else if(frame && frame.type==='pipeline_event' && frame.event){ this.applyPipeEvent(frame.event); }
+      if(frame){ this.pipeline.events.unshift(frame); }
+      else { this.pipeline.events.unshift({raw:String(ev.data)}); }
+      this.pipeline.events=this.pipeline.events.slice(0,120);
+    },
+    applyStage(evt){
+      const rid=evt.request_id;
+      if(!rid || evt.device_id!==this.currentDeviceId) return;
+      // 工具轮过渡 / 错误兜底的辅助 stage（无完成事件对应）显式忽略
+      if(/_interim_|_llm_err/.test(String(rid))) return;
+      const row=this.convo.rows[rid] || {request_id:rid, ts:(evt.ts||Date.now()/1000)};
+      row.stage=evt.stage;
+      if(evt.received_ts) row.received_ts=evt.received_ts;
+      if(evt.voice_auto_reply_off){ row.final=true; row.note='自动应答已关闭'; }
+      if(evt.asr_text!==undefined) row.asr_text=evt.asr_text;
+      if(evt.asr_ms!==undefined) row.asr_ms=evt.asr_ms;
+      if(evt.llm_text!==undefined) row.llm_text=evt.llm_text;
+      if(evt.llm_ms!==undefined) row.llm_ms=evt.llm_ms;
+      if(evt.tts_text!==undefined) row.tts_text=evt.tts_text;
+      if(evt.source!==undefined) row.source=evt.source;
+      this.convo.rows[rid]=row;
+    },
+    applyPipeEvent(evt){
+      const rid=evt.request_id;
+      if(!rid || evt.device_id!==this.currentDeviceId) return;
+      if('stage' in evt){ this.applyStage(evt); return; } // pub 冗余帧，幂等
+      if('e2e_ms' in evt){ // 轮次完成：合并进现有行，气泡保留在实时对话中（不再落库/重拉）
+        const row=this.convo.rows[rid] || {request_id:rid, ts:(evt.received_ts||Date.now()/1000)};
+        row.final=true;
+        row.e2e_ms=evt.e2e_ms;
+        row.status=evt.status||'ok';
+        if(evt.error!==undefined) row.error=evt.error;
+        if(evt.tools!==undefined) row.tools=evt.tools;
+        if(evt.asr_text!==undefined) row.asr_text=evt.asr_text;
+        if(evt.asr_ms!==undefined) row.asr_ms=evt.asr_ms;
+        if(evt.llm_text!==undefined) row.llm_text=evt.llm_text;
+        if(evt.llm_ms!==undefined) row.llm_ms=evt.llm_ms;
+        if(evt.tts_text!==undefined) row.tts_text=evt.tts_text;
+        if(evt.tts_ms!==undefined) row.tts_ms=evt.tts_ms;
+        if(evt.source!==undefined) row.source=evt.source;
+        if(evt.received_ts) row.received_ts=evt.received_ts;
+        if(evt.voice_auto_reply_off) row.note='自动应答已关闭';
+        this.convo.rows[rid]=row;
+      }
+    },
+    onPipelineSnapshot(items){
+      for(const it of (items||[])){
+        if(!it || !it.request_id || it.device_id!==this.currentDeviceId) continue;
+        if('stage' in it) this.applyStage(it);
+        else if('e2e_ms' in it) this.applyPipeEvent(it);
+      }
+      // 只清理长时间未完成的进行中行；已完成气泡保留整个会话（内存）
+      const now=Date.now()/1000;
+      for(const rid of Object.keys(this.convo.rows)){
+        const row=this.convo.rows[rid];
+        if(!row.final && now-(row.ts||now)>300) delete this.convo.rows[rid];
+      }
+    },
+    toolName(t){ return (t && (t.tool || t.name)) || '工具'; },
+    sourceLabel(s){ return ({asr:'语音', text:'文本', device_tts:'设备 TTS', scheduled_task:'定时任务'})[s] || s || ''; },
     fmtMs(v){ if(v===null || v===undefined) return '-'; v=Number(v); if(v>=1000) return (v/1000).toFixed(3)+'s'; return v+'ms'; },
-    fmtAudio(v){ if(v===null || v===undefined) return '-'; return (Number(v)/1000).toFixed(3)+'s'; },
     tsText(ts){ if(!ts) return ''; const d=new Date(ts*1000); const p=n=>String(n).padStart(2,'0'); return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); },
     normalizeServoConfig(cfg){
       const c = cfg || {};
@@ -956,16 +994,8 @@ createApp({
     async toggleAsrAuto(){ const v=this.toggles.asr_auto_reply?0:1; const d=await this.api(this.proxyPath('/api/asr_auto_reply',{enabled:v})); this.toggles.asr_auto_reply=!!d.enabled; },
     async openPipeline(){
       if(!this.requireDevice()) return;
-      if(this.pipeline.ws){ try{ this.pipeline.ws.close(); }catch(_e){} }
-      const url=new URL(this.devicePipelineWsBase);
-      url.searchParams.set('device_id', this.currentDeviceId);
-      this.pipeline.status='connecting';
-      const ws=new WebSocket(url.toString());
-      ws.onopen=()=>{ this.pipeline.status='connected'; };
-      ws.onclose=()=>{ this.pipeline.status='closed'; };
-      ws.onerror=()=>{ this.pipeline.status='error'; };
-      ws.onmessage=(ev)=>{ try{ this.pipeline.events.unshift(JSON.parse(ev.data)); }catch(_e){ this.pipeline.events.unshift({raw:String(ev.data)}); } this.pipeline.events=this.pipeline.events.slice(0,120); };
-      this.pipeline.ws=ws;
+      this.ensurePipelineWs();
+      await this.loadPipelineRecent();
     },
     async loadPipelineRecent(){
       if(!this.requireDevice()) return;
@@ -976,11 +1006,13 @@ createApp({
   },
   async mounted(){
     await this.loadAll();
-    this.$nextTick(()=>{ void this.robotInit3d(); });
+    this.$nextTick(()=>{ this.ensurePipelineWs(); void this.robotInit3d(); });
   },
   beforeUnmount(){
+    this._pipelineClosed=true;
     this.closeCamera();
-    if(this.pipeline.ws) this.pipeline.ws.close();
+    this.closePipeline();
+    if(this._reloadTimer) clearTimeout(this._reloadTimer);
     this._robotDispose3d();
   },
 }).mount('#labApp');

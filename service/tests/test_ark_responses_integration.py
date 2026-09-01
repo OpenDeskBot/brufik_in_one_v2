@@ -88,8 +88,8 @@ def test_live_ark_responses_stream_tts_prefetch():
 
 def test_api_add_select_test_ark_model(device_env, monkeypatch):
     from tests.device_bind_helpers import bind_device_online
-    from deskbot_server.auth.service import create_user
-    from deskbot_server.dao.llm_config_store import get_active_llm_model
+    from tests._auth_compat import create_user
+    from deskbot_server.dao.llm_config_store import add_llm_model, get_active_llm_model, set_active_llm_model
     from deskbot_server.infrastructure.llm.runtime import resolve_llm_config
     from deskbot_server.web.app import create_app
 
@@ -101,35 +101,16 @@ def test_api_add_select_test_ark_model(device_env, monkeypatch):
     client = app.test_client()
     client.post("/login", data={"email": "ark-e2e@example.com", "password": "password1234"})
 
-    create = client.post(
-        f"/app/api/llm-models?device_id={device_id}",
-        json={
-            "name": "DeepSeek v4 Flash",
-            "model_name": os.environ["ARK_MODEL"].strip(),
-            "protocol": "ark_responses",
-            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-            "api_key": os.environ["ARK_API_KEY"].strip(),
-        },
+    model = add_llm_model(
+        device_id,
+        name="DeepSeek v4 Flash",
+        model_name=os.environ["ARK_MODEL"].strip(),
+        protocol="ark_responses",
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+        api_key=os.environ["ARK_API_KEY"].strip(),
     )
-    assert create.status_code == 200, create.get_data(as_text=True)
-    model_id = create.get_json()["model"]["id"]
-
-    listed = client.get(f"/app/api/llm-models?device_id={device_id}")
-    payload = listed.get_json()
-    assert payload["ok"] is True
-    assert "ark_responses" in payload["supported_protocols"]
-
-    tested = client.post(
-        f"/app/api/llm-models/test?device_id={device_id}",
-        json={"model_id": model_id, "prompt": "你好，请用一句话介绍你自己。"},
-    )
-    assert tested.status_code == 200, tested.get_data(as_text=True)
-    test_payload = tested.get_json()
-    assert test_payload["ok"] is True
-    assert len(test_payload["reply"]) > 0
-
-    selected = client.post(f"/app/api/llm-models/select?device_id={device_id}", json={"model_id": model_id})
-    assert selected.status_code == 200
+    model_id = model["id"]
+    set_active_llm_model(device_id, model_id)
 
     active = get_active_llm_model(device_id)
     assert active is not None
@@ -138,6 +119,16 @@ def test_api_add_select_test_ark_model(device_env, monkeypatch):
     resolved = resolve_llm_config(device_id)
     assert resolved.protocol == "ark_responses"
     assert resolved.model == os.environ["ARK_MODEL"].strip()
+
+    # HTTP 侧用 /api/llm/chat（设备级覆盖解析同源）验证端到端对话
+    tested = client.post(
+        "/api/llm/chat",
+        json={"device_id": device_id, "text": "你好，请用一句话介绍你自己。"},
+    )
+    assert tested.status_code == 200, tested.get_data(as_text=True)
+    test_payload = tested.get_json()
+    assert test_payload["ok"] is True
+    assert len(test_payload.get("reply") or "") > 0
 
 
 def test_openai_adapter_with_ark_device(device_env, monkeypatch):

@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>小歪 · 专属于你的桌面机器人 — BRUFIK CONSOLE</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='theme_2c.css') }}?v=landing" />
+  <style>
+    /* ===== 落地页：继承 neo-brutalist retro console 设计语言 ===== */
+    body{background:var(--bg);color:var(--ink);
+      background-image:linear-gradient(rgba(0,0,0,.05) 1px,transparent 1px),
+                       linear-gradient(90deg,rgba(0,0,0,.05) 1px,transparent 1px);
+      background-size:32px 32px;background-position:-1px -1px}
+    .land{min-height:100vh;display:flex;flex-direction:column}
+    .wrap{width:100%;max-width:1180px;margin-inline:auto;padding-inline:24px}
+
+    /* ===== 顶栏 ===== */
+    .top{position:sticky;top:0;z-index:60;background:var(--panel);
+      border-bottom:var(--bw) solid var(--line)}
+    .top-in{height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+    .brand{display:flex;align-items:center;gap:10px}
+    .brand .mark{width:34px;height:34px;background:var(--accent);border:var(--bw) solid var(--line);
+      border-radius:var(--rs);display:flex;align-items:center;justify-content:center;color:var(--accent-ink);
+      font-weight:700;font-size:16px;box-shadow:var(--shadow-sm)}
+    .brand .name{font-family:var(--mono);font-size:14px;letter-spacing:.12em;font-weight:700}
+    .brand .sub{font-family:var(--mono);font-size:14px;letter-spacing:.12em;color:var(--faint)}
+    .top-nav{display:flex;align-items:center;gap:22px}
+    .top-nav a{font-family:var(--mono);font-size:12px;letter-spacing:.08em;font-weight:700;
+      color:var(--dim);text-decoration:none;border-bottom:1.5px solid transparent;padding-bottom:2px}
+    .top-nav a:hover{color:var(--ink);border-bottom-color:var(--accent)}
+    .top-actions{display:flex;align-items:center;gap:10px}
+    .btn{border:var(--bw) solid var(--line);border-radius:var(--rs);padding:9px 18px;
+      font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.06em;text-decoration:none;
+      cursor:pointer;display:inline-flex;align-items:center;gap:8px;box-shadow:var(--shadow-sm);
+      transition:transform .06s,box-shadow .06s}
+    .btn:hover{transform:translate(-1px,-1px);box-shadow:3px 3px 0 var(--line)}
+    .btn:active{transform:translate(1px,1px);box-shadow:none}
+    .btn.primary{background:var(--accent);color:var(--accent-ink)}
+    .btn.ghost{background:var(--panel);color:var(--ink)}
+    .btn.ghost:hover{background:var(--panel2)}
+    .btn.soft{background:var(--accent-soft);color:var(--ink)}
+
+    /* ===== Hero ===== */
+    .hero{display:grid;grid-template-columns:1.15fr .85fr;gap:48px;align-items:center;
+      padding:76px 0 64px}
+    .eyebrow{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);
+      font-size:11px;letter-spacing:.18em;font-weight:700;color:var(--dim);
+      border:var(--bw) solid var(--line);background:var(--panel);padding:6px 12px;border-radius:var(--rs);
+      box-shadow:var(--shadow-sm)}
+    .eyebrow .led{width:8px;height:8px;border-radius:50%;background:var(--accent);border:1.5px solid var(--line);
+      animation:ledpulse 2.4s ease-in-out infinite}
+    .hero h1{font-size:clamp(40px,6vw,64px);line-height:1.04;letter-spacing:-.03em;margin:22px 0 18px;font-weight:700}
+    .hero h1 .hl{color:var(--accent);position:relative;white-space:nowrap}
+    .hero h1 .hl::after{content:"";position:absolute;left:0;right:0;bottom:4px;height:12px;
+      background:var(--accent);opacity:.18;z-index:-1}
+    .hero p{font-size:17px;line-height:1.75;color:var(--dim);margin:0 0 30px;max-width:540px}
+    .hero-cta{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    .hero-cta .btn{font-size:13px;padding:12px 22px}
+    .hero-meta{margin-top:26px;display:flex;gap:18px;flex-wrap:wrap;
+      font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--faint)}
+    .hero-meta span{display:inline-flex;align-items:center;gap:7px}
+    .hero-meta .tick{color:var(--accent);font-weight:700}
+
+    /* ===== 机器人形象：复用「家」页面的表情（同一数据 + 同一渲染器） ===== */
+    .stage{position:relative;display:flex;align-items:center;justify-content:center;padding:30px 0}
+    .stage .halo{position:absolute;width:340px;height:340px;border:var(--bw) solid var(--line);
+      border-radius:50%;background:radial-gradient(circle,rgba(255,103,0,.14) 0%,transparent 65%)}
+    .face-card{position:relative;z-index:1;width:300px;height:210px;border-radius:var(--r);
+      background:#0c0d10;border:2px solid #34353b;overflow:hidden;box-shadow:6px 6px 0 var(--line);
+      display:flex;align-items:center;justify-content:center;animation:floaty 5s ease-in-out infinite}
+    .face-card .scanline{position:absolute;left:0;right:0;height:34%;z-index:1;
+      background:linear-gradient(transparent,rgba(255,255,255,.06),transparent);animation:scan 4s linear infinite}
+    .face-card svg{position:relative;z-index:2;width:100%;height:100%}
+    @keyframes floaty{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+    .sticker{position:absolute;z-index:2;font-family:var(--mono);font-size:11px;font-weight:700;
+      letter-spacing:.06em;background:var(--panel);border:var(--bw) solid var(--line);
+      padding:7px 12px;border-radius:var(--rs);box-shadow:var(--shadow-sm);animation:floaty 6s ease-in-out infinite}
+    .sticker.s1{top:6%;left:6%;transform:rotate(-4deg)}
+    .sticker.s2{top:24%;right:2%;transform:rotate(3deg);background:var(--accent);color:var(--accent-ink);
+      animation-delay:.8s}
+    .sticker.s3{bottom:10%;left:2%;transform:rotate(-2deg);animation-delay:1.6s}
+    .sticker.s4{bottom:2%;right:8%;transform:rotate(4deg);animation-delay:2.4s}
+
+    /* ===== 区块通用 ===== */
+    section{padding:64px 0;border-top:var(--bw) solid var(--line)}
+    .sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:34px}
+    .sec-no{font-family:var(--mono);font-size:13px;color:var(--accent);font-weight:700}
+    .sec-head h2{font-size:30px;letter-spacing:-.02em;margin:0;font-weight:700}
+    .sec-head .tag{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--faint)}
+
+    /* ===== 特性卡片 ===== */
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+    .card{background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);
+      box-shadow:var(--shadow);padding:22px;display:flex;flex-direction:column;gap:10px;
+      transition:transform .1s,box-shadow .1s}
+    .card:hover{transform:translate(-2px,-2px);box-shadow:4px 4px 0 var(--line)}
+    .card .ico{width:40px;height:40px;border:var(--bw) solid var(--line);border-radius:var(--rs);
+      display:flex;align-items:center;justify-content:center;background:var(--accent-soft);
+      font-size:18px;font-weight:700;box-shadow:var(--shadow-sm)}
+    .card .ico.alt{background:var(--panel2)}
+    .card h3{margin:0;font-size:17px;letter-spacing:-.01em}
+    .card p{margin:0;font-size:13.5px;line-height:1.7;color:var(--dim)}
+    .card .chip{margin-top:auto;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--faint)}
+
+    /* ===== 三步流程 ===== */
+    .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;counter-reset:step}
+    .step{background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);
+      box-shadow:var(--shadow);padding:24px;position:relative}
+    .step::before{counter-increment:step;content:"0" counter(step);
+      font-family:var(--mono);font-size:30px;font-weight:700;color:var(--accent);display:block;margin-bottom:10px}
+    .step h3{margin:0 0 8px;font-size:17px}
+    .step p{margin:0;font-size:13.5px;line-height:1.7;color:var(--dim)}
+
+    /* ===== 终端窗 ===== */
+    .term{background:var(--ink);border:var(--bw) solid var(--line);border-radius:var(--r);
+      box-shadow:6px 6px 0 var(--line);color:#d8d8d2;font-family:var(--mono);font-size:13px;line-height:1.9;overflow:hidden}
+    .term .bar{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1.5px solid #2c2d33}
+    .term .dot{width:11px;height:11px;border-radius:50%;border:1.5px solid #16171b}
+    .term .dot.r{background:#ff5f57}.term .dot.y{background:#febc2e}.term .dot.g{background:#28c840}
+    .term .bar span{margin-left:8px;font-size:11px;letter-spacing:.1em;color:#8b8d94}
+    .term .body{padding:16px 18px}
+    .term .ok{color:#7ee787}
+    .term .hl{color:var(--accent)}
+    .term .dim{color:#6b6d75}
+    .term .cur{display:inline-block;width:8px;height:15px;background:var(--accent);vertical-align:-2px;
+      animation:ledpulse 1.1s step-start infinite}
+    .term .boot{animation:fade .4s both}
+
+    /* ===== CTA 横幅 ===== */
+    .cta-band{text-align:center;padding:72px 0 84px}
+    .cta-band h2{font-size:clamp(28px,4vw,42px);letter-spacing:-.02em;margin:0 0 12px}
+    .cta-band p{color:var(--dim);margin:0 0 28px;font-size:15px}
+    .cta-band .btn{font-size:14px;padding:13px 26px}
+
+    /* ===== 页脚 ===== */
+    .foot{border-top:var(--bw) solid var(--line);background:var(--panel);margin-top:auto}
+    .foot-in{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 0;
+      font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--faint)}
+    .foot-in b{color:var(--dim)}
+    .foot-in a{color:var(--dim);text-decoration:none;border-bottom:1.5px solid transparent;padding-bottom:1px}
+    .foot-in a:hover{color:var(--ink);border-bottom-color:var(--accent)}
+
+    @media (max-width:900px){
+      .top-nav{display:none}
+      .hero{grid-template-columns:1fr;padding:52px 0 36px;gap:34px}
+      .grid,.steps{grid-template-columns:1fr}
+      .sticker{display:none}
+      .stage{padding:16px 0 8px}
+      .foot-in{flex-direction:column;text-align:center;padding:18px 0}
+    }
+  </style>
+</head>
+<body>
+<div class="land">
+
+  <!-- 顶栏 -->
+  <header class="top">
+    <div class="wrap top-in">
+      <div class="brand">
+        <span class="mark">歪</span>
+        <span class="name">BRUFIK</span>
+        <span class="sub">CONSOLE</span>
+      </div>
+      <nav class="top-nav">
+        <a href="#features">特性</a>
+        <a href="#how">如何开始</a>
+        <a href="#term">状态窗</a>
+      </nav>
+      <div class="top-actions">
+        {% if signed_in %}
+          <a class="btn primary" href="{{ url_for('app2c.home') }}">进入控制台 →</a>
+        {% else %}
+          <a class="btn ghost" href="{{ url_for('auth.register') }}">注册</a>
+          <a class="btn primary" href="{{ url_for('auth.login', next='/home') }}">登录 →</a>
+        {% endif %}
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero -->
+  <section class="hero wrap" style="border:none">
+    <div>
+      <span class="eyebrow"><span class="led"></span>OPEN DESKBOT · 桌面陪伴机器人</span>
+      <h1>小歪，<span class="hl">专属于你</span>的<br>桌面小伙伴</h1>
+      <p>会说话、有表情、懂情绪的桌面机器人。接入大模型大脑，用语音、表情与动作陪你度过每一段工作时光——被叫到会抬头，被夸会害羞，困了会打瞌睡。</p>
+      <div class="hero-cta">
+        {% if signed_in %}
+          <a class="btn primary" href="{{ url_for('app2c.home') }}">进入控制台 →</a>
+          <a class="btn ghost" href="#features">看看它能做什么 ↓</a>
+        {% else %}
+          <a class="btn primary" href="{{ url_for('auth.login', next='/home') }}">登录控制台 →</a>
+          <a class="btn ghost" href="{{ url_for('auth.register') }}">免费注册</a>
+        {% endif %}
+      </div>
+      <div class="hero-meta">
+        <span><i class="tick">✓</i> 本地语音识别</span>
+        <span><i class="tick">✓</i> 大模型驱动对话</span>
+        <span><i class="tick">✓</i> 表情 · 动作 · 记忆</span>
+      </div>
+    </div>
+    <div class="stage">
+      <div class="halo"></div>
+      <span class="sticker s1">端侧 ASR</span>
+      <span class="sticker s2">LLM 大脑</span>
+      <span class="sticker s3">情绪引擎</span>
+      <span class="sticker s4">长期记忆</span>
+      <div class="face-card">
+        <div class="scanline"></div>
+        <svg id="heroFace" viewBox="0 0 284 240" aria-hidden="true"></svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- 特性 -->
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="sec-no">01</span>
+        <h2>不只是个摆件</h2>
+        <span class="tag">FEATURES</span>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <div class="ico">◉</div>
+          <h3>开口即聊的语音</h3>
+          <p>端侧语音识别，说话不用唤醒词。识别、理解、合成一条流水线，低延迟陪你聊天。</p>
+          <span class="chip">ASR · SPEECH</span>
+        </div>
+        <div class="card">
+          <div class="ico alt">🧠</div>
+          <h3>大模型大脑</h3>
+          <p>由本地大模型驱动的对话与情绪判断，支持 Qwen / MiniCPM 等本地部署模型，随时热切换。</p>
+          <span class="chip">LLM · LOCAL</span>
+        </div>
+        <div class="card">
+          <div class="ico">◑</div>
+          <h3>表情与动作</h3>
+          <p>屏幕上的眼睛与表情动画，配合头部动作表达情绪——开心眨眼、生气炸毛、困了打瞌睡。</p>
+          <span class="chip">ANIMS · MOVES</span>
+        </div>
+        <div class="card">
+          <div class="ico alt">◔</div>
+          <h3>认识主人</h3>
+          <p>摄像头人脸识别，能认出谁在桌前，转头注视你、主动打招呼，被叫到名字会立刻抬头。</p>
+          <span class="chip">FACE TRACK</span>
+        </div>
+        <div class="card">
+          <div class="ico">◷</div>
+          <h3>记得住的事</h3>
+          <p>长期记忆让对话有连续性——记住你的名字、偏好与说过的事，越聊越懂你。</p>
+          <span class="chip">MEMORY</span>
+        </div>
+        <div class="card">
+          <div class="ico alt">◼</div>
+          <h3>定时主动提醒</h3>
+          <p>久坐提醒喝水、到点喊你吃饭，时间一到主动开口。不在身边时也不忘提醒你。</p>
+          <span class="chip">SCHEDULE</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 如何开始 -->
+  <section id="how">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="sec-no">02</span>
+        <h2>三步，把小歪带回家</h2>
+        <span class="tag">GETTING STARTED</span>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <h3>连接设备</h3>
+          <p>将小歪接入网络并绑定到你的控制台，在线状态一目了然。</p>
+        </div>
+        <div class="step">
+          <h3>配置能力</h3>
+          <p>在机器人设置里一键切换语音、大模型与音色，按你的喜好调教。</p>
+        </div>
+        <div class="step">
+          <h3>开始陪伴</h3>
+          <p>开口说话即可。小歪会用表情、动作和声音回应，成为你桌上的小伙伴。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 终端状态窗 -->
+  <section id="term">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="sec-no">03</span>
+        <h2>开箱即运行</h2>
+        <span class="tag">SYSTEM STATUS</span>
+      </div>
+      <div class="term">
+        <div class="bar">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span>deskbot — boot</span>
+        </div>
+        <div class="body">
+          <div class="boot">$ <span class="hl">./start.sh</span></div>
+          <div class="boot"><span class="dim">[setup] venv 依赖已就绪，跳过 pip 安装</span></div>
+          <div class="boot">[<span class="ok">ok</span>] asr&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ready&nbsp;&nbsp;&nbsp;127.0.0.1:9102</div>
+          <div class="boot">[<span class="ok">ok</span>] llm&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ready&nbsp;&nbsp;&nbsp;qwen3.8-2b · 9106</div>
+          <div class="boot">[<span class="ok">ok</span>] tts&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ready&nbsp;&nbsp;&nbsp;moss-tts-nano</div>
+          <div class="boot">[<span class="ok">ok</span>] camera&nbsp;&nbsp;&nbsp;&nbsp;ready&nbsp;&nbsp;&nbsp;face tracking</div>
+          <div class="boot">[<span class="ok">ok</span>] web&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ready&nbsp;&nbsp;&nbsp;0.0.0.0:9000</div>
+          <div class="boot"><span class="hl">小歪上线</span> <span class="dim">—— "主人，我在呢！"</span><span class="cur"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <div class="cta-band wrap">
+    <h2>让桌上多一个会回应你的小伙伴</h2>
+    <p>登录 BRUFIK 控制台，绑定你的小歪，开始配置它的性格与能力。</p>
+    {% if signed_in %}
+      <a class="btn primary" href="{{ url_for('app2c.home') }}">进入控制台 →</a>
+    {% else %}
+      <a class="btn primary" href="{{ url_for('auth.login', next='/home') }}">登录控制台 →</a>
+    {% endif %}
+  </div>
+
+  <!-- 页脚 -->
+  <footer class="foot">
+    <div class="wrap foot-in">
+      <span><b>小歪</b> · 专属于你的桌面机器人</span>
+      <span>由 OpenDeskBot 团队在中国打造</span>
+      <a href="{{ url_for('app2c.home') }}">进入控制台 ↗</a>
+    </div>
+  </footer>
+
+</div>
+<script src="{{ url_for('static', filename='face_preview_2c.js') }}"></script>
+<script>
+  // 与「家」页面同一渲染器 + 同一 idle 表情场景数据（site.py 注入），逐帧播放眨眼
+  (function () {
+    const preview = window.DeskbotFacePreview;
+    if (!preview) return;
+    const scenes = {{ (face_scenes or [])|tojson }};
+    const scene = preview.pickScene(scenes, {}, 'idle');
+    const svg = document.getElementById('heroFace');
+    let idx = 0;
+    const render = function () { if (svg) svg.innerHTML = preview.sceneToSvg(scene, idx); };
+    render();
+    setInterval(function () {
+      idx = (idx + 1) % preview.frameCount(scene);
+      render();
+    }, preview.frameMs(scene, idx));
+  })();
+</script>
+</body>
+</html>

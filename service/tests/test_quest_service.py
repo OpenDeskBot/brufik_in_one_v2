@@ -37,6 +37,18 @@ def _svc():
     return QuestService()
 
 
+def _bind_device(device_id: str, quest_id: str | None = "demo") -> None:
+    """造 devices 行并绑定剧本（复用 register + mapper 直插，不依赖设备在线）。"""
+    from deskbot_server.dao.device_mapper import insert as insert_device, update_quest_id
+    from deskbot_server.db.models import _new_id
+    from deskbot_server.service.user_service import UserService
+
+    user = UserService().register(f"quest-{device_id}@example.com", "password1234")
+    insert_device(_new_id(), device_id, user.id, device_id)
+    if quest_id:
+        update_quest_id(device_id, quest_id)
+
+
 def _demo_playbook(name: str = "demo") -> dict:
     """三段剧本：起点问候 →(成功 10 分)→ 了解姓名 →(失败 6 分)→ 换角度。"""
     return {
@@ -332,6 +344,7 @@ def test_set_state_direct_switch(env):
 def test_get_current_tasks_and_tool_calls(env):
     svc = _svc()
     svc.save_playbook("demo", _demo_playbook())
+    _bind_device("dev1", "demo")
     svc.ensure_instances("dev1", "demo")
     # 起点任务 running，其余 not_started
     cur = svc.get_current_tasks("dev1")
@@ -355,6 +368,79 @@ def test_get_current_tasks_and_tool_calls(env):
     # 无实例设备返回空
     assert svc.get_current_tasks("nobody") == []
     assert svc.get_tool_calls("nobody")[0]["available_task_ids"] == []
+
+
+def test_get_current_tasks_unbound(env):
+    svc = _svc()
+    svc.save_playbook("demo", _demo_playbook())
+    # 设备行存在但未绑定 → 空
+    _bind_device("dev1", None)
+    assert svc.get_current_tasks("dev1") == []
+    assert svc.get_tool_calls("dev1")[0]["available_task_ids"] == []
+    # 设备行不存在 → 空
+    assert svc.get_current_tasks("nobody") == []
+
+
+def test_get_current_tasks_missing_playbook(env):
+    svc = _svc()
+    _bind_device("dev1", "ghost")
+    # 绑定不存在的剧本 → 空且不抛
+    assert svc.get_current_tasks("dev1") == []
+    assert svc.get_tool_calls("dev1")[0]["available_task_ids"] == []
+
+
+def test_get_current_tasks_auto_init_and_isolation(env):
+    svc = _svc()
+    svc.save_playbook("demo", _demo_playbook())
+    _bind_device("dev1", "demo")
+    # 无实例 → 自动初始化：起点任务直接 running
+    cur = svc.get_current_tasks("dev1")
+    assert [t["task_id"] for t in cur] == ["g_greet"]
+    assert cur[0]["playbook"] == "demo"
+    assert len(svc.get_instances("dev1", "demo")) == 3  # 自动 ensure 全量实例
+    # 幂等：再来一次不重复创建
+    svc.get_current_tasks("dev1")
+    assert len(svc.get_instances("dev1", "demo")) == 3
+    # 多剧本隔离：dev2 绑 other，互不串
+    svc.save_playbook("other", _demo_playbook("other"))
+    _bind_device("dev2", "other")
+    assert [t["task_id"] for t in svc.get_current_tasks("dev2")] == ["g_greet"]
+    assert [t["task_id"] for t in svc.get_current_tasks("dev1")] == ["g_greet"]
+    assert svc.get_tool_calls("dev1")[0]["available_task_ids"] == ["g_greet"]
+
+
+def test_quest_bind_api(env):
+    from deskbot_server.dao.device_mapper import get_by_device_id
+    from deskbot_server.service.user_service import UserService
+    from deskbot_server.web.app import create_app
+    from tests.device_bind_helpers import bind_device_online
+
+    svc = _svc()
+    svc.create_playbook("demo")
+    user = UserService().register("bind@example.com", "password1234")
+    bind_device_online(user.id, "dev-bind", display_name="dev-bind")
+    app = create_app()
+    client = app.test_client()
+    client.post("/login", data={"email": "bind@example.com", "password": "password1234"})
+
+    # 绑定剧本
+    r = client.put("/app/api/devices/dev-bind/quest", json={"quest_id": "demo"})
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    assert r.get_json()["quest_id"] == "demo"
+    assert get_by_device_id("dev-bind").quest_id == "demo"
+    # 非法剧本名 → 400
+    r = client.put("/app/api/devices/dev-bind/quest", json={"quest_id": "Bad Name"})
+    assert r.status_code == 400 and r.get_json()["ok"] is False
+    # 不存在的剧本 → 404
+    r = client.put("/app/api/devices/dev-bind/quest", json={"quest_id": "ghost"})
+    assert r.status_code == 404 and r.get_json()["ok"] is False
+    # 空串 = 解绑
+    r = client.put("/app/api/devices/dev-bind/quest", json={"quest_id": ""})
+    assert r.status_code == 200 and r.get_json()["quest_id"] is None
+    assert get_by_device_id("dev-bind").quest_id is None
+    # 不属于当前账号的设备 → 403
+    r = client.put("/app/api/devices/nonexistent/quest", json={"quest_id": "demo"})
+    assert r.status_code == 403 and r.get_json()["ok"] is False
 
 
 def test_contribute_to_terminal_rejected(env):

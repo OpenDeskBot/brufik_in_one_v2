@@ -62,9 +62,9 @@ class ChatService:
             on_system_prompt=on_system_prompt,
         )
 
-    async def tts_phoneme_segments(self, text: str) -> tuple[int, list[dict]]:
+    async def tts_phoneme_segments(self, text: str, *, device_id: str | None = None) -> tuple[int, list[dict]]:
         try:
-            return await TtsService().synthesize_phoneme_segments(text)
+            return await TtsService().synthesize_phoneme_segments(text, device_id=device_id)
         except RuntimeError:
             sr, segs = await self._tts.synthesize_phoneme_segments(text)
             return sr, [TtsService._seg_to_dict(s) for s in segs]

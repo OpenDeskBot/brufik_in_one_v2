@@ -16,6 +16,7 @@ from deskbot_server.service.robot_capability import (
     ASR_CANDIDATES,
     LLM_CANDIDATES,
     MINICPM_LLM_BASE_URL,
+    QWEN_LLM_BASE_URL,
     TTS_CANDIDATES,
     CapabilityError,
     RobotCapabilityService,
@@ -31,7 +32,7 @@ MINIMAL_CONFIG = {
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "model_name": "ep-test",
     },
-    "tts": {"provider": "doubao", "sample_rate": 24000},
+    "tts": {"sample_rate": 24000},
 }
 
 
@@ -104,14 +105,17 @@ def bound_asr():
 
 def test_capability_catalogs_structure():
     assert [c.id for c in ASR_CANDIDATES] == ["funasr", "doubao"]
-    assert [c.id for c in LLM_CANDIDATES] == ["ark", "minicpm"]
+    # 本地模型在前，火山方舟 Ark 置底
+    assert [c.id for c in LLM_CANDIDATES] == ["minicpm", "qwen", "ark"]
     assert [c.id for c in TTS_CANDIDATES] == ["moss-tts-nano", "doubao"]
 
-    ark = LLM_CANDIDATES[0]
-    minicpm = LLM_CANDIDATES[1]
+    minicpm = LLM_CANDIDATES[0]
+    qwen = LLM_CANDIDATES[1]
+    ark = LLM_CANDIDATES[2]
     assert ark.experimental is False
     assert minicpm.experimental is True
     assert minicpm.requires_service == "llm-minicpm"
+    assert qwen.requires_service == "llm-qwen"
     assert ASR_CANDIDATES[0].requires_service == "funasr"
     assert TTS_CANDIDATES[0].requires_service == "moss-tts-nano"
     for cap in (*ASR_CANDIDATES, *LLM_CANDIDATES, *TTS_CANDIDATES):
@@ -212,6 +216,28 @@ def test_apply_llm_minicpm_snapshots_ark(svc, clean_llm_env):
     assert status["capabilities"]["llm"]["current"] == "minicpm"
     assert status["capabilities"]["llm"]["effective"]["base_url"] == "http://127.0.0.1:9105/v1"
     # minicpm → ark 恢复快照
+    svc.apply_llm("ark")
+    llm = load_config(svc._config_path)["llm"]
+    assert llm["protocol"] == "ark_responses"
+    assert llm["model_name"] == "ep-test"
+
+
+def test_apply_llm_qwen_snapshots_ark(svc, clean_llm_env):
+    from deskbot_server.config import load_config
+
+    svc.apply_llm("qwen")
+
+    llm = load_config(svc._config_path)["llm"]
+    assert llm["protocol"] == "openai"
+    assert llm["base_url"] == "http://127.0.0.1:9106/v1"
+    assert llm["model_name"] == "qwen3.8-2b"
+    assert llm["ark_base_url"] == "https://ark.cn-beijing.volces.com/api/v3"  # 快照
+    assert llm["ark_model_name"] == "ep-test"
+
+    status = svc.get_status()
+    assert status["capabilities"]["llm"]["current"] == "qwen"
+    assert status["capabilities"]["llm"]["effective"]["base_url"] == "http://127.0.0.1:9106/v1"
+    # qwen → ark 恢复快照
     svc.apply_llm("ark")
     llm = load_config(svc._config_path)["llm"]
     assert llm["protocol"] == "ark_responses"
@@ -386,7 +412,7 @@ def test_api_robot_settings_endpoints(temp_db):
     assert payload["ok"] is True
     assert payload["capabilities"]["asr"]["current"] in ("funasr", "doubao")
     assert payload["capabilities"]["tts"]["current"] in ("moss-tts-nano", "doubao")
-    assert payload["capabilities"]["llm"]["current"] in ("ark", "minicpm", "device", "custom")
+    assert payload["capabilities"]["llm"]["current"] in ("ark", "minicpm", "qwen", "device", "custom")
 
     # 非法 provider → 400
     bad = client.post("/api/robot-settings/asr", json={"provider": "bogus"})
@@ -412,13 +438,17 @@ def test_robot_settings_page_renders(temp_db):
     resp = client.get("/robot-settings")
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "机器人设置" in html
+    assert "模型设置" in html
     assert "语音识别 ASR" in html
     assert "大脑 LLM" in html
     assert "语音合成 TTS" in html
     assert "/api/robot-settings" in html
-    assert "cap-opt-test" in html  # 候选行 TTS 测试按钮
-    assert "cap-voice" in html     # TTS 音色选择器
+    assert "cap-opt-test" in html  # 候选行配置按钮（ASR/LLM/TTS）
+    assert "openLlmCfg" in html    # LLM 配置对话框（字段 + 试聊）
+    assert "/api/robot-settings/llm/config-info" in html
+    assert "openTtsCfg" in html    # TTS 配置对话框（音色/凭证设置 + 试听）
+    assert "保存配置" in html
+    assert "/api/robot-settings/tts/config" in html
     assert "openAsrCfg" in html    # ASR 候选行配置按钮 + 对话框
     assert "/api/robot-settings/asr/config-info" in html
 
@@ -515,7 +545,6 @@ def fake_tts_engine():
 
 
 def test_tts_test_info(tmp_path, monkeypatch):
-    monkeypatch.delenv("TTS_PROVIDER", raising=False)
     monkeypatch.delenv("DOUBAO_TTS_SPEAKER", raising=False)
     p = tmp_path / "config.yaml"
     p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -525,7 +554,7 @@ def test_tts_test_info(tmp_path, monkeypatch):
     assert info["voices"], "moss-tts-nano 音色列表应从 demo.jsonl 枚举"
     assert info["voices"][0]["id"] == "demo-1"
     assert info["voices"][0]["name"]
-    assert info["demo_id"] == "demo-1"
+    assert info["demo_id"] == "demo-1"  # 设备无 tts_param → 默认 demo-1
     assert info["doubao_speaker"] == ""
     assert info["doubao_voices"], "豆包音色预设应从 data/doubao_tts_speakers.json 枚举"
     assert info["doubao_voices"][0]["id"]
@@ -534,22 +563,11 @@ def test_tts_test_info(tmp_path, monkeypatch):
 
 def test_tts_test_moss_synthesize(fake_tts_engine, tmp_path):
     p = tmp_path / "config.yaml"
-    p.write_text(
-        yaml.safe_dump(
-            {
-                "tts": {
-                    "provider": "moss-tts-nano",
-                    "sample_rate": 48000,
-                    "base_url": "http://127.0.0.1:9205",
-                }
-            },
-            allow_unicode=True,
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
+    p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
     svc = RobotCapabilityService(config_path=p)
-    result = asyncio.run(svc.tts_test("moss-tts-nano", "你好，测试", voice_id="demo-3"))
+    result = asyncio.run(
+        svc.tts_test("moss-tts-nano", "你好，测试", voice_id="demo-3", overrides={"base_url": "http://127.0.0.1:9205"})
+    )
     assert result["provider"] == "moss-tts-nano"
     assert result["sample_rate"] == 48000
     assert result["wav_base64"]
@@ -559,42 +577,151 @@ def test_tts_test_moss_synthesize(fake_tts_engine, tmp_path):
     assert fake_tts_engine.last_demo_id == "demo-3"
 
 
-def test_apply_tts_writes_provider_and_demo_id(tmp_path, monkeypatch):
-    monkeypatch.delenv("TTS_PROVIDER", raising=False)
-    p = tmp_path / "config.yaml"
-    p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    svc = RobotCapabilityService(config_path=p)
-    asyncio.run(svc.apply_tts("moss-tts-nano", voice_id="demo-3"))
-    cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
-    assert cfg["tts"]["provider"] == "moss-tts-nano"
-    assert cfg["tts"]["demo_id"] == "demo-3"
+def test_apply_tts_writes_device_table(svc, device, clean_llm_env):
+    """TTS 为设备级：apply_tts 写 device 表，动态解析即时生效（不落 config）。"""
+    from deskbot_server.dao.device_mapper import get_tts_provider
+    from deskbot_server.config import load_config
+
+    assert get_tts_provider("deskbot_asr") == "moss-tts-nano"  # 默认
+
+    svc.apply_tts("doubao", "deskbot_asr")
+
+    assert get_tts_provider("deskbot_asr") == "doubao"
+    assert "provider" not in load_config(svc._config_path).get("tts", {})  # config 无 provider
+
+    status = svc.get_status("deskbot_asr")
+    assert status["capabilities"]["tts"]["current"] == "doubao"
 
 
-def test_apply_tts_doubao_writes_speaker(tmp_path, monkeypatch):
-    monkeypatch.delenv("TTS_PROVIDER", raising=False)
-    p = tmp_path / "config.yaml"
-    p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    svc = RobotCapabilityService(config_path=p)
-    asyncio.run(svc.apply_tts("doubao", voice_id="zh_female_vv_uranus_bigtts"))
-    cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
-    assert cfg["tts"]["provider"] == "doubao"
-    assert cfg["tts"]["doubao_speaker"] == "zh_female_vv_uranus_bigtts"
+def test_apply_tts_requires_device(svc):
+    with pytest.raises(CapabilityError, match="未选择当前设备"):
+        svc.apply_tts("doubao", None)
 
 
-def test_apply_tts_doubao_keeps_demo_id(tmp_path, monkeypatch):
-    monkeypatch.delenv("TTS_PROVIDER", raising=False)
-    p = tmp_path / "config.yaml"
-    p.write_text(
-        yaml.safe_dump(
-            {"tts": {"provider": "moss-tts-nano", "demo_id": "demo-2"}}, allow_unicode=True, sort_keys=False
-        ),
-        encoding="utf-8",
+def test_apply_tts_unknown_provider_rejected(svc, device):
+    from deskbot_server.dao.device_mapper import get_tts_provider
+
+    with pytest.raises(CapabilityError, match="未知的 TTS 能力"):
+        svc.apply_tts("bogus", "deskbot_asr")
+    assert get_tts_provider("deskbot_asr") == "moss-tts-nano"
+
+
+def test_clear_device_tts_override_resets_to_moss(svc, device):
+    from deskbot_server.dao.device_mapper import get_tts_param, get_tts_provider
+
+    svc.apply_tts("doubao", "deskbot_asr")
+    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key"}})
+    assert get_tts_provider("deskbot_asr") == "doubao"
+    assert get_tts_param("deskbot_asr")["doubao"]["api_key"] == "dev-key"
+
+    svc.clear_device_tts_override("deskbot_asr")
+    assert get_tts_provider("deskbot_asr") == "moss-tts-nano"
+    assert get_tts_param("deskbot_asr") == {}  # tts_param 一并清空
+    assert svc.get_status("deskbot_asr")["capabilities"]["tts"]["current"] == "moss-tts-nano"
+
+
+def test_tts_status_default_when_no_device(svc, temp_db):
+    """匿名/未选择设备 → 默认 moss-tts-nano。"""
+    assert svc.get_status(None)["capabilities"]["tts"]["current"] == "moss-tts-nano"
+
+
+def test_save_device_tts_config_writes_device_not_env(svc, device, tmp_path, monkeypatch):
+    from deskbot_server.dao.device_mapper import get_tts_param
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+
+    svc.save_device_tts_config(
+        "deskbot_asr", {"doubao": {"api_key": "dev-key", "speaker": "zh_female_vv_uranus_bigtts", "sample_rate": "16000"}}
     )
-    svc = RobotCapabilityService(config_path=p)
-    asyncio.run(svc.apply_tts("doubao"))
-    cfg = yaml.safe_load(p.read_text(encoding="utf-8"))
-    assert cfg["tts"]["provider"] == "doubao"
-    assert cfg["tts"]["demo_id"] == "demo-2"  # 音色仅 moss 有意义，切豆包不动
+    params = get_tts_param("deskbot_asr")
+    assert params["doubao"]["api_key"] == "dev-key"
+    assert params["doubao"]["sample_rate"] == 16000  # 数值字段归一为 int
+    assert env_file.read_text(encoding="utf-8") == ""  # .env 不被写
+
+
+def test_save_device_tts_config_masked_api_key_keeps_existing(svc, device):
+    from deskbot_server.dao.device_mapper import get_tts_param
+
+    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key"}})
+    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev***key"}})  # 掩码占位
+    assert get_tts_param("deskbot_asr")["doubao"]["api_key"] == "dev-key"
+
+
+def test_save_device_tts_config_empty_fills_from_env(svc, device, tmp_path, monkeypatch):
+    from deskbot_server.dao.device_mapper import get_tts_param
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("DOUBAO_TTS_API_KEY=env-key\nDOUBAO_TTS_SPEAKER=env-speaker\n", encoding="utf-8")
+    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+
+    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key"}})
+    params = get_tts_param("deskbot_asr")
+    assert params["doubao"]["api_key"] == "dev-key"  # payload 优先
+    assert params["doubao"]["speaker"] == "env-speaker"  # 空字段回填 .env
+
+    # 再次保存（payload 全空）→ 设备已有值保留
+    svc.save_device_tts_config("deskbot_asr", {})
+    params = get_tts_param("deskbot_asr")
+    assert params["doubao"]["api_key"] == "dev-key"
+    assert params["doubao"]["speaker"] == "env-speaker"
+
+
+def test_save_device_tts_config_empty_clears(svc, device, tmp_path, monkeypatch):
+    from deskbot_server.dao.device_mapper import get_tts_param
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+
+    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key"}})
+    assert get_tts_param("deskbot_asr")
+
+    # 显式空字符串 / 全空 payload = 保留已有（回填链：payload > 设备 > env）
+    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": ""}})
+    assert get_tts_param("deskbot_asr")["doubao"]["api_key"] == "dev-key"
+    svc.save_device_tts_config("deskbot_asr", {})
+    assert get_tts_param("deskbot_asr")["doubao"]["api_key"] == "dev-key"
+
+
+def test_save_device_tts_config_no_device_raises(svc):
+    with pytest.raises(CapabilityError, match="未选择当前设备"):
+        svc.save_device_tts_config(None, {"doubao": {"api_key": "k"}})
+
+
+def test_tts_config_info_device_param_wins_and_masks(svc, device, tmp_path, monkeypatch):
+    from deskbot_server.infrastructure.tts.doubao import _mask_secret
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("DOUBAO_TTS_API_KEY=env-key\nDOUBAO_TTS_RESOURCE_ID=seed-tts-1.0\n", encoding="utf-8")
+    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+
+    info = svc.tts_config_info("deskbot_asr")
+    assert info["doubao"]["api_key"] == _mask_secret("env-key")  # 设备未配置 → env 回填并掩码
+    assert info["doubao"]["resource_id"] == "seed-tts-1.0"  # env 回填
+
+    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key", "resource_id": "seed-tts-2.0"}})
+    info = svc.tts_config_info("deskbot_asr")
+    assert info["doubao"]["api_key"] == _mask_secret("dev-key")  # 掩码回填密码框
+    assert info["doubao"]["resource_id"] == "seed-tts-2.0"  # 设备优先于 env
+
+
+def test_resolve_tts_adapter_device_params_win_over_env(svc, device, monkeypatch):
+    """运行期解析：设备 tts_param 的 api_key / sample_rate 优先于 env。"""
+    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
+    from deskbot_server.infrastructure.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
+    from deskbot_server.infrastructure.tts.resolve import resolve_tts_adapter
+
+    monkeypatch.setenv("DOUBAO_TTS_API_KEY", "env-key")
+    svc.apply_tts("doubao", "deskbot_asr")
+    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key", "sample_rate": "16000"}})
+
+    adapter = resolve_tts_adapter("deskbot_asr")
+    assert isinstance(adapter, DoubaoPhonemeTtsAdapter)
+    cfg = load_doubao_tts_config(None, adapter._overrides)
+    assert cfg.api_key == "dev-key"
+    assert cfg.sample_rate == 16000
 
 
 def test_tts_test_invalid_provider(tmp_path):

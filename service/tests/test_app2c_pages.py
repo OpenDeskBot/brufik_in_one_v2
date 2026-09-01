@@ -20,7 +20,7 @@ def temp_db(monkeypatch):
         yield db_path
 
 
-PAGES = ["/home", "/voice", "/expr", "/lab", "/my/memories", "/my/reminders", "/my/people", "/my/devices", "/advanced", "/robot-settings"]
+PAGES = ["/home", "/expr", "/lab", "/my/memories", "/my/reminders", "/my/people", "/my/devices", "/advanced", "/robot-settings"]
 
 
 @pytest.mark.parametrize("path", PAGES)
@@ -60,36 +60,14 @@ def test_2c_advanced_json_apis(temp_db):
     assert summary.status_code == 200
     payload = summary.get_json()
     assert payload["ok"] is True
-    assert payload["current_device_id"] == "deskbot_adv"
-    if payload["llm"]["system_default"]["api_key_set"]:
-        assert payload["llm"]["needs_config"] is False
-    else:
-        assert payload["llm"]["needs_config"] is True
-        assert "大模型配置" in payload["llm"]["config_message"]
+    assert payload["user"]["email"] == "advanced2c@example.com"
+    assert "devices" not in payload
+    assert "current_device_id" not in payload
+    assert "llm" not in payload
 
     profile = client.patch("/api/advanced/profile", json={"display_name": "新名字"})
     assert profile.status_code == 200
     assert profile.get_json()["user"]["display_name"] == "新名字"
-
-    model = client.post(
-        "/app/api/llm-models?device_id=deskbot_adv",
-        json={
-            "name": "Doubao",
-            "model_name": "doubao-seed-2-1-pro-260628",
-            "protocol": "ark",
-            "base_url": "",
-            "api_key": "sk-test",
-        },
-    )
-    assert model.status_code == 200
-    model_id = model.get_json()["model"]["id"]
-    assert (
-        client.post("/app/api/llm-models/select?device_id=deskbot_adv", json={"model_id": model_id}).status_code == 200
-    )
-    configured = client.get("/api/advanced").get_json()["llm"]
-    assert configured["needs_config"] is False
-    assert configured["active"]["api_key_set"] is True
-    assert client.delete(f"/app/api/llm-models/{model_id}?device_id=deskbot_adv").status_code == 200
 
 
 def test_2c_tts_config_does_not_reuse_system_ark_key(temp_db, monkeypatch):
@@ -126,25 +104,6 @@ def test_2c_tts_config_does_not_reuse_system_ark_key(temp_db, monkeypatch):
     assert payload["config"]["api_key_set"] is False
 
 
-def test_2c_advanced_guides_users_to_volcengine_key_pages(temp_db):
-    from tests._auth_compat import create_user
-    from deskbot_server.web.app import create_app
-
-    create_user("key-guide2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "key-guide2c@example.com", "password": "password1234"})
-
-    resp = client.get("/advanced?tab=llm")
-
-    assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey" in html
-    assert "https://console.volcengine.com/speech/new/setting/apikeys?projectName=default" in html
-    assert "复制新建的 API Key，回到这里粘贴到输入框" in html
-    assert "不要把火山方舟 ARK_API_KEY 填到豆包语音 API Key" in html
-
-
 def test_2c_expr_curved_custom_mouth_hides_layout_box(temp_db):
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
@@ -163,7 +122,7 @@ def test_2c_expr_curved_custom_mouth_hides_layout_box(temp_db):
     assert "mouth.push({shape:'line'" in html
 
 
-def test_2c_advanced_debug_is_inline_not_old_debug_links(temp_db):
+def test_2c_advanced_is_account_page_without_debug(temp_db):
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
@@ -176,14 +135,20 @@ def test_2c_advanced_debug_is_inline_not_old_debug_links(temp_db):
 
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
+    assert "账户" in html
+    assert "账号资料" in html
+    assert "更新密码" in html
+    # 调试功能已从账户页移除
     assert "/debug/devices" not in html
     assert "/debug/llm" not in html
     assert "/debug/tts" not in html
     assert "/debug/simulation" not in html
-    assert "runDebugHealth" in html
-    assert "runDebugLlm" in html
-    assert "runDebugTts" in html
-    assert "runDebugSimulation" in html
+    assert "runDebugHealth" not in html
+    assert "runDebugLlm" not in html
+    assert "runDebugTts" not in html
+    assert "runDebugSimulation" not in html
+    assert "开发者调试" not in html
+    assert "/api/debug/reset-account" not in html
 
 
 def test_2c_lab_surfaces_device_runtime_features(temp_db):
@@ -331,7 +296,7 @@ def test_2c_expr_layout_collapses_to_balanced_workspace():
     assert ".diy-grid{grid-template-columns:1fr}" in css
 
 
-def test_2c_home_heroes_are_the_two_creative_actions_without_duplicate_camera(temp_db):
+def test_2c_home_bottom_is_five_quick_entries_without_face_editor(temp_db):
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
@@ -344,12 +309,19 @@ def test_2c_home_heroes_are_the_two_creative_actions_without_duplicate_camera(te
 
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    # 首页两大主动作只剩「捏表情」与「调声音」，摄像头不再作为重复入口 hero 出现
-    assert "捏表情" in html
-    assert "调声音" in html
+    # 首页底部一行 5 块快捷入口：烧录固件 / 记忆 / 认识的人 / 提醒 / 模型设置
+    assert "捏表情" not in html
+    assert 'class="home-quicknav"' in html
+    assert 'href="/flash"' in html
+    assert 'href="/my/memories"' in html
+    assert 'href="/my/people"' in html
+    assert 'href="/my/reminders"' in html
+    assert 'href="/robot-settings"' in html
+    assert "烧录固件" in html
+    assert "模型设置" in html
+    # 摄像头仅保留在左侧 LIVE 面板里，通过「打开实验台」进入
     assert 'class="browse-shortcut camera-browse"' not in html
     assert "摄像头浏览" not in html
-    # 摄像头仅保留在左侧 LIVE 面板里，通过「打开实验台」进入
     assert 'href="/lab?tab=camera"' in html
 
 
@@ -411,7 +383,7 @@ def test_2c_home_integrates_robot_motion_preview(temp_db):
     assert ".media-stage" in css
 
 
-def test_2c_home_is_state_aware_and_drops_duplicate_nav_panels(temp_db):
+def test_2c_home_has_quick_send_panels_and_no_old_bottom_sections(temp_db):
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
@@ -424,19 +396,23 @@ def test_2c_home_is_state_aware_and_drops_duplicate_nav_panels(temp_db):
 
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    # 首页不再复刻侧边栏：移除快捷入口面板与数字 mini 卡
-    assert 'class="gridcards"' not in html
-    assert 'class="home-quick-panel"' not in html
-    assert "快捷入口" not in html
-    # 状态 A：未配置好时展示上手清单，引导下一步
-    assert 'class="home-setup"' in html
-    assert "让小歪活起来" in html
-    assert "配置对话模型" in html
-    assert "绑定你的小歪" in html
-    # 状态 B：配置完成后展示最近动态（内容而非数字）
-    assert 'class="home-recent"' in html
-    assert "setupIncomplete" in html
-    assert "recentMemories" in html
+    # 旧的 hero / 上手清单 / 最近动态区块已移除
+    assert 'class="home-setup"' not in html
+    assert 'class="home-recent"' not in html
+    assert "setupIncomplete" not in html
+    assert "recentMemories" not in html
+    # 快捷下发三面板：舵机控制（仅预置动作）/ PB 表情（仅预置表情）/ TTS 下发（指定文字）
+    assert 'class="home-quick"' in html
+    assert "舵机控制" in html
+    assert "仅下发预置动作" in html
+    assert "PB 表情" in html
+    assert "仅下发预置表情" in html
+    assert "TTS 下发" in html
+    assert "下发指定文字" in html
+    assert "loadQuickControls" in html
+    assert "runQuickServoPreset" in html
+    assert "sendQuickPbScene" in html
+    assert "sendQuickTts" in html
 
 
 def test_2c_lab_accepts_initial_tab_from_query(temp_db):
@@ -454,7 +430,40 @@ def test_2c_lab_accepts_initial_tab_from_query(temp_db):
     html = resp.get_data(as_text=True)
     assert "initialLabTab()" in html
     assert "URLSearchParams(window.location.search)" in html
-    assert "['servo','camera','scene','pb','logs','history']" in html
+    assert "['servo','camera','scene','pb','logs','convo']" in html
+
+
+def test_2c_lab_convo_realtime_markers(temp_db):
+    """实时对话：复用流水日志（/api/pipeline_recent + WS），不落库（无 device_turns / 记录开关）。"""
+    from tests._auth_compat import create_user
+    from deskbot_server.web.app import create_app
+
+    create_user("lab-convo2c@example.com", "password1234")
+    app = create_app()
+    client = app.test_client()
+    client.post("/login", data={"email": "lab-convo2c@example.com", "password": "password1234"})
+
+    html = client.get("/lab").get_data(as_text=True)
+
+    # 实时数据源：pipeline_recent 初始加载 + WS 订阅
+    assert "实时对话" in html
+    assert "loadConvoRecent" in html
+    assert "/api/pipeline_recent" in html
+    assert "ensurePipelineWs" in html
+    assert "applyStage" in html
+    assert "applyPipeEvent" in html
+    assert "onPipelineSnapshot" in html
+    assert "convoTurns" in html
+    assert "进行中…" in html
+    # 落库链路已移除：无 device_turns 接口、无调试记录开关
+    assert "/api/device_turns" not in html
+    assert "record_history" not in html
+    assert "toggleRecordHistory" not in html
+    # 耗时展示：ASR / LLM / TTS / 总耗时
+    assert "ASR 解析" in html
+    assert "🤔 LLM" in html
+    assert "🔊 TTS" in html
+    assert "总耗时" in html
 
 
 def test_2c_scene_playbook_export_plan_is_available_to_regular_user(temp_db):
@@ -490,95 +499,6 @@ def test_2c_scene_playbook_export_plan_is_available_to_regular_user(temp_db):
     assert "phases" in payload
 
 
-def test_2c_voice_page_links_to_model_config_and_keeps_player(temp_db):
-    from tests._auth_compat import create_user
-    from deskbot_server.web.app import create_app
-
-    create_user("voice2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "voice2c@example.com", "password": "password1234"})
-
-    resp = client.get("/voice")
-
-    assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert "高级 · 模型配置" in html
-    assert "saveTtsConfig" not in html
-    assert 'ref="previewAudio"' in html
-    assert 'class="preview-audio-hidden"' in html
-    assert "playPreviewAudio" in html
-    assert "浏览器拦截了自动播放" in html
-
-    advanced = client.get("/advanced")
-    assert advanced.status_code == 200
-    advanced_html = advanced.get_data(as_text=True)
-    assert "声音能力" in advanced_html
-    assert "火山引擎语音技术" in advanced_html
-    assert "声音高级参数" in advanced_html
-    assert "saveTtsConfig" in advanced_html
-
-
-def test_2c_voice_page_collapses_doubao_voice_library_by_default(temp_db):
-    from tests._auth_compat import create_user
-    from deskbot_server.web.app import create_app
-
-    create_user("voice-library2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "voice-library2c@example.com", "password": "password1234"})
-
-    resp = client.get("/voice")
-
-    assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert "优选音色" in html
-    assert "只展示 2.0 可用音色，已过滤旧版、测试和不稳定音色" in html
-    assert "已显示 [[ visibleSpeakers.length ]] / [[ filteredSpeakers.length ]] 个优选音色" in html
-    assert "/api/doubao_tts/speakers?scope=consumer" in html
-    assert "voiceSearch" in html
-    assert "sceneOptions" in html
-    assert "filteredSpeakers" in html
-    assert "visibleSpeakers" in html
-    assert "voiceExpanded" in html
-    assert "voiceCollapsedLimit" in html
-    assert "hiddenSpeakerCount" in html
-    assert 'v-for="v in visibleSpeakers"' in html
-    assert "展开更多音色" in html
-    assert "收起音色" in html
-
-    css = (
-        Path(__file__).resolve().parents[1] / "src" / "deskbot_server" / "web" / "static" / "theme_2c.css"
-    ).read_text(encoding="utf-8")
-    assert ".voice-expand-row" in css
-    assert ".voice-expand-btn" in css
-
-
-def test_2c_voice_preview_plays_inline_without_visible_audio_bar(temp_db):
-    from tests._auth_compat import create_user
-    from deskbot_server.web.app import create_app
-
-    create_user("voice-compact-preview2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "voice-compact-preview2c@example.com", "password": "password1234"})
-
-    resp = client.get("/voice")
-
-    assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert 'class="voice-preview-row compact-preview"' not in html
-    assert 'class="slider-card voice-volume-card"' not in html
-    assert "试听音量" not in html
-    assert "preview-audio-hidden" in html
-
-    css = (
-        Path(__file__).resolve().parents[1] / "src" / "deskbot_server" / "web" / "static" / "theme_2c.css"
-    ).read_text(encoding="utf-8")
-    assert ".preview-audio-hidden" in css
-    assert ".voice-preview-row.compact-preview" not in css
-
-
 def test_2c_theme_uses_bold_retro_tokens():
     web_dir = Path(__file__).resolve().parents[1] / "src" / "deskbot_server" / "web"
     css = (web_dir / "static" / "theme_2c.css").read_text(encoding="utf-8")
@@ -601,148 +521,10 @@ def test_2c_theme_uses_bold_retro_tokens():
     assert "@media(max-width:600px)" in css
     assert "white-space:nowrap" in css
     assert ".topbar .tb-sub,.topbar .tb-clock{display:none}" in css
-    assert ".heroes,.home-recent{grid-template-columns:1fr}" in css
+    assert ".home-quicknav{grid-template-columns:1fr 1fr}" in css
     assert ".home-media{display:grid" in css
     assert "app2c.css" in base or "stylesheet" in base.lower()
     assert "auth" in auth_base.lower() or "login" in auth_base.lower()
-
-
-def test_2c_voice_page_exposes_voice_clone_workflow(temp_db):
-    from tests._auth_compat import create_user
-    from deskbot_server.web.app import create_app
-
-    create_user("voice-clone-page2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "voice-clone-page2c@example.com", "password": "password1234"})
-
-    resp = client.get("/voice")
-
-    assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert "声音复刻" in html
-    assert "音色名称" in html
-    assert "voice_name" in html
-    assert "/api/doubao_tts/voice-clone" in html
-    assert "/api/doubao_tts/voice-clone/status" in html
-    assert "cloneVoice" in html
-    assert "checkCloneStatus" in html
-    assert "applyClonedVoice" in html
-
-
-def test_2c_voice_page_separates_library_and_clone_tabs_with_progress(temp_db):
-    from tests._auth_compat import create_user
-    from deskbot_server.web.app import create_app
-
-    create_user("voice-tabs2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "voice-tabs2c@example.com", "password": "password1234"})
-
-    resp = client.get("/voice")
-
-    assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert "voice-tabbar" in html
-    assert "voiceTab==='library'" in html
-    assert "voiceTab==='clone'" in html
-    assert "直接使用" in html
-    assert "clone-progress" in html
-    assert "cloneProgress" in html
-    assert "cloneProgressLabel" in html
-
-
-def test_2c_voice_clone_upload_endpoint_uses_configured_volcengine_credentials(temp_db, monkeypatch):
-    from io import BytesIO
-
-    from tests._auth_compat import create_user
-    from deskbot_server.infrastructure.tts.voice_clone import DoubaoVoiceCloneResult
-    from deskbot_server.web.app import create_app
-
-    monkeypatch.setenv("DOUBAO_TTS_APP_ID", "app-id")
-    monkeypatch.setenv("DOUBAO_TTS_ACCESS_TOKEN", "access-token")
-    captured = {}
-
-    def fake_clone(
-        cfg, *, audio_bytes, audio_format, language=0, display_name="", custom_speaker_id="", prompt_text=""
-    ):
-        captured["cfg"] = cfg
-        captured["audio_bytes"] = audio_bytes
-        captured["audio_format"] = audio_format
-        captured["language"] = language
-        captured["display_name"] = display_name
-        captured["custom_speaker_id"] = custom_speaker_id
-        captured["prompt_text"] = prompt_text
-        return DoubaoVoiceCloneResult(
-            speaker_id=custom_speaker_id, status=1, raw={"status": 1, "speaker_id": custom_speaker_id}
-        )
-
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.voice_clone.clone_doubao_voice", fake_clone)
-    create_user("voice-clone-api2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "voice-clone-api2c@example.com", "password": "password1234"})
-
-    resp = client.post(
-        "/api/doubao_tts/voice-clone",
-        data={
-            "voice_name": "小歪音色",
-            "language": "0",
-            "prompt_text": "你好，我是小歪。",
-            "audio": (BytesIO(b"RIFF....WAVE"), "sample.wav"),
-        },
-        content_type="multipart/form-data",
-    )
-
-    assert resp.status_code == 200
-    payload = resp.get_json()
-    assert payload["ok"] is True
-    assert payload["speaker_id"] == "brufik_xiao_wai_yin_se"
-    assert payload["status"] == 1
-    assert payload["ready"] is False
-    assert captured["cfg"].app_key == "app-id"
-    assert captured["cfg"].access_key == "access-token"
-    assert captured["cfg"].resource_id == "seed-icl-2.0"
-    assert captured["audio_bytes"] == b"RIFF....WAVE"
-    assert captured["audio_format"] == "wav"
-    assert captured["language"] == 0
-    assert captured["display_name"] == "小歪音色"
-    assert captured["custom_speaker_id"] == "brufik_xiao_wai_yin_se"
-    assert captured["prompt_text"] == "你好，我是小歪。"
-
-
-def test_2c_voice_clone_status_endpoint_reports_ready(temp_db, monkeypatch):
-    from tests._auth_compat import create_user
-    from deskbot_server.infrastructure.tts.voice_clone import DoubaoVoiceCloneResult
-    from deskbot_server.web.app import create_app
-
-    monkeypatch.setenv("DOUBAO_TTS_APP_ID", "app-id")
-    monkeypatch.setenv("DOUBAO_TTS_ACCESS_TOKEN", "access-token")
-    captured = {}
-
-    def fake_status(cfg, speaker_id):
-        captured["cfg"] = cfg
-        captured["speaker_id"] = speaker_id
-        return DoubaoVoiceCloneResult(
-            speaker_id=speaker_id, status=4, raw={"status": 4, "speaker_id": speaker_id, "model_type": 5}, model_type=5
-        )
-
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.voice_clone.get_doubao_voice_clone_status", fake_status)
-    create_user("voice-clone-status2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "voice-clone-status2c@example.com", "password": "password1234"})
-
-    resp = client.post("/api/doubao_tts/voice-clone/status", json={"speaker_id": "S_ready"})
-
-    assert resp.status_code == 200
-    payload = resp.get_json()
-    assert payload["ok"] is True
-    assert payload["speaker_id"] == "S_ready"
-    assert payload["ready"] is True
-    assert payload["status_label"] == "可用"
-    assert captured["cfg"].app_key == "app-id"
-    assert captured["speaker_id"] == "S_ready"
 
 
 def test_doubao_tts_speakers_api_can_return_consumer_ready_presets(temp_db):
@@ -801,25 +583,6 @@ def test_doubao_tts_speakers_api_returns_full_local_preset_file(temp_db):
     assert payload["ok"] is True
     assert len(payload["speakers"]) == expected_count
     assert expected_count >= 300
-
-
-def test_2c_voice_no_longer_owns_tts_config_panel(temp_db):
-    from tests._auth_compat import create_user
-    from deskbot_server.web.app import create_app
-
-    create_user("voice-collapse2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "voice-collapse2c@example.com", "password": "password1234"})
-
-    resp = client.get("/voice")
-
-    assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert ':aria-expanded="String(configOpen)"' not in html
-    assert 'v-show="configOpen"' not in html
-    assert "TTS 服务配置" not in html
-    assert "高级 · 模型配置" in html
 
 
 def test_2c_voice_tts_synthesize_endpoint_returns_wav(temp_db, monkeypatch):
@@ -1145,7 +908,7 @@ def test_2c_face_config_apis_are_available_to_regular_user(temp_db, tmp_path, mo
     assert save_mouth.get_json()["mouth_by_phoneme_groups"][0]["states"] == ["a"]
 
 
-def test_2c_advanced_keeps_heavy_features_collapsed(temp_db):
+def test_2c_advanced_keeps_account_forms_visible(temp_db):
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
@@ -1158,49 +921,15 @@ def test_2c_advanced_keeps_heavy_features_collapsed(temp_db):
 
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "advancedOpen" in html
-    assert "toggleAdvanced" in html
-    assert 'v-show="advancedOpen.keys"' in html
-    assert 'v-show="advancedOpen.llm"' in html
-    assert 'v-show="advancedOpen.account"' in html
-    assert 'v-show="advancedOpen.debug"' in html
-    assert "展开配置" in html
-    assert "收起配置" in html
-    assert "/api/tts/phoneme_tts" in html
+    # 账户页直接展示表单，无折叠/调试面板
+    assert "advancedOpen" not in html
+    assert "toggleAdvanced" not in html
+    assert "展开配置" not in html
+    assert "收起配置" not in html
+    assert "/api/tts/phoneme_tts" not in html
     assert "/api/paddlespeech/phoneme_tts" not in html
-    assert "还没完成 AI 能力配置" in html
-    assert "需要配置大模型" not in html
-
-
-def test_2c_advanced_model_config_has_clear_primary_secondary_hierarchy(temp_db):
-    from tests._auth_compat import create_user
-    from deskbot_server.web.app import create_app
-
-    create_user("advanced-hierarchy2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "advanced-hierarchy2c@example.com", "password": "password1234"})
-
-    resp = client.get("/advanced?tab=llm")
-
-    assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert "model-config-stack" in html
-    assert "model-card primary-model-card" in html
-    assert "model-card secondary-model-card" in html
-    assert "必需配置" in html
-    assert "声音能力" in html
-    assert "voice-advanced-fields" in html
-    assert "声音高级参数" in html
-
-    css = (
-        Path(__file__).resolve().parents[1] / "src" / "deskbot_server" / "web" / "static" / "theme_2c.css"
-    ).read_text(encoding="utf-8")
-    assert ".primary-model-card" in css
-    assert ".secondary-model-card" in css
-    assert ".voice-advanced-fields" in css
-    assert "details.voice-advanced-fields:not([open]) .voice-advanced-grid{display:none}" in css
-    assert ".model-form-actions" in css
+    assert "用量" not in html
+    assert "生成新 Key" not in html
 
 
 def test_2c_consumer_apis_are_not_developer_locked(temp_db, monkeypatch):
@@ -1339,7 +1068,7 @@ def test_2c_face_preview_helper_exposes_frame_reader():
     assert "frameElements," in helper
 
 
-def test_2c_expr_ai_generation_reminds_llm_config_required(temp_db):
+def test_2c_expr_ai_generation_has_no_llm_config_guard(temp_db):
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
@@ -1352,14 +1081,12 @@ def test_2c_expr_ai_generation_reminds_llm_config_required(temp_db):
 
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "还没完成 AI 能力配置" in html
-    assert "需要配置大模型" not in html
-    assert "loadLlmConfigStatus" in html
-    assert "llmNeedsConfig" in html
-    assert "/advanced" in html
+    assert "loadLlmConfigStatus" not in html
+    assert "llmNeedsConfig" not in html
+    assert "professionalAiOpen" in html
 
 
-def test_2c_advanced_llm_form_has_test_connection(temp_db):
+def test_2c_advanced_page_has_account_only(temp_db):
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
@@ -1372,13 +1099,17 @@ def test_2c_advanced_llm_form_has_test_connection(temp_db):
 
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "测试连接" in html
-    assert "testLlmModel" in html
-    assert "/app/api/llm-models/test" in html
-    assert 'v-model="llmForm.test_prompt"' in html
+    assert "vue.global.prod.min.js" in html
+    assert "账号资料" in html
+    assert "开发者调试" not in html
+    assert ">用量<" not in html
+    assert ">API Key<" not in html
+    assert ">模型配置<" not in html
+    assert "生成新 Key" not in html
+    assert "llmForm" not in html
 
 
-def test_2c_advanced_usage_includes_daily_breakdown(temp_db):
+def test_2c_advanced_summary_has_user_only(temp_db):
     from tests.device_bind_helpers import bind_device_online
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
@@ -1392,21 +1123,11 @@ def test_2c_advanced_usage_includes_daily_breakdown(temp_db):
 
     payload = client.get("/api/advanced").get_json()
     assert payload["ok"] is True
-    assert "devices" in payload
-    assert "llm" in payload
-
-
-def test_2c_advanced_usage_has_trend_charts(temp_db):
-    from tests._auth_compat import create_user
-    from deskbot_server.web.app import create_app
-
-    create_user("usage-charts2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "usage-charts2c@example.com", "password": "password1234"})
-
-    html = client.get("/advanced").get_data(as_text=True)
-    assert "大模型" in html or "llm" in html.lower()
+    assert "user" in payload
+    assert payload["user"]["email"] == "usage-daily2c@example.com"
+    assert "devices" not in payload
+    assert "current_device_id" not in payload
+    assert "llm" not in payload
 
 
 def test_old_app_pages_removed_but_apis_kept(temp_db):
@@ -1435,5 +1156,6 @@ def test_old_app_pages_removed_but_apis_kept(temp_db):
         assert client.get(page).status_code == 404, page
 
     assert client.get("/app/api/scheduled-tasks").status_code == 200
-    assert client.get("/app/api/llm-models?device_id=deskbot_retire").status_code == 200
-    assert client.get("/app/api/tts/speakers").status_code == 200
+    assert client.get("/app/api/llm-models?device_id=deskbot_retire").status_code == 404
+    # TTS 已设备级化（robot-settings 配置），全局 /app/api/tts/* 端点一并移除
+    assert client.get("/app/api/tts/speakers").status_code == 404

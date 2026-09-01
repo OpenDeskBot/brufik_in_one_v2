@@ -7,24 +7,8 @@ from deskbot_server.service.face_profile_service import (
     list_face_profiles_summary,
     update_face_profile_name,
 )
-from deskbot_server.dao.llm_config_store import (
-    SUPPORTED_PROTOCOLS,
-    add_llm_model,
-    delete_llm_model,
-    get_active_model_id,
-    get_llm_model,
-    list_llm_models,
-    set_active_llm_model,
-    update_llm_model,
-)
+from deskbot_server.dao import device_mapper
 from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory, get_memory, list_memory_for_device, update_memory
-from deskbot_server.infrastructure.llm.runtime import (
-    ResolvedLlmConfig,
-    build_chat_model,
-    chat_completion,
-    resolve_llm_config,
-    resolve_system_llm_config,
-)
 from deskbot_server.service.miot_service import (
     authorize_and_sync,
     error_payload,
@@ -36,6 +20,7 @@ from deskbot_server.service.miot_service import (
     sync_homes,
 )
 from deskbot_server.service.miot_service import unbind as miot_unbind
+from deskbot_server.service.quest_service import QuestError, QuestService
 from deskbot_server.service.scheduled_task_service import (
     count_scheduled_tasks_for_device,
     delete_scheduled_task,
@@ -135,6 +120,7 @@ def api_list_devices(request: Request, user: RequireUser):
                     "id": d.id,
                     "device_id": d.device_id,
                     "display_name": d.display_name or d.device_id,
+                    "quest_id": d.quest_id or None,
                     "claimed_at": d.claimed_at.isoformat() if d.claimed_at else None,
                     "online": live_map.get(d.device_id, {}).get("online", False),
                     "last_seen": live_map.get(d.device_id, {}).get("last_seen", "—"),
@@ -204,6 +190,23 @@ def api_reset_device_id(request: Request, user: RequireUser, device_id: str):
     if get_current_device_id(request) == device_id:
         set_current_device_id(request, new_device_id)
     return jsonify({"ok": True, "device_id": new_device_id})
+
+
+@router.put("/api/devices/{device_id}/quest")
+def api_set_device_quest(request: Request, user: RequireUser, device_id: str):
+    """绑定/解绑设备剧本：body ``{"quest_id": "剧本名"}``；空串或缺省 = 解绑。"""
+    if not UserService().user_owns_device(user.id, device_id):
+        return jsonify({"ok": False, "error": "设备不属于当前账号"}), 403
+    payload = get_json(request, silent=True) or {}
+    quest_id = str(payload.get("quest_id") or "").strip() or None
+    if quest_id is not None:
+        try:
+            if QuestService().get_playbook(quest_id) is None:
+                return jsonify({"ok": False, "error": f"剧本不存在: {quest_id}"}), 404
+        except QuestError as exc:  # 非法剧本名（正则不匹配）/ 剧本文件损坏
+            return jsonify({"ok": False, "error": str(exc)}), 400
+    device_mapper.update_quest_id(device_id, quest_id)
+    return jsonify({"ok": True, "quest_id": quest_id})
 
 
 @router.get("/api/scheduled-tasks")
@@ -289,18 +292,6 @@ def _require_owned_device_id(request: Request, user) -> tuple[str | None, tuple 
     return device_id, None
 
 
-def _consume_settings_test_quota(device_id: str):
-    from deskbot_server.service.application.settings_test_limit import (
-        SETTINGS_TEST_DAILY_LIMIT,
-        SettingsTestLimitExceeded,
-        check_and_consume_settings_test,
-    )
-
-    try:
-        snap = check_and_consume_settings_test(device_id=device_id)
-    except SettingsTestLimitExceeded as exc:
-        return None, (jsonify({"ok": False, "error": str(exc), "daily_limit": SETTINGS_TEST_DAILY_LIMIT}), 429)
-    return {"daily_limit": SETTINGS_TEST_DAILY_LIMIT, "remaining": snap.remaining}, None
 
 
 @router.get("/api/memories")
@@ -373,282 +364,6 @@ def api_delete_memory(request: Request, user: RequireUser, entry_id: str):
     return jsonify({"ok": True})
 
 
-@router.get("/api/llm-models")
-def api_list_llm_models(request: Request, user: RequireUser):
-    device_id, err = _require_owned_device_id(request, user)
-    if err:
-        return err
-    assert device_id is not None
-    models = list_llm_models(device_id, mask_key=True)
-    active_model_id = get_active_model_id(device_id)
-    try:
-        resolved = resolve_llm_config(device_id)
-        active = {
-            "display_name": resolved.display_name,
-            "model": resolved.model,
-            "source": resolved.source,
-            "api_base": resolved.api_base or "",
-        }
-    except ValueError as exc:
-        active = {"error": str(exc)}
-    system_default = resolve_system_llm_config()
-    return jsonify(
-        {
-            "ok": True,
-            "device_id": device_id,
-            "models": models,
-            "active_model_id": active_model_id,
-            "active": active,
-            "system_default": {
-                "display_name": system_default.display_name,
-                "model": system_default.model,
-                "api_base": system_default.api_base or "",
-            },
-            "supported_protocols": list(SUPPORTED_PROTOCOLS),
-        }
-    )
-
-
-@router.post("/api/llm-models")
-def api_create_llm_model(request: Request, user: RequireUser):
-    device_id, err = _require_owned_device_id(request, user)
-    if err:
-        return err
-    assert device_id is not None
-    payload = get_json(request, silent=True) or {}
-    try:
-        model = add_llm_model(
-            device_id,
-            name=str(payload.get("name") or "").strip(),
-            model_name=str(payload.get("model_name") or "").strip(),
-            protocol=str(payload.get("protocol") or "ark").strip(),
-            base_url=str(payload.get("base_url") or "").strip(),
-            api_key=str(payload.get("api_key") or "").strip(),
-        )
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True, "model": model})
-
-
-@router.post("/api/llm-models/test")
-def api_test_llm_model(request: Request, user: RequireUser):
-    device_id, err = _require_owned_device_id(request, user)
-    if err:
-        return err
-    assert device_id is not None
-    quota, limit_err = _consume_settings_test_quota(device_id)
-    if limit_err:
-        return limit_err
-    payload = get_json(request, silent=True) or {}
-    model_id = str(payload.get("model_id") or "").strip() or None
-    name = str(payload.get("name") or "").strip()
-    model_name = str(payload.get("model_name") or "").strip()
-    protocol = str(payload.get("protocol") or "ark").strip().lower() or "ark"
-    base_url = str(payload.get("base_url") or "").strip()
-    api_key = str(payload.get("api_key") or "").strip()
-    prompt = str(payload.get("prompt") or "你好，请用一句话介绍你自己。").strip()
-
-    if model_id:
-        existing = get_llm_model(device_id, model_id)
-        if existing is None:
-            return jsonify({"ok": False, "error": "模型不存在"}), 404
-        if not name:
-            name = existing.name
-        if not model_name:
-            model_name = existing.model_name
-        if not protocol:
-            protocol = existing.protocol
-        if not base_url:
-            base_url = existing.base_url
-        if not api_key:
-            api_key = existing.api_key
-
-    if not model_name:
-        return jsonify({"ok": False, "error": "model_name required"}), 400
-    if protocol not in SUPPORTED_PROTOCOLS:
-        return jsonify({"ok": False, "error": f"不支持的协议: {protocol}"}), 400
-
-    try:
-        config = ResolvedLlmConfig(
-            model=build_chat_model(protocol, model_name),
-            api_key=api_key,
-            api_base=base_url or None,
-            protocol=protocol,
-            source="test",
-            display_name=name or model_name,
-        )
-        reply, meta = chat_completion(
-            [{"role": "user", "content": prompt}], config=config, json_mode=False, temperature=0.7
-        )
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
-
-    return jsonify(
-        {
-            "ok": True,
-            "reply": reply,
-            "meta": {"model": meta.get("model"), "display_name": meta.get("display_name"), "usage": meta.get("usage")},
-            "quota": quota,
-        }
-    )
-
-
-@router.put("/api/llm-models/{model_id}")
-def api_update_llm_model(request: Request, user: RequireUser, model_id: str):
-    device_id, err = _require_owned_device_id(request, user)
-    if err:
-        return err
-    assert device_id is not None
-    payload = get_json(request, silent=True) or {}
-    try:
-        model = update_llm_model(
-            device_id,
-            model_id,
-            name=payload.get("name"),
-            model_name=payload.get("model_name"),
-            protocol=payload.get("protocol"),
-            base_url=payload.get("base_url"),
-            api_key=payload.get("api_key"),
-        )
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    if model is None:
-        return jsonify({"ok": False, "error": "模型不存在"}), 404
-    return jsonify({"ok": True, "model": model})
-
-
-@router.delete("/api/llm-models/{model_id}")
-def api_delete_llm_model(request: Request, user: RequireUser, model_id: str):
-    device_id, err = _require_owned_device_id(request, user)
-    if err:
-        return err
-    assert device_id is not None
-    if not delete_llm_model(device_id, model_id):
-        return jsonify({"ok": False, "error": "模型不存在"}), 404
-    return jsonify({"ok": True})
-
-
-@router.post("/api/llm-models/select")
-def api_select_llm_model(request: Request, user: RequireUser):
-    device_id, err = _require_owned_device_id(request, user)
-    if err:
-        return err
-    assert device_id is not None
-    payload = get_json(request, silent=True) or {}
-    model_id = payload.get("model_id")
-    if model_id is not None:
-        model_id = str(model_id).strip() or None
-    try:
-        active = set_active_llm_model(device_id, model_id)
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    return jsonify({"ok": True, "active_model_id": active})
-
-
-def _tts_cfg_from_payload(payload: dict):
-    from deskbot_server.infrastructure.tts.doubao import (
-        DoubaoTtsConfig,
-        load_doubao_tts_config,
-        resolve_optional_secret,
-    )
-
-    base = load_doubao_tts_config()
-    api_key = resolve_optional_secret(payload.get("api_key"), base.api_key)
-    sample_rate_raw = payload.get("sample_rate", base.sample_rate)
-    try:
-        sample_rate = int(sample_rate_raw)
-    except (TypeError, ValueError):
-        sample_rate = base.sample_rate
-    return DoubaoTtsConfig(
-        api_key=api_key,
-        speaker=str(payload.get("speaker") or base.speaker).strip(),
-        resource_id=str(payload.get("resource_id") or base.resource_id).strip(),
-        model=str(payload.get("model") or base.model).strip(),
-        ws_url=str(payload.get("ws_url") or base.ws_url).strip(),
-        sample_rate=sample_rate,
-        audio_format=str(payload.get("audio_format") or base.audio_format).strip(),
-    )
-
-
-@router.get("/api/tts/config")
-def api_tts_config_get(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
-
-    cfg = load_doubao_tts_config()
-    return jsonify({"ok": True, "config": cfg.masked()})
-
-
-@router.post("/api/tts/config")
-def api_tts_config_post(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
-    from deskbot_server.infrastructure.tts.env_store import save_doubao_tts_env
-
-    payload = get_json(request, silent=True)
-    if not isinstance(payload, dict):
-        return jsonify({"ok": False, "error": "body must be a JSON object"}), 400
-
-    from deskbot_server.infrastructure.tts.doubao import resolve_optional_secret
-
-    base = load_doubao_tts_config()
-    api_key = resolve_optional_secret(payload.get("api_key"), base.api_key)
-    if not api_key:
-        return jsonify({"ok": False, "error": "DOUBAO_TTS_API_KEY 不能为空"}), 400
-    try:
-        save_doubao_tts_env(payload)
-    except OSError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-    cfg = load_doubao_tts_config()
-    return jsonify({"ok": True, "config": cfg.masked()})
-
-
-@router.get("/api/tts/speakers")
-def api_tts_speakers(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.tts.speakers import list_doubao_tts_speaker_presets
-
-    return jsonify({"ok": True, "speakers": list_doubao_tts_speaker_presets()})
-
-
-@router.post("/api/tts/preview")
-def api_tts_preview(request: Request, user: RequireUser):
-    import asyncio
-    import base64
-
-    from deskbot_server.infrastructure.tts.doubao import synthesize_doubao_tts
-    from deskbot_server.utils.util import pcm_to_wav_bytes
-
-    device_id, err = _require_owned_device_id(request, user)
-    if err:
-        return err
-    assert device_id is not None
-    quota, limit_err = _consume_settings_test_quota(device_id)
-    if limit_err:
-        return limit_err
-    payload = get_json(request, silent=True) or {}
-    text = str(payload.get("text") or "").strip()
-    if not text:
-        return jsonify({"ok": False, "error": "试听文本不能为空"}), 400
-    cfg = _tts_cfg_from_payload(payload)
-    if not cfg.api_key:
-        return jsonify({"ok": False, "error": "请先配置豆包语音 API Key（DOUBAO_TTS_API_KEY）"}), 400
-    try:
-        result = asyncio.run(synthesize_doubao_tts(text, cfg))
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
-    wav = pcm_to_wav_bytes(result.pcm, result.sample_rate)
-    return jsonify(
-        {
-            "ok": True,
-            "sample_rate": result.sample_rate,
-            "elapsed_ms": result.elapsed_ms,
-            "speaker": cfg.speaker,
-            "wav_base64": base64.b64encode(wav).decode("ascii"),
-            "quota": quota,
-        }
-    )
 
 
 @router.delete("/api/scheduled-tasks/{task_id}")
@@ -798,6 +513,7 @@ ENDPOINTS = {
     "app.api_bind_device": "/app/api/devices",
     "app.api_select_device": "/app/api/devices/select",
     "app.api_unbind_device": "/app/api/devices/{device_id}",
+    "app.api_set_device_quest": "/app/api/devices/{device_id}/quest",
     "app.api_list_scheduled_tasks": "/app/api/scheduled-tasks",
     "app.api_list_face_profiles": "/app/api/face-profiles",
     "app.api_delete_face_profile": "/app/api/face-profiles/{profile_id}",
@@ -807,16 +523,6 @@ ENDPOINTS = {
     "app.api_get_memory": "/app/api/memories/{entry_id}",
     "app.api_update_memory": "/app/api/memories/{entry_id}",
     "app.api_delete_memory": "/app/api/memories/{entry_id}",
-    "app.api_list_llm_models": "/app/api/llm-models",
-    "app.api_create_llm_model": "/app/api/llm-models",
-    "app.api_test_llm_model": "/app/api/llm-models/test",
-    "app.api_update_llm_model": "/app/api/llm-models/{model_id}",
-    "app.api_delete_llm_model": "/app/api/llm-models/{model_id}",
-    "app.api_select_llm_model": "/app/api/llm-models/select",
-    "app.api_tts_config_get": "/app/api/tts/config",
-    "app.api_tts_config_post": "/app/api/tts/config",
-    "app.api_tts_speakers": "/app/api/tts/speakers",
-    "app.api_tts_preview": "/app/api/tts/preview",
     "app.api_delete_scheduled_task": "/app/api/scheduled-tasks/{task_id}",
     "app.api_miot_status": "/app/api/miot/status",
     "app.api_miot_bind_url": "/app/api/miot/bind-url",

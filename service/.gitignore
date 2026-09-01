@@ -193,6 +193,8 @@ externals/*/checkout/
 data/quest/
 data/quest_playbooks/
 data/test/
+# 测试设备运行时数据目录（如测试用例中的 apply_tts/clear_tts/info_tts/nodev_tts 设备）
+data/*_tts/
 .e2e-results/
 **/secrets*.json
 **/local*.json

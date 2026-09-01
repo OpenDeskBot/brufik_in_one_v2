@@ -38,6 +38,7 @@ def _row_to_dict(row) -> dict[str, Any]:
     descriptor = json.loads(row.descriptor) if isinstance(row.descriptor, str) else row.descriptor
     return {
         "id": int(row.id),
+        "person_id": int(row.id),
         "name": str(row.name),
         "descriptor": descriptor,
         "descriptor_kind": str(row.descriptor_kind or ""),
@@ -59,6 +60,7 @@ def list_face_profiles_summary(*, device_id: str | None = None) -> list[dict[str
     return [
         {
             "id": int(p["id"]),
+            "person_id": int(p["id"]),
             "name": str(p["name"]),
             "descriptor_kind": str(p.get("descriptor_kind") or ""),
         }
@@ -152,20 +154,18 @@ def upsert_profile(
         merged_json = json.dumps(merged, ensure_ascii=False)
         mapper.update(int(matched["id"]), name, merged_json, kind)
         _bump_version()
-        return {"id": int(matched["id"]), "name": name, "descriptor": merged, "descriptor_kind": kind}
+        return {"id": int(matched["id"]), "person_id": int(matched["id"]), "name": name, "descriptor": merged, "descriptor_kind": kind}
 
     if matched is not None and sim >= 0.95:
         merged = ema_update_descriptor(matched["descriptor"], descriptor, alpha=0.35)
         merged_json = json.dumps(merged, ensure_ascii=False)
         mapper.update(int(matched["id"]), name, merged_json, kind)
         _bump_version()
-        return {"id": int(matched["id"]), "name": name, "descriptor": merged, "descriptor_kind": kind}
+        return {"id": int(matched["id"]), "person_id": int(matched["id"]), "name": name, "descriptor": merged, "descriptor_kind": kind}
 
-    mapper.insert(str(device_id), name, desc_json, kind)
+    new_id = mapper.insert(str(device_id), name, desc_json, kind)
     _bump_version()
-    inserted = mapper._last_inserted()
-    new_id = int(inserted.id) if inserted else 0
-    return {"id": new_id, "name": name, "descriptor": list(descriptor), "descriptor_kind": kind}
+    return {"id": new_id, "person_id": new_id, "name": name, "descriptor": list(descriptor), "descriptor_kind": kind}
 
 
 def delete_face_profile(profile_id: int, *, device_id: str | None = None) -> bool:
@@ -206,6 +206,7 @@ def update_face_profile_name(
     _bump_version()
     return {
         "id": int(row.id),
+        "person_id": int(row.id),
         "name": clean_name,
         "descriptor_kind": str(row.descriptor_kind or ""),
     }

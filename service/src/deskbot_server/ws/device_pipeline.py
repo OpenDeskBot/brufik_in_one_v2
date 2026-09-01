@@ -87,7 +87,9 @@ async def handle_device_pipeline(websocket, bus: BusService, registry: DeviceWsS
             return
 
         logger.info("[/device_pipeline] 生产者接入 device_id=%s peer=%s", url_device, peer)
-        await registry.register(url_device, websocket)
+        # claim_slot=False：生产者只是事件上行通道，不抢占 asr_chat 的设备下行槽位，
+        # 否则每次接入都会关闭设备的真实连接，造成两连接互相踢的反复重连。
+        await registry.register(url_device, websocket, claim_slot=False)
         try:
             async for message in websocket:
                 if isinstance(message, (bytes, bytearray)):

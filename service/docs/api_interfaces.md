@@ -53,13 +53,12 @@
 | 方法 | 路径 | 用途 |
 |------|------|------|
 | GET | `/home` | 2C 首页 |
-| GET | `/voice` | 语音设置/入口 |
 | GET | `/expr` | 表情设置/入口 |
 | GET | `/my/memories` | 我的记忆 |
 | GET | `/my/reminders` | 我的提醒 |
 | GET | `/my/people` | 我的人物/人脸 |
 | GET | `/my/devices` | 我的设备 |
-| GET | `/advanced` | 高级设置 |
+| GET | `/advanced` | 账户设置 |
 
 ### 管理后台页面
 
@@ -87,11 +86,11 @@
 
 ## Web 控制台 JSON API `:9000`
 
-### 2C 高级设置
+### 2C 账户设置
 
 | 方法 | 路径 | 用途 | 主要输入 |
 |------|------|------|----------|
-| GET | `/api/advanced` | 汇总当前用户、设备、用量、LLM 配置 | - |
+| GET | `/api/advanced` | 汇总当前用户资料 | - |
 | PATCH | `/api/advanced/profile` | 更新显示名 | JSON: `display_name` |
 | POST | `/api/advanced/password` | 修改密码 | JSON: `old_password`, `new_password`, `confirm_password` |
 | GET | `/api/emotion_expr_map` | 读取情绪到表情映射 | query: `device_id` 可选，默认当前设备 |
@@ -122,6 +121,25 @@
 | POST | `/app/api/llm-models/select` | 选择/清空当前 LLM 模型 | JSON: `model_id`，可为 `null` |
 
 这些接口均会校验当前用户是否拥有目标 `device_id`。未选设备返回 `400`，设备不属于当前用户返回 `403`。
+
+### 机器人设置 API（模型设置页；TTS 为设备级配置）
+
+TTS provider / 音色 / 凭证已移至设备级（devices 表 `tts_provider` / `tts_param`），
+`config.yaml` 不再承载 TTS 配置，`/app/api/tts/*` 全局端点（含 preview 配额）已移除。
+豆包 API Key 由各设备自配（`tts_param.doubao.api_key`），服务器不持有公共凭证。
+
+| 方法 | 路径 | 用途 | 主要输入 |
+|------|------|------|----------|
+| GET | `/api/robot-settings` | 能力状态（ASR/LLM/TTS/人脸 + 服务快照 + env 覆盖） | session: `device_id` |
+| GET | `/api/robot-settings/llm/config-info` | LLM 配置对话框元信息：ark 当前值（api_key 掩码；本地模型只读固定端点） | query: `provider` |
+| POST | `/api/robot-settings/llm/config` | 保存 ark 配置：API Key → `.env` ARK_API_KEY（掩码/空不覆盖）；模型/地址 → config.yaml llm 段（当前生效为 ark 写主键，否则写快照键） | JSON: `provider`, `api_key`, `model_name`, `base_url` |
+| POST | `/api/robot-settings/llm/test` | LLM 试聊（临时 config 不落盘；overrides 表单覆盖优先，本地模型免 Key） | JSON: `provider`, `text`, `overrides`? |
+| POST | `/api/robot-settings/tts` | 切换 TTS provider（写 device 表 tts_provider，立即生效） | JSON: `provider` |
+| GET | `/api/robot-settings/tts/config-info` | TTS 配置对话框元信息：音色列表 + 当前设备参数（api_key 掩码，设备 tts_param 优先回落 .env） | session: `device_id` |
+| POST | `/api/robot-settings/tts/config` | 保存设备级 TTS 参数到 tts_param（JSON：`{"moss": {"demo_id"}, "doubao": {api_key, speaker, resource_id, model, ws_url, sample_rate}}`；空值/掩码按 payload > 设备 > .env 回填） | session: `device_id` |
+| POST | `/api/robot-settings/tts/clear-device-override` | 重置设备 TTS：provider=moss-tts-nano + tts_param 清空 | session: `device_id` |
+| GET | `/api/robot-settings/tts/test-info` | 测试对话框元信息（兼容；当前音色设备级） | session: `device_id` |
+| POST | `/api/robot-settings/tts/test` | 合成试听（不落盘；overrides / voice_id 临时覆盖，设备参数优先） | JSON: `provider`, `text`, `voice_id`?, `overrides`? |
 
 ### Web 调试 API
 

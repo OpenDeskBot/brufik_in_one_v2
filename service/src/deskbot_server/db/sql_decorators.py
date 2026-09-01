@@ -180,6 +180,35 @@ def sql_update(sql: str, model: type | None = None):
 
 
 # ---------------------------------------------------------------------------
+# sql_insert: INSERT → 返回新行 id
+# ---------------------------------------------------------------------------
+
+
+def sql_insert(sql: str):
+    """INSERT 装饰器：执行插入，并在同一连接/事务上取回 ``last_insert_rowid()``。
+
+    返回新行自增 id（int）。不能拆成「插入 + 单独查询」两步：
+    连接池为 NullPool，commit 后连接即释放，新连接的 ``last_insert_rowid()`` 恒为 0。
+    """
+
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            params = _bind_params(sql, func, args, kwargs)
+            session: Session = get_session()
+            session.execute(text(sql), params)
+            new_id = session.execute(text("SELECT last_insert_rowid()")).scalar_one()
+            session.commit()
+            return int(new_id)
+
+        wrapper._sql_annotation = sql
+        wrapper._sql_kind = "insert"
+        return wrapper
+
+    return decorator
+
+
+# ---------------------------------------------------------------------------
 # 便捷别名（更贴近 MyBatis 命名）
 # ---------------------------------------------------------------------------
 

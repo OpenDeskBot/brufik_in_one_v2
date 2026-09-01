@@ -266,6 +266,28 @@ install 双路径：主服务 `models/` 或 `~/.insightface` 缓存有源则 cop
 
 install.sh **不会**在安装期从主服务源码生成副本（避免覆盖分叉文件、保持安装离线）。
 
+## llm-minicpm / llm-qwen：本地 llama-server（OpenAI 兼容）
+
+`externals/llm-minicpm/`（MiniCPM5-1B Q4_K_M，端口 **9105**）与
+`externals/llm-qwen/`（Qwen3.8-2B-Distill Q4_K_M，端口 **9106**）共用同一模式：
+llama.cpp **llama-server 二进制**（macOS arm64 官方 release，Metal 加速）+ 本地 GGUF，
+无 Python 依赖、无独立 venv；`install.sh` 幂等（GitHub→gh-proxy 下二进制、
+hf-mirror→huggingface.co 下模型，GGUF 魔数 + 大小校验）。
+
+- 端点：`GET /health`；`POST /v1/chat/completions`（OpenAI 兼容，`--jinja` 聊天模板 +
+  `--alias` 模型名）；启动参数 `-ngl 99`（全层 Metal 卸载）、`-c 8192`、
+  `-rea "off"`（关 think，content 不被思考吃掉）
+- **qwen35 架构要求 llama.cpp ≥ b10360**（Gated DeltaNet），llm-qwen 固定
+  **b10733**（含 Gated DeltaNet fused Metal kernel，Apple Silicon 不走 CPU 回退）；
+  llm-minicpm 用 b10717。两者二进制相互独立、各自下载，不共享
+- 契约覆盖：llm 默认契约 `POST /chat` 在 llama-server 上 404，manifest `test`
+  段覆盖到 `/v1/chat/completions`（expect `choices`）；健康检查 /health 就绪前
+  非 200，`startup_grace_s: 180`
+- 主服务接线：`robot_capability.py` `LOCAL_LLM_PROVIDERS`（id → 服务名/base_url/
+  模型名，`_llm_status` 按 base_url 精确匹配 current，未运行给 warning）；
+  `apply_llm` 快照 ark 配置后可切回；`infrastructure/llm/runtime.py` 对本地 URL
+  （`is_local_llm_url`）豁免 API Key、强制非流式
+
 ## 接入业务（示例：TTS 与 ASR 云端 provider）
 
 外部服务只解决"进程怎么活"，业务接入走既有 port/adapter 模式：

@@ -34,15 +34,16 @@ DEFAULT_WS_URL = "wss://openspeech.bytedance.com/api/v3/tts/bidirection"
 DEFAULT_RESOURCE_ID = "seed-tts-2.0"
 DEFAULT_MODEL = "seed-tts-2.0-expressive"
 DEFAULT_SPEAKER = "zh_male_dongmanhaimian_mars_bigtts"  # 亮嗓萌仔（海绵宝宝）
-DEFAULT_VOICE_CLONE_RESOURCE_ID = "seed-icl-2.0"
-DEFAULT_VOICE_CLONE_URL = "https://openspeech.bytedance.com/api/v3/tts/voice_clone"
-DEFAULT_VOICE_STATUS_URL = "https://openspeech.bytedance.com/api/v3/tts/get_voice"
 TTS_API_KEY_ENV_NAMES = (
     "DOUBAO_TTS_API_KEY",
     "VOLCENGINE_TTS_API_KEY",
     "SEED_TTS_API_KEY",
     "BYTEPLUS_SEED_SPEECH_API_KEY",
 )
+
+
+# 设备级参数白名单（robot_capability / resolve 共用，避免循环依赖）
+DOUBAO_TTS_FIELDS = ("api_key", "speaker", "resource_id", "model", "ws_url", "sample_rate", "audio_format")
 
 
 @dataclass(frozen=True)
@@ -55,11 +56,6 @@ class DoubaoTtsConfig:
     sample_rate: int = 24000
     audio_format: str = "pcm"
     enable_timestamp: bool = True
-    app_id: str = ""
-    access_token: str = ""
-    voice_clone_resource_id: str = DEFAULT_VOICE_CLONE_RESOURCE_ID
-    voice_clone_url: str = DEFAULT_VOICE_CLONE_URL
-    voice_status_url: str = DEFAULT_VOICE_STATUS_URL
 
     def ws_headers(self) -> dict[str, str]:
         return {"X-Api-Key": self.api_key, "X-Api-Resource-Id": self.resource_id, "X-Api-Connect-Id": uuid4().hex}
@@ -75,13 +71,6 @@ class DoubaoTtsConfig:
             "sample_rate": self.sample_rate,
             "audio_format": self.audio_format,
             "enable_timestamp": self.enable_timestamp,
-            "app_id": "",
-            "app_id_set": bool(self.app_id),
-            "access_token": "",
-            "access_token_set": bool(self.access_token),
-            "voice_clone_resource_id": self.voice_clone_resource_id,
-            "voice_clone_url": self.voice_clone_url,
-            "voice_status_url": self.voice_status_url,
         }
 
 
@@ -120,17 +109,37 @@ def _resolve_tts_api_key() -> str:
     return ""
 
 
-def load_doubao_tts_config(tts_cfg: dict[str, Any] | None = None) -> DoubaoTtsConfig:
+def load_doubao_tts_config(
+    tts_cfg: dict[str, Any] | None = None, overrides: dict[str, Any] | None = None
+) -> DoubaoTtsConfig:
     """读取豆包 TTS 配置。
 
-    speaker 优先级：``tts_cfg.doubao_speaker``（机器人设置页写入 config.yaml）
-    > 环境变量 ``DOUBAO_TTS_SPEAKER`` > 内置默认。
+    参数优先级：``overrides``（设备 tts_param / 表单临时覆盖）> ``tts_cfg.doubao_speaker``
+    > 环境变量 ``DOUBAO_TTS_*`` > 内置默认。
     """
     load_dotenv()
-    cfg_speaker = str((tts_cfg or {}).get("doubao_speaker") or "").strip()
-    speaker = cfg_speaker or (os.environ.get("DOUBAO_TTS_SPEAKER") or DEFAULT_SPEAKER).strip()
-    resource_id = (os.environ.get("DOUBAO_TTS_RESOURCE_ID") or DEFAULT_RESOURCE_ID).strip()
-    model = (os.environ.get("DOUBAO_TTS_MODEL") or DEFAULT_MODEL).strip()
+    ov = overrides or {}
+
+    def _pick(field: str, env_key: str, default: str = "") -> str:
+        raw = str(ov.get(field) or "").strip()
+        if not raw:
+            raw = str(os.environ.get(env_key) or "").strip()
+        return raw or default
+
+    speaker = str(ov.get("speaker") or "").strip()
+    if not speaker:
+        speaker = str((tts_cfg or {}).get("doubao_speaker") or "").strip()
+    if not speaker:
+        speaker = (os.environ.get("DOUBAO_TTS_SPEAKER") or DEFAULT_SPEAKER).strip()
+    resource_id = _pick("resource_id", "DOUBAO_TTS_RESOURCE_ID", DEFAULT_RESOURCE_ID)
+    model = _pick("model", "DOUBAO_TTS_MODEL", DEFAULT_MODEL)
+    ws_url = _pick("ws_url", "DOUBAO_TTS_WS_URL", DEFAULT_WS_URL)
+    audio_format = _pick("audio_format", "DOUBAO_TTS_FORMAT", "pcm")
+    sample_rate_raw = str(ov.get("sample_rate") or "").strip() or (os.environ.get("DOUBAO_TTS_SAMPLE_RATE") or "").strip()
+    try:
+        sample_rate = int(sample_rate_raw or 24000)
+    except (TypeError, ValueError):
+        sample_rate = 24000
     from deskbot_server.infrastructure.tts.speakers import find_doubao_tts_speaker_preset, suggest_resource_id
 
     expected_rid = suggest_resource_id(speaker)
@@ -143,23 +152,19 @@ def load_doubao_tts_config(tts_cfg: dict[str, Any] | None = None) -> DoubaoTtsCo
     if resource_id == "seed-tts-1.0" and model.startswith("seed-tts-2"):
         logger.info("speaker=%s 使用 seed-tts-1.0，忽略 2.0 model=%s", speaker, model)
         model = ""
+    api_key = str(ov.get("api_key") or "").strip()
+    if not api_key:
+        api_key = _resolve_tts_api_key()
     return DoubaoTtsConfig(
-        api_key=_resolve_tts_api_key(),
+        api_key=api_key,
         speaker=speaker,
         resource_id=resource_id,
         model=model,
-        ws_url=(os.environ.get("DOUBAO_TTS_WS_URL") or DEFAULT_WS_URL).strip(),
-        sample_rate=int(os.environ.get("DOUBAO_TTS_SAMPLE_RATE") or 24000),
-        audio_format=(os.environ.get("DOUBAO_TTS_FORMAT") or "pcm").strip(),
+        ws_url=ws_url,
+        sample_rate=sample_rate,
+        audio_format=audio_format,
         enable_timestamp=(os.environ.get("DOUBAO_TTS_ENABLE_TIMESTAMP") or "1").strip().lower()
         not in ("0", "false", "no", "off"),
-        app_id=(os.environ.get("DOUBAO_TTS_APP_ID") or "").strip(),
-        access_token=(os.environ.get("DOUBAO_TTS_ACCESS_TOKEN") or "").strip(),
-        voice_clone_resource_id=(
-            os.environ.get("DOUBAO_TTS_VOICE_CLONE_RESOURCE_ID") or DEFAULT_VOICE_CLONE_RESOURCE_ID
-        ).strip(),
-        voice_clone_url=(os.environ.get("DOUBAO_TTS_VOICE_CLONE_URL") or DEFAULT_VOICE_CLONE_URL).strip(),
-        voice_status_url=(os.environ.get("DOUBAO_TTS_VOICE_STATUS_URL") or DEFAULT_VOICE_STATUS_URL).strip(),
     )
 
 

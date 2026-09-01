@@ -181,51 +181,38 @@ def llm_tools_prompt_appendix() -> str:
     """LLM 可返回的 tools 数组说明。"""
     return (
         "可用工具（可选 ``tools`` 数组；需要工具时 ``tools`` 非空、``tts`` 可留空，"
-        "服务端执行后会再次调用你；最终回复时 ``tools`` 写 [] 并填写 ``tts``）："
-        "用户已说话时优先在 ``tts`` 里正常回答；不要只返回 tools 而省略完整 JSON 对象。\n"
-        '  - register_face: {"tool":"register_face","name":"姓名","face_id":1}\n'
-        "    将当前画面 face_id 的人脸注册/更新到档案（embedding 512 维）；"
-        "face_id 见每轮 user 消息「图像识别」；仅一张脸时可省略 face_id；多人须指定 face_id 或先向用户澄清。\n"
-        '  - capture_camera: {"tool":"capture_camera"}\n'
-        "    获取 ESP32 **最近上传**的一帧相机 JPEG（返回 ``jpeg_base64`` 与尺寸）。"
-        "用于结合画面内容做判断（返回 ``jpeg_base64``）。"
-        "若返回无帧，请提示主人确认相机上行已开启。\n"
-        '  - memory_add: {"tool":"memory_add","text":"要记住的内容"}\n'
-        '  - memory_delete: {"tool":"memory_delete","id":"记忆id"}\n'
-        "  - schedule_task: cron 定时任务增删改查（北京时间东八区）。"
-        "**用户要求定时/提醒时，必须调用本工具，禁止仅用 tts 口头答应。**\n"
-        "    示例：主人说「两分钟后请我喝水」→ 第一轮 JSON：\n"
-        '    {"tools":[{"tool":"schedule_task","action":"create","task":"提醒喝水",'
-        '"delay_minutes":2,"task_kind":"once"}],"tts":""}\n'
-        '    工具成功后第二轮：{"tools":[],"tts":"好，两分钟后提醒你喝水。"}\n'
-        "    创建时无需填写 session_id（服务端自动绑定当前 session）。\n"
-        "    **先判断一次性还是周期性**：\n"
-        '    · 一次性 once：如「明天9点提醒」→ task_kind=once + cron "0 9 13 6 *"（分 时 日 月 周）\n'
-        '    · 周期性 recurring：如「每天8点」→ task_kind=recurring + cron "0 8 * * *"\n'
-        "    · 相对延迟：delay_minutes 填数字（「两分钟」→ 2）\n"
-        '    · 查询列表：{"action":"list"}；读取：{"action":"get","id":"…"}\n'
-        '    · 修改：{"action":"update","id":"…","cron":"0 9 * * *","task":"…","enabled":true}\n'
-        '    · 删除：{"action":"delete","id":"…"}\n'
-        '  - webfetch: {"tool":"webfetch","url":"https://…"} 抓取网页文本\n'
-        '  - websearch: {"tool":"websearch","query":"搜索词"} 网络搜索摘要\n'
-        '  - read: {"tool":"read","path":"notes.txt"} 读取本设备 tmp 目录文件\n'
-        '  - write: {"tool":"write","path":"notes.txt","content":"…"} 写入本设备 tmp 目录\n'
-        "    read/write 路径仅限 data/device/{device_id}/tmp/ 下，禁止 .. 与绝对路径。\n"
-        "  - session: 查询当前与最近对话 session（服务端按 10 分钟无对话自动开新 session）\n"
-        '    · 当前 session：{"tool":"session","action":"current"}\n'
-        '    · 最近列表：{"tool":"session","action":"list","limit":10}\n'
-        '    · 读取详情：{"tool":"session","action":"get","session_id":"…"}（省略 id 则读当前）\n'
-        "  - miot: 米家智能家居查看/控制（需已在网站「米家」页绑定）。"
-        "**用户要求开关灯/空调/场景等家居操作时必须调用，禁止仅口头答应。**\n"
-        "    设备清单见上方「米家智能家居」摘要；优先用 name，重名加 room，或用 did。\n"
-        '    · 列表：{"tool":"miot","action":"list","online":true}\n'
-        '    · 读属性：{"tool":"miot","action":"props","name":"台灯","keys":["on","brightness"]}\n'
-        '    · 写属性：{"tool":"miot","action":"set","name":"台灯","key":"on","value":true}\n'
-        '    · 查能力：{"tool":"miot","action":"spec","name":"台灯"}\n'
-        '    · 调动作：{"tool":"miot","action":"action","name":"音箱","key":"play-text","args":["你好"]}\n'
-        '    · 跑场景：{"tool":"miot","action":"run_scene","scene_name":"回家模式"}\n'
-        '    · 刷新缓存：{"tool":"miot","action":"sync"}；授权状态：{"tool":"miot","action":"status"}\n'
-        "    失败时结果含 error/hint/solution，请用口语向用户说明原因与解决办法。\n"
+        "服务端执行后会再次调用你；最终回复时 ``tools`` 写 [] 并填写 ``tts``。"
+        "用户已说话时优先在 ``tts`` 里正常回答；不要只返回 tools 而省略完整 JSON 对象）：\n"
+        '  - set_camera_follow: {"tool":"set_camera_follow","mode":"follow"} 让镜头转向对着用户的脸。'
+        "mode: follow（跟随人脸）/ follow_frontal（跟随正脸）/ 省略（关闭）。说话前画面有人时必须调用。\n"
+        '  - register_face: {"tool":"register_face","name":"姓名","face_id":1} 把当前画面 face_id 的人脸注册/更新到档案。'
+        "face_id 见每轮 user 消息「图像识别」；仅一张脸时可省略；多人须指定 face_id 或先向用户澄清。\n"
+        '  - capture_camera: {"tool":"capture_camera"} 获取 ESP32 最近一帧相机 JPEG（返回 jpeg_base64 与尺寸），'
+        "用于结合画面判断；无帧则提示主人确认相机上行已开启。\n"
+        '  - memory_add: {"tool":"memory_add","text":"要记住的内容"} 新增长期记忆；'
+        'memory_delete: {"tool":"memory_delete","id":"记忆id"} 删除（id 见 system 中长期记忆方括号）。\n'
+        "  - schedule_task: cron 定时任务增删改查（北京时间东八区）。**用户要求定时/提醒时必须调用，禁止仅口头答应。**\n"
+        "    创建：{\"tool\":\"schedule_task\",\"action\":\"create\",\"task\":\"提醒喝水\","
+        "\"cron\":\"0 8 * * *\",\"task_kind\":\"recurring\"}\n"
+        "    · cron 为「分 时 日 月 周」五段：明天9点 → \"0 9 <明日日期> <明日月份> *\"；每天8点 → \"0 8 * * *\"\n"
+        "    · task_kind: once 一次性 / recurring 周期性；相对延迟用 delay_minutes 数字（「两分钟」→ 2），与 cron 二选一\n"
+        "    · 查询：{\"action\":\"list\"}；读取：{\"action\":\"get\",\"id\":\"…\"}；"
+        "修改：{\"action\":\"update\",\"id\":\"…\",\"cron\":\"…\",\"task\":\"…\",\"enabled\":true}；"
+        "删除：{\"action\":\"delete\",\"id\":\"…\"}。创建无需 session_id（自动绑定）。\n"
+        "    成功示例：第一轮 {\"tools\":[...创建...],\"tts\":\"\"} → 第二轮 {\"tools\":[],\"tts\":\"好，两分钟后提醒你喝水。\"}\n"
+        '  - webfetch: {"tool":"webfetch","url":"https://…"} 抓取网页文本；'
+        'websearch: {"tool":"websearch","query":"搜索词"} 网络搜索摘要\n'
+        '  - read: {"tool":"read","path":"notes.txt"} / write: {"tool":"write","path":"notes.txt","content":"…"} '
+        "读写本设备 tmp 目录（路径仅限 data/device/{device_id}/tmp/，禁止 .. 与绝对路径）。\n"
+        "  - session: 查询当前与最近对话 session（10 分钟无对话自动开新 session）\n"
+        '    当前：{"action":"current"}；列表：{"action":"list","limit":10}；详情：{"action":"get","session_id":"…"}（省略 id 读当前）\n'
+        "  - miot: 米家智能家居查看/控制（需已绑定）。**用户要求开关灯/空调/场景时必须调用，禁止仅口头答应。**\n"
+        "    设备见上方「米家智能家居」摘要；优先 name，重名加 room，或用 did。\n"
+        '    列表：{"action":"list","online":true}｜读属性：{"action":"props","name":"台灯","keys":["on","brightness"]}｜'
+        '写属性：{"action":"set","name":"台灯","key":"on","value":true}｜查能力：{"action":"spec","name":"台灯"}｜'
+        '调动作：{"action":"action","name":"音箱","key":"play-text","args":["你好"]}｜跑场景：{"action":"run_scene","scene_name":"回家模式"}｜'
+        '刷新缓存：{"action":"sync"}；授权状态：{"action":"status"}\n'
+        "    失败时结果含 error/hint/solution，用口语向用户说明原因与解决办法。\n"
     )
 
 
@@ -234,6 +221,49 @@ def llm_miot_prompt_appendix(device_id: str | None = None) -> str:
     from deskbot_server.service.miot_service import llm_miot_prompt_appendix as _miot_ax
 
     return _miot_ax(device_id)
+
+
+def llm_quest_tasks_prompt_appendix(*, device_id: str | None = None) -> str:
+    """「当前剧情任务」附录：绑定剧本（devices.quest_id）的 running 任务列表。
+
+    未绑定 / 剧本缺失 / 无进行中任务 → 空串（不注入）。
+    """
+    if not device_id:
+        return ""
+    from deskbot_server.service.quest_service import QuestService
+
+    tasks = QuestService().get_current_tasks(str(device_id))
+    if not tasks:
+        return ""
+    lines: list[str] = ["当前剧情任务（进行中，按完成进度排序）："]
+    for t in tasks:
+        lines.append(f"  - [{t['task_id']}] {t['title']}")
+        lines.append(f"    目标：{t['goal']}")
+        lines.append(f"    策略：{t['strategy']}")
+        lines.append(f"    成功条件：{t['success_condition']}｜失败条件：{t['failure_condition']}")
+        lines.append(f"    进度：{t['current_score']}/{t['activation_score']}")
+    return "\n".join(lines)
+
+
+def llm_quest_tools_prompt_appendix(*, device_id: str | None = None) -> str:
+    """「剧情任务工具」附录：get_tool_calls 契约格式化。
+
+    无可用任务 id（未绑定 / 剧本无 running）→ 空串：
+    不向 LLM 广告不可用工具，避免诱导编造 task_id。
+    """
+    if not device_id:
+        return ""
+    from deskbot_server.service.quest_service import QuestService
+
+    calls = QuestService().get_tool_calls(str(device_id))
+    if not calls or not any(c.get("available_task_ids") for c in calls):
+        return ""
+    lines = [f"剧情任务工具（可用任务 id：{', '.join(calls[0]['available_task_ids'])}）："]
+    for c in calls:
+        lines.append(f"  - {c['name']}：{c['description']}")
+        for pname, pdesc in (c.get("parameters") or {}).items():
+            lines.append(f"      {pname}：{pdesc}")
+    return "\n".join(lines)
 
 
 def llm_static_context_prompt_appendix(device_id: str | None = None) -> str:
@@ -376,7 +406,7 @@ def beijing_time_str() -> str:
 
 
 def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None) -> str:
-    """组装最终 system prompt：基础人设 + 时间 + 屏幕音量 + 动作/表情清单 + 记忆/米家/工具。"""
+    """组装最终 system prompt：基础人设 + 时间 + 屏幕音量 + 动作/表情清单 + 记忆/米家/工具 + 剧情任务。"""
     base = f"{base_prompt}\n当前时间是: {beijing_time_str()}（北京时间，东八区）"
     base += "\n" + llm_device_screen_appendix(device_id)
     px = llm_pb_scenes_prompt_appendix(device_id=device_id)
@@ -385,6 +415,12 @@ def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None) -
     fx = llm_static_context_prompt_appendix(device_id)
     if fx:
         base += "\n\n" + fx
+    qx = llm_quest_tasks_prompt_appendix(device_id=device_id)
+    if qx:
+        base += "\n\n" + qx
+    qt = llm_quest_tools_prompt_appendix(device_id=device_id)
+    if qt:
+        base += "\n\n" + qt
     return base
 
 
@@ -676,6 +712,8 @@ __all__ = [
     "llm_pb_moves_prompt_appendix",
     "llm_pb_plan_prompt_appendix",
     "llm_pb_scenes_prompt_appendix",
+    "llm_quest_tasks_prompt_appendix",
+    "llm_quest_tools_prompt_appendix",
     "llm_recognized_faces_prompt_appendix",
     "llm_static_context_prompt_appendix",
     "llm_tools_prompt_appendix",

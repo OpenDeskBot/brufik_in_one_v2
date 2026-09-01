@@ -128,8 +128,7 @@ class AppSettings:
         face_info_env = _env_bool("DESKBOT_SEND_FACE_INFO")
         face_info = face_info_env if face_info_env is not None else bool(srv.get("send_face_info_to_asr_chat", False))
 
-        if env := _env_str("TTS_PROVIDER"):
-            tts["provider"] = env
+        # TTS provider 由 device 表 tts_provider 决定（设备级），不再读 TTS_PROVIDER 环境变量
         if env := _env_str("TTS_WS_URL"):
             tts["ws_url"] = env
         if env := _env_int("TTS_SPK_ID"):

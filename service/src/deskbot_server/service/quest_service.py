@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from deskbot_server.dao import quest_mapper
+from deskbot_server.dao import device_mapper, quest_mapper
 from deskbot_server.utils.paths import DATA_DIR
 from deskbot_server.utils.singleton import SingletonMeta
 
@@ -500,36 +500,68 @@ class QuestService(metaclass=SingletonMeta):
 
     # ── 设备视角查询（运行时接线用）────────────────────────────
 
-    def get_current_tasks(self, device_id: str) -> list[dict]:
-        """设备当前进行中（running）的任务 —— 活跃目标集，供对话上下文注入。
+    def get_bound_playbook(self, device_id: str) -> str | None:
+        """设备绑定的剧本名（devices.quest_id）。
 
-        遍历设备名下所有剧本，返回运行中任务的目标/生效策略/成功失败条件/分数，
-        按达成率（current_score/activation_score）降序（越接近完成越优先）。
+        设备行不存在 / quest_id 空 / 剧本文件不存在或读取失败（QuestError）→ None。
         """
+        dev = device_mapper.get_by_device_id(device_id)
+        if dev is None:
+            return None
+        qid = str(dev.quest_id or "").strip()
+        if not qid:
+            return None
+        try:
+            if self.get_playbook(qid) is None:
+                return None
+        except QuestError:
+            return None
+        return qid
+
+    def get_current_tasks(self, device_id: str) -> list[dict]:
+        """设备当前进行中（running）的任务 —— 仅绑定剧本（devices.quest_id）。
+
+        分支语义：
+        1. 设备行不存在 / quest_id 空 / 剧本文件缺失 → []
+        2. (device, quest) 无实例 → ensure_instances 幂等初始化
+           （initial_status=running 的最初任务直接 running），再查
+        3. 有实例 → 返回 running 列表（目标/策略/成功失败条件/分数，按达成率降序）
+        """
+        playbook = self.get_bound_playbook(device_id)
+        if not playbook:
+            return []
+        if not quest_mapper.list_instances(device_id, playbook):
+            try:
+                self.ensure_instances(device_id, playbook)
+            except QuestError:
+                return []  # 检查后剧本文件被删的竞态兜底
+        return self._current_tasks_for_playbook(device_id, playbook)
+
+    def _current_tasks_for_playbook(self, device_id: str, playbook: str) -> list[dict]:
+        """单个剧本下 running 任务的活跃目标集（格式/排序同旧逻辑）。"""
         out: list[dict] = []
-        for playbook in self.list_playbooks():
-            for inst in quest_mapper.list_instances(device_id, playbook):
-                if inst.status != STATUS_RUNNING:
-                    continue
-                defn = self.get_task_definition(playbook, inst.task_id)
-                if defn is None:
-                    continue
-                activation = max(int(defn.get("activation_score") or 1), 1)
-                ratio = (inst.current_score or 0) / activation
-                out.append(
-                    {
-                        "playbook": playbook,
-                        "task_id": inst.task_id,
-                        "title": defn.get("title", "notitle"),
-                        "goal": defn.get("goal", ""),
-                        "strategy": self.get_effective_strategy(device_id, playbook, inst.task_id),
-                        "success_condition": defn.get("success_condition", ""),
-                        "failure_condition": defn.get("failure_condition", ""),
-                        "current_score": inst.current_score,
-                        "activation_score": activation,
-                        "ratio": round(ratio, 3),
-                    }
-                )
+        for inst in quest_mapper.list_instances(device_id, playbook):
+            if inst.status != STATUS_RUNNING:
+                continue
+            defn = self.get_task_definition(playbook, inst.task_id)
+            if defn is None:
+                continue
+            activation = max(int(defn.get("activation_score") or 1), 1)
+            ratio = (inst.current_score or 0) / activation
+            out.append(
+                {
+                    "playbook": playbook,
+                    "task_id": inst.task_id,
+                    "title": defn.get("title", "notitle"),
+                    "goal": defn.get("goal", ""),
+                    "strategy": self.get_effective_strategy(device_id, playbook, inst.task_id),
+                    "success_condition": defn.get("success_condition", ""),
+                    "failure_condition": defn.get("failure_condition", ""),
+                    "current_score": inst.current_score,
+                    "activation_score": activation,
+                    "ratio": round(ratio, 3),
+                }
+            )
         out.sort(key=lambda x: x["ratio"], reverse=True)
         return out
 

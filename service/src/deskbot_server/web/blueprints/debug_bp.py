@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import logging
-import mimetypes
 import os
 import time
 
@@ -330,51 +329,6 @@ def _doubao_cfg_from_payload(payload: dict):
     )
 
 
-def _doubao_voice_clone_cfg_from_payload(payload: dict):
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config, resolve_optional_secret
-    from deskbot_server.infrastructure.tts.voice_clone import DEFAULT_VOICE_CLONE_RESOURCE_ID, DoubaoVoiceCloneConfig
-
-    base = load_doubao_tts_config()
-    app_key = resolve_optional_secret(payload.get("app_id"), base.app_id)
-    access_key = resolve_optional_secret(payload.get("access_token"), base.access_token)
-    resource_id = str(
-        payload.get("resource_id")
-        or payload.get("voice_clone_resource_id")
-        or base.voice_clone_resource_id
-        or DEFAULT_VOICE_CLONE_RESOURCE_ID
-    ).strip()
-    clone_url = str(payload.get("voice_clone_url") or base.voice_clone_url).strip()
-    status_url = str(payload.get("voice_status_url") or base.voice_status_url).strip()
-    return DoubaoVoiceCloneConfig(
-        app_key=app_key, access_key=access_key, resource_id=resource_id, clone_url=clone_url, status_url=status_url
-    )
-
-
-def _audio_format_from_upload(filename: str, content_type: str) -> str:
-    guessed = (mimetypes.guess_type(filename or "")[0] or content_type or "").lower()
-    ext = (filename.rsplit(".", 1)[-1] if "." in filename else "").strip().lower()
-    if ext in {"wav", "mp3", "ogg", "m4a", "aac", "pcm", "flac", "opus"}:
-        return "ogg" if ext == "opus" else ext
-    if "wav" in guessed:
-        return "wav"
-    if "mpeg" in guessed or "mp3" in guessed:
-        return "mp3"
-    if "ogg" in guessed or "opus" in guessed:
-        return "ogg"
-    if "mp4" in guessed or "m4a" in guessed:
-        return "m4a"
-    if "aac" in guessed:
-        return "aac"
-    if "flac" in guessed:
-        return "flac"
-    return ext
-
-
-def _voice_clone_payload(result) -> dict:
-    payload = result.as_payload()
-    return {"ok": True, **payload, "t": time.time()}
-
-
 @router.post("/api/doubao_tts/synthesize")
 def api_doubao_tts_synthesize(request: Request, user: RequireUser):
     from deskbot_server.infrastructure.tts.doubao import synthesize_doubao_tts
@@ -413,74 +367,6 @@ def api_doubao_tts_synthesize(request: Request, user: RequireUser):
             "wav_base64": base64.b64encode(wav).decode("ascii"),
         }
     )
-
-
-@router.post("/api/doubao_tts/voice-clone")
-def api_doubao_tts_voice_clone(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.tts.voice_clone import clone_doubao_voice, custom_speaker_id_from_name
-    from deskbot_server.web.view_helpers import read_upload_bytes
-
-    upload = files_get(request, "audio") or files_get(request, "file")
-    if upload is None or not upload.filename:
-        return jsonify({"ok": False, "error": "请先上传训练音频"}), 400
-    audio_bytes = read_upload_bytes(upload)
-    if not audio_bytes:
-        return jsonify({"ok": False, "error": "训练音频为空"}), 400
-    if len(audio_bytes) > 10 * 1024 * 1024:
-        return jsonify({"ok": False, "error": "训练音频不能超过 10MB"}), 400
-
-    form = getattr(request.state, "form", None) or {}
-    voice_name = str(form.get("voice_name") or form.get("display_name") or "").strip()
-    if not voice_name:
-        return jsonify({"ok": False, "error": "请填写音色名称"}), 400
-    custom_speaker_id = str(form.get("custom_speaker_id") or "").strip() or custom_speaker_id_from_name(voice_name)
-    audio_format = str(form.get("audio_format") or "").strip().lower() or _audio_format_from_upload(
-        upload.filename or "", upload.content_type or ""
-    )
-    if not audio_format:
-        return jsonify({"ok": False, "error": "无法识别音频格式，请上传 wav/mp3/ogg/m4a/aac/pcm"}), 400
-    try:
-        language = int(form.get("language") or 0)
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "language 必须是数字枚举"}), 400
-    cfg = _doubao_voice_clone_cfg_from_payload(form)
-    try:
-        result = clone_doubao_voice(
-            cfg,
-            audio_bytes=audio_bytes,
-            audio_format=audio_format,
-            language=language,
-            display_name=voice_name,
-            custom_speaker_id=custom_speaker_id,
-            prompt_text=str(form.get("prompt_text") or "").strip(),
-        )
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:  # noqa: BLE001 - surface provider error to the user
-        logger.exception("火山声音复刻训练提交失败 custom_speaker_id=%r", custom_speaker_id)
-        return jsonify({"ok": False, "error": str(exc)}), 502
-    return jsonify(_voice_clone_payload(result))
-
-
-@router.post("/api/doubao_tts/voice-clone/status")
-def api_doubao_tts_voice_clone_status(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.tts.voice_clone import get_doubao_voice_clone_status
-
-    payload = get_json(request, silent=True) or {}
-    if not isinstance(payload, dict):
-        return jsonify({"ok": False, "error": "body must be a JSON object"}), 400
-    speaker_id = str(payload.get("speaker_id") or "").strip()
-    if not speaker_id:
-        return jsonify({"ok": False, "error": "请填写 S_ 开头的音色 ID"}), 400
-    cfg = _doubao_voice_clone_cfg_from_payload(payload)
-    try:
-        result = get_doubao_voice_clone_status(cfg, speaker_id)
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:  # noqa: BLE001 - surface provider error to the user
-        logger.exception("火山声音复刻状态查询失败 speaker=%r", speaker_id)
-        return jsonify({"ok": False, "error": str(exc)}), 502
-    return jsonify(_voice_clone_payload(result))
 
 
 @router.get("/debug/llm")
@@ -1110,8 +996,6 @@ ENDPOINTS = {
     "debug.api_doubao_tts_config_get": "/api/doubao_tts/config",
     "debug.api_doubao_tts_config_post": "/api/doubao_tts/config",
     "debug.api_doubao_tts_synthesize": "/api/doubao_tts/synthesize",
-    "debug.api_doubao_tts_voice_clone": "/api/doubao_tts/voice-clone",
-    "debug.api_doubao_tts_voice_clone_status": "/api/doubao_tts/voice-clone/status",
     "debug.debug_llm": "/debug/llm",
     "debug.debug_simulation": "/debug/simulation",
     "debug.api_tts_phoneme_tts": "/api/tts/phoneme_tts",

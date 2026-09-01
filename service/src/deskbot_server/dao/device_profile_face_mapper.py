@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from deskbot_server.db.models import DeviceProfileFace
-from deskbot_server.db.sql_decorators import execute, select, select_one
+from deskbot_server.db.sql_decorators import execute, select, select_one, sql_insert
 
 # ────────────────────────── 查询 ──────────────────────────
 
@@ -23,22 +23,17 @@ def list_by_device_and_name(device_id: str, name: str) -> list[DeviceProfileFace
     """按设备 + 姓名查找档案（用于同名合并判断）。"""
 
 
-@select_one("SELECT * FROM device_profile_face WHERE rowid = last_insert_rowid()", model=DeviceProfileFace)
-def _last_inserted() -> DeviceProfileFace | None:
-    """获取最近一次 INSERT 的行（需在同 session 中调用）。"""
-
-
 # ────────────────────────── 写操作 ──────────────────────────
 
 
-@execute(
+@sql_insert(
     """
     INSERT INTO device_profile_face (device_id, name, descriptor, descriptor_kind, created_at, updated_at)
     VALUES (:device_id, :name, :descriptor, :descriptor_kind, datetime('now'), datetime('now'))
     """
 )
 def insert(device_id: str, name: str, descriptor: str, descriptor_kind: str) -> int:
-    """插入新人脸档案。"""
+    """插入新人脸档案，返回新行自增 id。"""
 
 
 @execute(

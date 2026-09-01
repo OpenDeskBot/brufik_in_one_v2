@@ -25,11 +25,3 @@ def save_temp_wav(pcm_bytes: bytes, sample_rate: int) -> str:
     with open(path, "wb") as f:
         f.write(wav_bytes)
     return path
-
-
-def pcm_to_wav_file(path: str | os.PathLike, pcm_bytes: bytes, sample_rate: int, channels: int = 1) -> int:
-    """将 PCM（int16 LE）写入 WAV 文件，返回音频时长毫秒。"""
-    wav_bytes = pcm_to_wav_bytes(pcm_bytes, sample_rate, channels=channels)
-    with open(path, "wb") as f:
-        f.write(wav_bytes)
-    return int(len(pcm_bytes) / 2 / max(1, sample_rate) * 1000)

@@ -212,22 +212,28 @@ class DeviceWsService(metaclass=SingletonMeta):
     # 连接管理（一个设备同时只有一条连接）
     # ======================================================================
 
-    async def register(self, device_id: str, ws) -> None:
-        """注册设备连接。如果已有旧连接，先清理再创建新连接。"""
+    async def register(self, device_id: str, ws, *, claim_slot: bool = True) -> None:
+        """注册设备连接。
+
+        ``claim_slot=True``（asr_chat）：抢占设备唯一下行槽位，关闭同设备旧连接；
+        ``claim_slot=False``（device_pipeline 生产者等）：只登记在线状态，不覆盖
+        ``entry.ws``，避免把设备的真实 asr_chat 连接挤掉造成反复重连。
+        """
         if not device_id:
             return
 
         if not self._cleanup_task:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
-        # 如果该设备已有连接，先清理旧连接
-        old_ws = None
-        async with self._lock:
-            old_entry = self._devices.get(device_id)
-            if old_entry is not None and old_entry.ws is not None:
-                old_ws = old_entry.ws
-        if old_ws is not None:
-            await self._close_old_connection(device_id, old_ws)
+        # 只有抢占槽位的连接才需要关闭同设备旧连接
+        if claim_slot:
+            old_ws = None
+            async with self._lock:
+                old_entry = self._devices.get(device_id)
+                if old_entry is not None and old_entry.ws is not None:
+                    old_ws = old_entry.ws
+            if old_ws is not None:
+                await self._close_old_connection(device_id, old_ws)
 
         is_new = False
         async with self._lock:
@@ -239,7 +245,8 @@ class DeviceWsService(metaclass=SingletonMeta):
                 is_new = True
             entry.last_seen_ts = now
             entry.online = True
-            entry.ws = ws
+            if claim_slot:
+                entry.ws = ws
 
         # 启动 PbSeq 队列协程
         async with self._queue_lock:
@@ -876,6 +883,16 @@ class DeviceWsService(metaclass=SingletonMeta):
         logger.info(
             "[ASR] 识别成功 device_id=%s req=%s audio_ms=%d asr_ms=%.0f text=%r",
             device_id, request_id, seg_duration_ms, asr_ms, text,
+        )
+
+        # asr_done stage：仅广播给页面订阅者，供前端先渲染用户气泡（不向设备下发）
+        from deskbot_server.ws.stages import _emit_stage
+
+        await _emit_stage(
+            websocket, device_id, request_id, "asr_done",
+            send_client=False,
+            event_fields={"asr_text": text, "asr_ms": int(asr_ms), "source": "asr"},
+            bus_service=self._bus_service,
         )
 
         try:

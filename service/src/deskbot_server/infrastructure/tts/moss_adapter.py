@@ -32,16 +32,23 @@ GENERATE_TIMEOUT_S = 60.0  # 合成含模型推理，宽限
 DEFAULT_DEMO_ID = "demo-1"  # demo.jsonl 首行音色（🇨🇳 欢迎关注模思智能）
 MOSS_SAMPLE_RATE = 48000
 
+# 设备级参数白名单（resolve 共用）
+MOSS_TTS_FIELDS = ("demo_id", "base_url")
+
 
 class MossTtsAdapter:
-    """外部 moss-tts-nano 进程的 TtsPort 客户端（无状态，可每次调用构造）。"""
+    """外部 moss-tts-nano 进程的 TtsPort 客户端（无状态，可每次调用构造）。
 
-    def __init__(self, settings: AppSettings) -> None:
+    ``overrides`` 为设备级参数（tts_param["moss"]），优先级高于 config.yaml tts.extra。
+    """
+
+    def __init__(self, settings: AppSettings, overrides: dict[str, Any] | None = None) -> None:
         self._settings = settings
         extra = dict(settings.tts.extra or {})
-        self.base_url = str(extra.get("base_url") or "").strip() or TTS_ENGINE_BASE_URL
-        self.base_url = self.base_url.rstrip("/")
-        self.demo_id = str(extra.get("demo_id") or "").strip() or DEFAULT_DEMO_ID
+        ov = dict(overrides or {})
+        base_url = str(ov.get("base_url") or "").strip() or str(extra.get("base_url") or "").strip() or TTS_ENGINE_BASE_URL
+        self.base_url = base_url.rstrip("/")
+        self.demo_id = str(ov.get("demo_id") or "").strip() or str(extra.get("demo_id") or "").strip() or DEFAULT_DEMO_ID
         logger.info("[TTS] provider=moss-tts-nano base_url=%s demo_id=%s", self.base_url, self.demo_id)
 
     async def synthesize_phoneme_segments(self, text: str) -> tuple[int, list[Any]]:

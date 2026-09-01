@@ -1,9 +1,9 @@
 {% extends "base_2c.html" %}
-{% block page_title %}它记得的事 · 小歪{% endblock %}
+{% block page_title %}记忆 · 小歪{% endblock %}
 {% block extra_head %}<script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>{% endblock %}
 {% block content %}
 <div id="app">
-  <div class="pagehd"><div><div class="eyebrow">MEMORY · [[ items.length ]] ENTRIES</div><h1>它记得的事</h1><p>机器人记住的关于你的小事，随时可改可删。</p></div></div>
+  <div class="pagehd"><div><div class="eyebrow">MEMORY · [[ items.length ]] ENTRIES</div><h1>记忆</h1><p>机器人记住的关于你的小事，随时可改可删。</p></div></div>
   <div style="display:flex;gap:8px;margin-bottom:18px;max-width:560px" v-if="!noDevice">
     <input class="tinput" v-model="draft" placeholder="加一条它该记住的事…" @keyup.enter="add">
     <button class="btn primary" @click="add">＋ 加一条</button>
