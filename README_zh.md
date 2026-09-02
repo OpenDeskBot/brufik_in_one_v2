@@ -44,8 +44,44 @@
 
 | 目录 | 角色 | 内容 |
 |------|------|------|
-| [`hardware/`](hardware/) | 实体机器人 | ESP32-S3 固件（FreeRTOS 多任务）、机械结构件（STEP/说明书）、PCB 重建文件、自定义 bootloader / 分区表、烧录脚本 |
+| [`hardware/`](hardware/) | 实体机器人 | ESP32-S3 固件（FreeRTOS 多任务）、机械结构件（STEP/说明书）、PCB 设计文件（Gerber/BOM，V2.0 双板）、自定义 bootloader / 分区表、烧录脚本 |
 | [`service/`](service/) | 大脑（后台） | deskbot-server 主服务（WS + Web 控制台）、VAD/ASR/LLM/TTS 语音管线、人脸识别、记忆与定时任务、协议文档 |
+
+---
+
+## 🔧 自己动手做一台
+
+硬件全部开源：两块 **PCB V2.0**（主控 Base + 屏幕 LCM）+ 3D 打印结构件 + 通用小零件，按下面清单采购即可。详细组装步骤见 [图文说明书](hardware/mechanical/小歪v2.0组装说明书PDF.pdf)，接线表与烧录见 [hardware/README_zh.md](hardware/README_zh.md)。
+
+### 购买材料清单（每套）
+
+| 类别 | 品名 | 规格 | 每套用量 | 说明 |
+|------|------|------|----------|------|
+| 硬件 | 屏幕 | 1.83英寸TFT液晶屏ST7789小屏240x284显示器LCD彩屏SPI圆角 | 1 | 12p插接 无触摸 |
+| 硬件 | 摄像头 | ov3660异面120°广角40mm长 | 1 | — |
+| 硬件 | 扬声器 | 2011腔体喇叭8欧1瓦 | 1 | 1.25插头 |
+| 硬件 | 9g舵机 | 180°舵机 | 1 | JR2.54插口 |
+| 硬件 | 3.7g舵机 | 长宽尺寸20.2*8.5mm | 1 | 1、工作电压必须满足5v；2、长宽20.2*8.5mm（允许±0.5mm公差，一般都是这种规格）；3、JR2.54插口 |
+| 硬件 | FPC天线 | FPC天线 IPEX 1代接头 线长5cm 尺寸28*9mm | 1 | 尺寸越大信号越好，但是不得大于30*30mm |
+| 硬件 | 屏幕PCB | 详见 PCB sheet | 1 | 即 **PCB V2.0 LCM** |
+| 硬件 | 主控PCB | 详见 PCB sheet | 1 | 即 **PCB V2.0 Base** |
+| 辅料 | M2*5自攻螺丝 | 十字盘头不锈钢平尾 | 14 | — |
+| 辅料 | M2*8自攻螺丝 | 十字盘头不锈钢平尾 | 9 | — |
+| 辅料 | M2*12自攻螺丝 | 十字盘头不锈钢平尾 | 2 | — |
+| 辅料 | 连接线 | 1.25 6p 150mm 双头同向硅胶线 | 1 | 双头同向，见[示意图](hardware/mechanical/连接线_双向同头示意图.png) |
+
+### PCB 与 3D 结构件
+
+**主控 PCB（PCB V2.0 Base）**——ESP32-S3-WROOM-1U-N16R8 + 板载麦克风 / NS4168 功放 / TYPE-C： [Gerber](hardware/mechanical/小歪_Gerber_PCB_V2.0_Base_2026-09-02.zip) · [BOM](hardware/mechanical/BOM_V2.0_Base_PCB_V2.0_Base_2026-09-02.xlsx)
+
+![PCB V2.0 Base 主控板](hardware/mechanical/PCB_PCB_V2.0_Base_2026-09-02.png)
+
+**屏幕 PCB（PCB V2.0 LCM）**——屏幕转接板，FPC 与主控相连： [BOM](hardware/mechanical/BOM_V2.0_LCM_PCB_V2.0_LCM_2026-09-02.xlsx)
+
+![PCB V2.0 LCM 屏幕板](hardware/mechanical/PCB_PCB_V2.0_LCM_2026-09-02.png)
+
+- **3D 打印件（STEP）：** [`小歪机器人v2.0打印件stp.stp`](hardware/mechanical/小歪机器人v2.0打印件stp.stp)
+- **摄像头卡子（OV3660 固定）：** [`小歪机器人v2.0 ov3660摄像头卡子.stp`](<hardware/mechanical/小歪机器人v2.0 ov3660摄像头卡子.stp>)
 
 ---
 
@@ -59,10 +95,9 @@
 # 1. 安装系统依赖（Ubuntu；macOS 用 brew install ffmpeg python@3.11）
 sudo apt install -y python3.11 python3.11-venv python3.11-dev ffmpeg curl git
 
-# 2. 配置大模型 Key（必填）
+# 2. 准备配置（默认全部免费本地模型，无需任何云 Key；用云端模型时再在 .env 配置）
 cd service
 cp .env.example .env
-# 编辑 .env，填写 ARK_API_KEY 与 ARK_MODEL（火山方舟，默认 LLM 后端）
 
 # 3. 一键启动（自动建 venv、下载 ASR 模型，拉起主服务 + Web 控制台）
 chmod +x start.sh
@@ -131,12 +166,14 @@ cd hardware
 
 ### 语音管线（`service/config.yaml` 可调）
 
+**免费本地优先**：VAD / ASR / LLM / TTS 默认全部在本机运行，零 API 费用；云端收费模型可在 `service/config.yaml` 或控制台「机器人设置」按需切换。
+
 | 环节 | 实现 | 说明 |
 |------|------|------|
 | VAD | Silero VAD（ONNX，本地） | 端点检测，自动起停 |
 | ASR | FunASR · SenseVoiceSmall（本地 ONNX） | 中文，16kHz，支持 Opus/PCM |
-| LLM | 火山方舟 `ark_responses`（默认，DeepSeek 等），兼容 OpenAI / DashScope | 多轮工具循环，JSON 输出 |
-| TTS | 豆包 Doubao（默认），可换本地/其他后端 | 返回音素时间戳，驱动屏幕口型 |
+| LLM | **本地优先**：Qwen3.8-2B（llama-server，端口 9106）或 MiniCPM5-1B（端口 9105），OpenAI 兼容协议；可切换云端火山方舟（DeepSeek 等）/ OpenAI / DashScope | 多轮工具循环，JSON 输出 |
+| TTS | **本地优先**：MOSS-TTS-Nano；可切换云端豆包 Doubao | 返回音素时间戳，驱动屏幕口型 |
 | 组帧 | pb wire：音频 + 动画 + 舵机 + 屏字 | 24kHz s16le PCM，优先级队列（0 空闲/1 说话/2 紧急/3 调试） |
 
 ### 设备 WebSocket 协议
@@ -153,7 +190,7 @@ cd hardware
 ### 固件要点（`hardware/firmware/`）
 
 - 主控 **ESP32-S3**（当前固件适配自研 Deskbot v2 板，由 Seeed XIAO ESP32S3 Sense 方案移植）
-- 外设：ST7789P 240×284 SPI 屏 · 双轴舵机（X 左右 GPIO16 / Y 上下 GPIO15）· PDM 麦克风 · NS4168 I2S 功放 · OV2640 120° 广角摄像头 · RGB 状态灯
+- 外设：ST7789P 240×284 SPI 屏 · 双轴舵机（X 左右 GPIO16 / Y 上下 GPIO15）· PDM 麦克风 · NS4168 I2S 功放 · OV2640/OV3660 120° 广角摄像头（esp_camera 自动识别）· RGB 状态灯
 - **ESP-SR AFE**（AEC 回声消除 / NS 降噪 / AGC / VAD）→ 全双工音频，可打断
 - 自定义 bootloader 钩子，避免上电/烧录时舵机误触发抽动
 - 工具链：pioarduino 55.03.39 · Arduino-ESP32 3.3.9 + ESP-IDF 5.5.4 · Python ≥3.10

@@ -9,7 +9,7 @@
 
 | 项目 | 规格 |
 |------|------|
-| 开发板 | **Seeed XIAO ESP32S3 Sense**（当前固件已移植到自研 Deskbot v2 板，引脚以 [`firmware/deskbot_config.h`](../hardware/firmware/deskbot_config.h) 为准；本文档引脚表仍按 XIAO 参考设计） |
+| 开发板 | **Seeed XIAO ESP32S3 Sense** → 自研 **Deskbot v2 主控板（PCB V2.0 Base，ESP32-S3-WROOM-1U-N16R8）**（引脚以 [`firmware/deskbot_config.h`](../hardware/firmware/deskbot_config.h) 为准；本文档引脚表仍按 XIAO 参考设计，v2 实际接线见 [`hardware/README_zh.md`](../hardware/README_zh.md)「接线」） |
 | MCU | ESP32-S3（Xtensa 双核 LX7） |
 | 框架 | Arduino-ESP32 3.3.9 + ESP-IDF 5.5.4 |
 | PlatformIO 平台 | pioarduino 55.03.9 |
@@ -66,8 +66,8 @@
 
 | 项目 | 规格 |
 |------|------|
-| 传感器 | **OV2640** |
-| 镜头 | 120° 广角，同平面，25mm 长度 |
+| 传感器 | **OV2640 / OV3660**（esp_camera 上电自动识别；v2.0 结构件配 **OV3660** 模组，引脚通用） |
+| 镜头 | v2.0：**异面**，120° 广角，**40mm** 长度（旧 XIAO 版为同面 25mm） |
 | 接口 | 8-bit 并行 + SCCB（I2C）控制 |
 | XCLK 频率 | 10MHz（20MHz 会导致 DMA 损坏/绿屏） |
 | 帧尺寸 | QVGA 320×240 |
@@ -123,7 +123,7 @@
 
 | 项目 | X 轴（水平/左右） | Y 轴（垂直/上下） |
 |------|-------------------|-------------------|
-| 类型 | 2g 微型舵机 | SG90 / 9g 舵机 |
+| 类型 | 3.7g 微型舵机（5V，20.2×8.5mm，JR2.54） | SG90 / 9g 舵机（JR2.54） |
 | GPIO | 8（D9） | 4（D3） |
 | 角度范围 | 0° - 180° | 70° - 110°（限位行程） |
 | 中心位置 | 90° | 90° |
@@ -156,8 +156,8 @@
 
 | 项目 | 规格 |
 |------|------|
-| 功放芯片 | **MAX98357A**（I2S Class-D 单声道功放） |
-| 扬声器 | 2011 型，8Ω 腔体喇叭 |
+| 功放芯片 | **NS4168**（I2S 输入 D 类功放，v2 主控板板载，替代原 MAX98357A） |
+| 扬声器 | 2011 型，8Ω 1W 腔体喇叭（1.25 插头） |
 | I2S 总线 | I2S_NUM_1，STD 模式 |
 | 采样率 | 16000Hz（默认）/ 24000Hz（TTS 输出） |
 | 位深 | 16-bit |
@@ -172,7 +172,7 @@
 
 | 项目 | 规格 |
 |------|------|
-| 类型 | 板载 PDM 麦克风（ESP32S3 Sense 扩展板） |
+| 类型 | 板载 PDM 麦克风（v2 主控板板载，聆麦 LMD2718T271；原 Sense 扩展板方案已废弃） |
 | I2S 总线 | I2S_NUM_0，PDM_RX 模式 |
 | 采样率 | 16000Hz |
 | 位深 | 16-bit |
@@ -187,22 +187,22 @@
 
 ### 音频引脚分配
 
-**扬声器 I2S：**
+**扬声器 I2S（v2 板）：**
 
-| 信号 | GPIO | XIAO Pad |
-|------|------|----------|
-| DIN | 1 | D0 |
-| BCLK | 6 | D5 |
-| LRC | 5 | D4 |
-| SD | NC | 未连接 |
+| 信号 | GPIO | 备注 |
+|------|------|------|
+| DIN | 40 | — |
+| BCLK | 41 | — |
+| LRC | 42 | — |
+| SD (=AMP_CTRL) | 45 | 高电平使能（strapping 引脚，boot 后才可拉高） |
 | GAIN | NC | 未连接 |
 
-**麦克风 PDM：**
+**麦克风 PDM（v2 板）：**
 
 | 信号 | GPIO |
 |------|------|
-| CLK | 42 |
-| DATA | 41 |
+| CLK | 1 |
+| DATA | 2 |
 
 ### VAD（语音活动检测）配置
 
@@ -235,7 +235,7 @@ D8  = GPIO7    D9  = GPIO8    D10 = GPIO9
 | MCU + 显示屏 + 摄像头 | 3.3V | XIAO 板载稳压，USB 供电 |
 | 舵机 | **5V ≥ 1A** | 独立供电，与逻辑共地 |
 | MAX98357A 功放 | 3.3V | XIAO 板载供电 |
-| USB-C 接口 | 5V | Board1 PCB 上的 TYPE-C 6P（LCSC C668623），CC1/CC2 5.1k 下拉电阻 |
+| USB-C 接口 | 5V | 主控 PCB V2.0（Base）上的 TYPE-C 16P（LCSC C2765186），CC1/CC2 5.1k 下拉电阻 |
 
 **建议总供电：5V ≥ 1A**（舵机为主要电流消耗）
 
@@ -283,8 +283,8 @@ D8  = GPIO7    D9  = GPIO8    D10 = GPIO9
 3. USB-C 接口需确保 CC1/CC2 5.1k 下拉电阻焊接正确，否则无法被主机识别
 
 ### 🔌 引脚冲突
-1. 舵机避开 USB 19/20 与 strapping 引脚：当前固件 X（左右）→ **GPIO16**（小舵机）、Y（上下）→ **GPIO15**（大舵机）
-2. **旧版 PCB（Board1）** 的舵机走线曾连到 D6/D7（UART0），需要手动飞线（见 `mechanical/pcb/Board1`）
+1. 舵机避开 USB 19/20 与 strapping 引脚：当前固件 X（左右）→ **GPIO16**（3.7g 小舵机）、Y（上下）→ **GPIO15**（9g 大舵机）
+2. **PCB V2.0（Base）** 已按上述 GPIO 直接布线，按丝印焊接即可；早期 XIAO 转接板方案（舵机曾连到 D6/D7 UART0）已废弃
 3. 板载 LED 引脚与音频/摄像头冲突，**不可用**
 
 ### 📷 摄像头

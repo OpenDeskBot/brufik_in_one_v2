@@ -168,7 +168,7 @@
   <h3>仓库结构</h3>
   <table>
     <tr><th>目录</th><th>角色</th><th>内容</th></tr>
-    <tr><td><b>hardware/</b> <span class="pill hw" style="font-size:10px">设备</span></td><td>实体机器人</td><td>ESP32-S3 固件、机械结构件（STEP/说明书）、PCB 重建文件（KiCad）、烧录脚本、自定义 bootloader / 分区表</td></tr>
+    <tr><td><b>hardware/</b> <span class="pill hw" style="font-size:10px">设备</span></td><td>实体机器人</td><td>ESP32-S3 固件、机械结构件（STEP/说明书）、PCB 设计文件（Gerber/BOM，V2.0 双板）、烧录脚本、自定义 bootloader / 分区表</td></tr>
     <tr><td><b>service/</b> <span class="pill sv" style="font-size:10px">大脑</span></td><td>云端 / 本地后台</td><td><code>deskbot-server</code>（主服务，WS+Web）、<code>paddlespeech-server</code>（本地 TTS 旁路）、协议文档、配置</td></tr>
   </table>
 </section>
@@ -230,7 +230,7 @@
     <tr><td>I2S 音频</td><td>播放</td><td>DIN=GPIO1 · BCLK=GPIO6 · LRC=GPIO5</td></tr>
     <tr><td>PDM 麦克风</td><td>采集</td><td>CLK=GPIO42 · DATA=GPIO41（板载）</td></tr>
   </table>
-  <div class="note">机械结构提供完整 <b>STEP 模型</b>（<code>Brufik step all v1.01.STP</code>）与图文 <b>装配说明书</b>（<code>说明书1.02PDF.pdf</code>）；PCB 提供 KiCad 重建文件（<code>mechanical/pcb/Board1/</code>），也支持手工飞线方案。</div>
+  <div class="note">机械结构提供完整 <b>STEP 模型</b>（<code>小歪机器人v2.0打印件stp.stp</code>、<code>小歪机器人v2.0 ov3660摄像头卡子.stp</code>）与图文 <b>装配说明书</b>（<code>小歪v2.0组装说明书PDF.pdf</code>）；PCB 提供 <b>PCB V2.0</b> 双板设计（主控 Base + 屏幕 LCM，Gerber/BOM 见 <code>mechanical/</code>）。</div>
 </section>
 
 <section id="hw-firmware">
