@@ -17,14 +17,12 @@ from deskbot_server.dao.camera_face_config_store import (
     normalize_camera_face_document,
     save_camera_face_cfg_file,
 )
-from deskbot_server.dao.face_expr_scenes_store import load_face_expr_scenes_file
 from deskbot_server.service.face_profile_service import load_face_profiles
 from deskbot_server.service.voice_profile_service import load_voice_profiles
 from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory, list_memory_for_device
 from deskbot_server.dao.scene_playbooks_store import (
     collect_missing_servo_presets,
     load_scene_playbooks_file,
-    normalize_playbook,
     normalize_scene_playbooks,
     save_scene_playbooks_file,
 )
@@ -62,7 +60,6 @@ logger = logging.getLogger("deskbot-server")
 _CONSUMER_API_PATHS = frozenset(
     {
         "/api/debug/ws_token",
-        "/api/face_design/generate",
         "/api/health",
         "/api/llm/chat",
         "/api/llm/system_prompt",
@@ -410,7 +407,7 @@ def debug_simulation(request: Request, user: RequireUser):
         "debug_simulation.html",
         active_nav="sim",
         default_spk=int(tts.get("spk_id", 0)),
-        sample_rate=int(tts.get("sample_rate", 24000)),
+        sample_rate=int(tts.get("sample_rate", 16000)),
         face_lcd_w=FACE_LCD_WIDTH,
         face_lcd_h=FACE_LCD_HEIGHT,
         default_face_circles=default_face_circles(),
@@ -937,16 +934,6 @@ def api_user_memory_delete(request: Request, user: RequireUser, entry_id: str):
     return jsonify({"ok": True, "id": entry_id, "t": time.time()})
 
 
-@router.get("/api/face_expr_scenes")
-def api_face_expr_scenes_get(request: Request, user: RequireUser):
-    device_id = _effective_device_id(request, required=False)
-    try:
-        rows = load_face_expr_scenes_file(seed_if_missing=True, device_id=device_id or None) or []
-    except (OSError, ValueError) as exc:
-        return jsonify({"ok": False, "error": str(exc), "t": time.time()}), 500
-    return jsonify({"ok": True, "scenes": rows, "device_id": device_id or None, "t": time.time()})
-
-
 @router.get("/api/scene_playbooks")
 def api_scene_playbooks_get(request: Request, user: RequireUser):
     device_id, err = _require_device_id(request, user)
@@ -989,25 +976,6 @@ def api_scene_playbooks_post(request: Request, user: RequireUser):
         out["missing_servo_presets"] = missing
         out["warning"] = "部分 pb 包引用的舵机 preset 未写入 servo.json，设备下发时会跳过：" + ", ".join(missing)
     return jsonify(out)
-
-
-@router.post("/api/scene_playbook/export_plan")
-def api_scene_playbook_export_plan(request: Request, user: RequireUser):
-    """导出单条编排 + 展开后的 LLM 计划（供排查）。"""
-    device_id, err = _require_device_id(request, user)
-    if err:
-        return err
-    payload = get_json(request, silent=True)
-    if not isinstance(payload, dict) or not payload.get("playbook"):
-        return jsonify({"ok": False, "error": "missing playbook", "t": time.time()}), 400
-    try:
-        pb = normalize_playbook(payload.get("playbook"))
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc), "t": time.time()}), 400
-    from deskbot_server.service.scene_playbook_runner import playbook_debug_snapshot
-
-    snap = playbook_debug_snapshot(pb, device_id=device_id)
-    return jsonify({"ok": True, "device_id": device_id, **snap, "t": time.time()})
 
 
 @router.get("/api/health")
@@ -1062,9 +1030,7 @@ ENDPOINTS = {
     "debug.api_user_memory_get": "/api/user_memory",
     "debug.api_user_memory_post": "/api/user_memory",
     "debug.api_user_memory_delete": "/api/user_memory/{entry_id}",
-    "debug.api_face_expr_scenes_get": "/api/face_expr_scenes",
     "debug.api_scene_playbooks_get": "/api/scene_playbooks",
     "debug.api_scene_playbooks_post": "/api/scene_playbooks",
-    "debug.api_scene_playbook_export_plan": "/api/scene_playbook/export_plan",
     "debug.health": "/api/health",
 }

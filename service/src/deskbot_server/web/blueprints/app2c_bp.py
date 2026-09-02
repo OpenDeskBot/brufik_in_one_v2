@@ -4,6 +4,7 @@ import mimetypes
 
 from fastapi import APIRouter, Request
 
+from deskbot_server.auth.permissions import RequireDeveloper
 from deskbot_server.dao.emotion_expr_map_store import load_emotion_expr_map, save_emotion_expr_map
 from deskbot_server.dao.face_expr_scenes_store import load_face_expr_scenes_file, save_face_expr_scenes_file
 from deskbot_server.dao.face_mouth_config_store import load_face_mouth_cfg_file, save_face_mouth_cfg_file
@@ -57,7 +58,8 @@ def home(request: Request, user: RequireUser):
 
 
 @router.get("/expr")
-def expr(request: Request, user: RequireUser):
+def expr(request: Request, user: RequireDeveloper):
+    """表情设计：开发者选项下，仅开发者可进入（导航隐藏不是门禁）。"""
     return render_template(request, "app2c/expr.html", active_nav="expr")
 
 
@@ -209,7 +211,9 @@ def emotion_expr_map_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/emotion_expr_map")
-def emotion_expr_map_post(request: Request, user: RequireUser):
+def emotion_expr_map_post(request: Request, user: RequireDeveloper):
+    # 读取保留给消费端首页（GET），写入属表情设计编辑器，仅开发者可用
+
     device_id, err = _owned_device_or_error(request, user)
     if err:
         return err
@@ -237,7 +241,7 @@ def face_expr_scenes_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/face_expr_scenes")
-def face_expr_scenes_post(request: Request, user: RequireUser):
+def face_expr_scenes_post(request: Request, user: RequireDeveloper):
     device_id, err = _owned_device_or_error(request, user)
     if err:
         return err
@@ -257,7 +261,9 @@ def face_expr_scenes_post(request: Request, user: RequireUser):
 
 
 @router.get("/api/face_mouth_by_phoneme")
-def face_mouth_by_phoneme_get(request: Request, user: RequireUser):
+def face_mouth_by_phoneme_get(request: Request, user: RequireDeveloper):
+    # 音素口型库仅表情设计编辑器使用（无消费端读取方）
+
     device_id, err = _owned_device_or_error(request, user)
     if err:
         return err
@@ -269,7 +275,7 @@ def face_mouth_by_phoneme_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/face_mouth_by_phoneme")
-def face_mouth_by_phoneme_post(request: Request, user: RequireUser):
+def face_mouth_by_phoneme_post(request: Request, user: RequireDeveloper):
     device_id, err = _owned_device_or_error(request, user)
     if err:
         return err
@@ -287,7 +293,7 @@ def face_mouth_by_phoneme_post(request: Request, user: RequireUser):
 
 
 @router.post("/api/scene_playbook/export_plan")
-def scene_playbook_export_plan_post(request: Request, user: RequireUser):
+def scene_playbook_export_plan_post(request: Request, user: RequireDeveloper):
     device_id, err = _owned_device_or_error(request, user)
     if err:
         return err
@@ -307,7 +313,7 @@ def scene_playbook_export_plan_post(request: Request, user: RequireUser):
 
 
 @router.post("/api/face_design/generate-from-image")
-def face_design_generate_from_image_post(request: Request, user: RequireUser):
+def face_design_generate_from_image_post(request: Request, user: RequireDeveloper):
     device_id, err = _optional_owned_device_or_error(request, user)
     if err:
         return err

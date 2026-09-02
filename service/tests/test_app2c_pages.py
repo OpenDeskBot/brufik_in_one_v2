@@ -20,7 +20,10 @@ def temp_db(monkeypatch):
         yield db_path
 
 
-PAGES = ["/home", "/expr", "/lab", "/my/memories", "/my/reminders", "/my/people", "/my/devices", "/advanced", "/robot-settings"]
+PAGES = ["/home", "/lab", "/my/memories", "/my/reminders", "/my/people", "/my/devices", "/advanced", "/robot-settings"]
+
+# 开发者选项菜单下的页面：仅开发者身份可访问（导航隐藏不是门禁）
+DEV_PAGES = ["/expr", "/quest"]
 
 
 @pytest.mark.parametrize("path", PAGES)
@@ -40,6 +43,44 @@ def test_2c_pages_render_when_logged_in(temp_db, path):
     app = create_app()
     client = app.test_client()
     client.post("/login", data={"email": "u2c@example.com", "password": "password1234"})
+    resp = client.get(path)
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize("path", DEV_PAGES)
+def test_2c_dev_pages_redirect_when_anonymous(temp_db, path):
+    from deskbot_server.web.app import create_app
+
+    client = create_app().test_client()
+    assert client.get(path).status_code == 302
+
+
+@pytest.mark.parametrize("path", DEV_PAGES)
+def test_2c_dev_pages_deny_normal_user(temp_db, path):
+    """普通用户直连开发者页面 URL 必须被弹回（闪讯 + 307/302 跳 home）。"""
+    from tests._auth_compat import create_user
+    from deskbot_server.web.app import create_app
+
+    # 第一个注册用户自动成为开发者，故注册两名后用第二个（普通用户）登录
+    create_user("dev-first@example.com", "password1234")
+    create_user("normal@example.com", "password1234")
+    app = create_app()
+    client = app.test_client()
+    client.post("/login", data={"email": "normal@example.com", "password": "password1234"})
+    resp = client.get(path, follow_redirects=False)
+    assert resp.status_code in (302, 307)
+    assert resp.headers.get("Location", "").startswith("/home")
+
+
+@pytest.mark.parametrize("path", DEV_PAGES)
+def test_2c_dev_pages_render_for_developer(temp_db, path):
+    from tests._auth_compat import create_user
+    from deskbot_server.web.app import create_app
+
+    create_user("dev-only@example.com", "password1234")
+    app = create_app()
+    client = app.test_client()
+    client.post("/login", data={"email": "dev-only@example.com", "password": "password1234"})
     resp = client.get(path)
     assert resp.status_code == 200
 
@@ -459,37 +500,43 @@ def test_2c_lab_convo_realtime_markers(temp_db):
     assert "onWinResize" in html
 
 
-def test_2c_scene_playbook_export_plan_is_available_to_regular_user(temp_db):
+def test_2c_scene_playbook_export_plan_requires_developer(temp_db):
+    """编排导出（表情设计/剧情设计的调试链路）：普通用户 403，开发者可用。"""
     from tests.device_bind_helpers import bind_device_online
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
-    create_user("lab-export-admin2c@example.com", "password1234")
+    admin = create_user("lab-export-admin2c@example.com", "password1234")  # 首个注册 → 开发者
     user = create_user("lab-export2c@example.com", "password1234")
-    bind_device_online(user.id, "deskbot_lab_export")
+    bind_device_online(admin.id, "deskbot_lab_export")
+    bind_device_online(user.id, "deskbot_lab_export2")
     app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "lab-export2c@example.com", "password": "password1234"})
-    client.post("/app/api/devices/select", json={"device_id": "deskbot_lab_export"})
 
-    resp = client.post(
-        "/api/scene_playbook/export_plan",
-        json={
-            "device_id": "deskbot_lab_export",
-            "playbook": {
-                "name": "demo_export",
-                "title": "演示导出",
-                "chunks": [{"id": "c1", "text": "你好", "servo": {"preset": "center", "ms": 500}}],
-            },
+    payload = {
+        "device_id": "deskbot_lab_export",
+        "playbook": {
+            "name": "demo_export",
+            "title": "演示导出",
+            "chunks": [{"id": "c1", "text": "你好", "servo": {"preset": "center", "ms": 500}}],
         },
-    )
+    }
 
+    member = app.test_client()
+    member.post("/login", data={"email": "lab-export2c@example.com", "password": "password1234"})
+    member.post("/app/api/devices/select", json={"device_id": "deskbot_lab_export2"})
+    denied = member.post("/api/scene_playbook/export_plan", json=payload)
+    assert denied.status_code == 403
+
+    dev = app.test_client()
+    dev.post("/login", data={"email": "lab-export-admin2c@example.com", "password": "password1234"})
+    dev.post("/app/api/devices/select", json={"device_id": "deskbot_lab_export"})
+    resp = dev.post("/api/scene_playbook/export_plan", json=payload)
     assert resp.status_code == 200
-    payload = resp.get_json()
-    assert payload["ok"] is True
-    assert payload["device_id"] == "deskbot_lab_export"
-    assert payload["playbook"]["name"] == "demo_export"
-    assert "phases" in payload
+    resp_payload = resp.get_json()
+    assert resp_payload["ok"] is True
+    assert resp_payload["device_id"] == "deskbot_lab_export"
+    assert resp_payload["playbook"]["name"] == "demo_export"
+    assert "phases" in resp_payload
 
 
 def test_2c_theme_uses_bold_retro_tokens():
@@ -588,7 +635,7 @@ def test_2c_voice_tts_synthesize_endpoint_returns_wav(temp_db, monkeypatch):
         assert cfg.api_key == "tts-key"
         assert cfg.speaker == "voice-id"
         assert cfg.resource_id == "seed-tts-2.0"
-        return DoubaoTtsResult(pcm=b"\x00\x00" * 120, sample_rate=24000, elapsed_ms=7)
+        return DoubaoTtsResult(pcm=b"\x00\x00" * 120, sample_rate=16000, elapsed_ms=7)
 
     monkeypatch.setattr("deskbot_server.infrastructure.tts.doubao.synthesize_doubao_tts", fake_synthesize)
     create_user("voice-api2c@example.com", "password1234")
@@ -605,7 +652,7 @@ def test_2c_voice_tts_synthesize_endpoint_returns_wav(temp_db, monkeypatch):
     payload = resp.get_json()
     assert payload["ok"] is True
     assert payload["wav_base64"]
-    assert payload["sample_rate"] == 24000
+    assert payload["sample_rate"] == 16000
 
 
 def test_2c_expr_page_exposes_real_face_editor_controls(temp_db):
@@ -847,7 +894,8 @@ def test_2c_expr_page_exposes_professional_design_tab(temp_db):
     assert "/api/face_mouth_by_phoneme" in html
 
 
-def test_2c_face_config_apis_are_available_to_regular_user(temp_db, tmp_path, monkeypatch):
+def test_2c_face_config_read_consumer_but_writes_developer_only(temp_db, tmp_path, monkeypatch):
+    """表情场景读接口保留给消费端首页；场景/口型库写入（表情设计编辑器）仅开发者。"""
     import json
 
     from tests.device_bind_helpers import bind_device_online
@@ -863,40 +911,48 @@ def test_2c_face_config_apis_are_available_to_regular_user(temp_db, tmp_path, mo
     from deskbot_server.dao.face_design_store import clear_face_design_cache
 
     clear_face_design_cache()
-    create_user("face-admin2c@example.com", "password1234")
+    admin = create_user("face-admin2c@example.com", "password1234")  # 首个注册 → 开发者
     user = create_user("face-member2c@example.com", "password1234")
-    bind_device_online(user.id, "deskbot_face_api")
+    bind_device_online(admin.id, "deskbot_face_api")
+    bind_device_online(user.id, "deskbot_face_api2")
     app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "face-member2c@example.com", "password": "password1234"})
-    client.post("/app/api/devices/select", json={"device_id": "deskbot_face_api"})
-
-    get_scenes = client.get("/api/face_expr_scenes")
-    assert get_scenes.status_code == 200
-    assert get_scenes.get_json()["ok"] is True
 
     scene = {
         "name": "happy",
         "title": "开心",
         "frames": [{"ms": 300, "elements": {"mouth": [], "nose": [], "eye_l": [], "eye_r": [], "extra": []}}],
     }
-    save_scenes = client.post("/api/face_expr_scenes", json={"device_id": "deskbot_face_api", "scenes": [scene]})
+    write_payload = {"device_id": "deskbot_face_api", "scenes": [scene]}
+    mouth_payload = {
+        "device_id": "deskbot_face_api",
+        "mouth_by_phoneme_groups": [
+            {
+                "states": ["a"],
+                "elements": [{"shape": "round_rect_outline", "x": 112, "y": 148, "w": 60, "h": 28}],
+                "offset": {"x": 0, "y": 0},
+            }
+        ],
+    }
+
+    # 普通用户：可读不可写
+    member = app.test_client()
+    member.post("/login", data={"email": "face-member2c@example.com", "password": "password1234"})
+    member.post("/app/api/devices/select", json={"device_id": "deskbot_face_api2"})
+    assert member.get("/api/face_expr_scenes").status_code == 200
+    assert member.post("/api/face_expr_scenes", json=write_payload).status_code == 403
+    assert member.post("/api/face_mouth_by_phoneme", json=mouth_payload).status_code == 403
+
+    # 开发者：读写均可用
+    dev = app.test_client()
+    dev.post("/login", data={"email": "face-admin2c@example.com", "password": "password1234"})
+    dev.post("/app/api/devices/select", json={"device_id": "deskbot_face_api"})
+    get_scenes = dev.get("/api/face_expr_scenes")
+    assert get_scenes.status_code == 200
+    assert get_scenes.get_json()["ok"] is True
+    save_scenes = dev.post("/api/face_expr_scenes", json=write_payload)
     assert save_scenes.status_code == 200
     assert save_scenes.get_json()["config"][0]["name"] == "happy"
-
-    save_mouth = client.post(
-        "/api/face_mouth_by_phoneme",
-        json={
-            "device_id": "deskbot_face_api",
-            "mouth_by_phoneme_groups": [
-                {
-                    "states": ["a"],
-                    "elements": [{"shape": "round_rect_outline", "x": 112, "y": 148, "w": 60, "h": 28}],
-                    "offset": {"x": 0, "y": 0},
-                }
-            ],
-        },
-    )
+    save_mouth = dev.post("/api/face_mouth_by_phoneme", json=mouth_payload)
     assert save_mouth.status_code == 200
     assert save_mouth.get_json()["mouth_by_phoneme_groups"][0]["states"] == ["a"]
 
@@ -926,6 +982,7 @@ def test_2c_advanced_keeps_account_forms_visible(temp_db):
 
 
 def test_2c_consumer_apis_are_not_developer_locked(temp_db, monkeypatch):
+    """消费侧白名单 API 普通用户可用；AI 表情生成（表情设计编辑器）仅开发者。"""
     from tests.device_bind_helpers import bind_device_online
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
@@ -938,19 +995,25 @@ def test_2c_consumer_apis_are_not_developer_locked(temp_db, monkeypatch):
         )
 
     monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime.chat_completion", fake_completion)
-    create_user("consumer-admin2c@example.com", "password1234")
+    admin = create_user("consumer-admin2c@example.com", "password1234")  # 首个注册 → 开发者
     user = create_user("consumer-member2c@example.com", "password1234")
     bind_device_online(user.id, "deskbot_consumer_api")
+    bind_device_online(admin.id, "deskbot_consumer_dev")
     app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "consumer-member2c@example.com", "password": "password1234"})
-    client.post("/app/api/devices/select", json={"device_id": "deskbot_consumer_api"})
 
-    assert client.get("/api/health").status_code == 200
-    assert client.get("/api/debug/ws_token").status_code == 200
-    assert client.get("/api/doubao_tts/speakers?scope=consumer").status_code == 200
+    member = app.test_client()
+    member.post("/login", data={"email": "consumer-member2c@example.com", "password": "password1234"})
+    member.post("/app/api/devices/select", json={"device_id": "deskbot_consumer_api"})
+    assert member.get("/api/health").status_code == 200
+    assert member.get("/api/debug/ws_token").status_code == 200
+    assert member.get("/api/doubao_tts/speakers?scope=consumer").status_code == 200
+    ai = member.post("/api/face_design/generate", json={"device_id": "deskbot_consumer_api", "prompt": "生成开心表情"})
+    assert ai.status_code == 403
 
-    ai = client.post("/api/face_design/generate", json={"device_id": "deskbot_consumer_api", "prompt": "生成开心表情"})
+    dev = app.test_client()
+    dev.post("/login", data={"email": "consumer-admin2c@example.com", "password": "password1234"})
+    dev.post("/app/api/devices/select", json={"device_id": "deskbot_consumer_dev"})
+    ai = dev.post("/api/face_design/generate", json={"device_id": "deskbot_consumer_dev", "prompt": "生成开心表情"})
     assert ai.status_code == 200
     assert ai.get_json()["ok"] is True
 

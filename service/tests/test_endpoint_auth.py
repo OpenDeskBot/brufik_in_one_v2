@@ -140,6 +140,64 @@ def test_user_management_api_requires_developer(temp_db):
     assert client.post(f"/api/debug/users/{member.id}/developer", json={"is_developer": True}).status_code == 200
 
 
+def test_dev_menu_apis_require_developer(temp_db):
+    """开发者选项（表情设计/剧情设计）的全部写 API 仅开发者可调用。
+
+    读接口例外：GET /api/face_expr_scenes、GET /api/emotion_expr_map 供消费端
+    首页 3D 表情预览使用，普通用户应可达（无设备时 400 校验错误而非 403）。
+    """
+    from tests._auth_compat import create_user
+    from deskbot_server.web.app import create_app
+
+    # 第一个注册用户自动为开发者；member 为普通用户
+    create_user("dm-admin@example.com", "password1234")
+    create_user("dm-member@example.com", "password1234")
+    app = create_app()
+
+    def login(email: str):
+        client = app.test_client()
+        client.post("/login", data={"email": email, "password": "password1234"})
+        return client
+
+    member = login("dm-member@example.com")
+    dev = login("dm-admin@example.com")
+
+    # ── 普通用户：开发者菜单全部写 API → 403 ──
+    blocked = [
+        ("GET", "/api/quest/playbooks"),
+        ("POST", "/api/quest/playbooks"),
+        ("DELETE", "/api/quest/playbooks/whatever"),
+        ("POST", "/api/quest/playbooks/whatever/tasks"),
+        ("POST", "/api/quest/playbooks/whatever/simulate/t1"),
+        ("POST", "/api/face_expr_scenes"),
+        ("POST", "/api/emotion_expr_map"),
+        ("GET", "/api/face_mouth_by_phoneme"),
+        ("POST", "/api/face_mouth_by_phoneme"),
+        ("POST", "/api/scene_playbook/export_plan"),
+        ("POST", "/api/face_design/generate"),
+        ("POST", "/api/face_design/generate-from-image"),
+    ]
+    for method, path in blocked:
+        if method == "GET":
+            resp = member.get(path)
+        elif method == "DELETE":
+            resp = member.delete(path)
+        else:
+            resp = member.post(path, json={})
+        assert resp.status_code == 403, f"{method} {path} -> {resp.status_code}（应 403）"
+
+    # ── 普通用户：消费端读接口仍可达（无设备 → 400 校验错误，而不是 403）──
+    assert member.get("/api/face_expr_scenes").status_code == 400
+    assert member.get("/api/emotion_expr_map").status_code == 400
+
+    # ── 开发者：可访问页面与列表 API ──
+    assert dev.get("/expr").status_code == 200
+    assert dev.get("/quest").status_code == 200
+    resp = dev.get("/api/quest/playbooks")
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is True
+
+
 def test_services_api_requires_developer(temp_db, monkeypatch):
     """独立服务管理：页面与全部 API 仅开发者可访问。"""
     from tests._auth_compat import create_user, set_user_developer

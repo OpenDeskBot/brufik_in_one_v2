@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from deskbot_server.auth.permissions import RequireDeveloper
 from deskbot_server.service.quest_service import (
     DESIGN_SANDBOX_DEVICE,
     QuestError,
@@ -16,7 +17,6 @@ from deskbot_server.service.quest_service import (
     RESULT_FAILED,
     RESULT_SUCCESS,
 )
-from deskbot_server.web.deps import RequireUser
 from deskbot_server.web.view_helpers import ViewAPIRoute, get_json, jsonify, render_template
 
 router = APIRouter(route_class=ViewAPIRoute, tags=["quest"])
@@ -38,7 +38,7 @@ def _pb_error(exc: QuestError) -> tuple[dict, int]:
 
 
 @router.get("/quest")
-def quest_page(request: Request, user: RequireUser):
+def quest_page(request: Request, user: RequireDeveloper):
     return render_template(request, "quests.html", active_nav="quest")
 
 
@@ -46,12 +46,12 @@ def quest_page(request: Request, user: RequireUser):
 
 
 @router.get("/api/quest/playbooks")
-def api_playbooks_list(request: Request, user: RequireUser):
+def api_playbooks_list(request: Request, user: RequireDeveloper):
     return jsonify({"ok": True, "playbooks": _service().list_playbooks()})
 
 
 @router.post("/api/quest/playbooks")
-def api_playbooks_create(request: Request, user: RequireUser):
+def api_playbooks_create(request: Request, user: RequireDeveloper):
     body = get_json(request, silent=True) or {}
     name = str(body.get("name") or "").strip()
     try:
@@ -61,7 +61,7 @@ def api_playbooks_create(request: Request, user: RequireUser):
 
 
 @router.get("/api/quest/playbooks/{name}")
-def api_playbook_get(request: Request, name: str, user: RequireUser):
+def api_playbook_get(request: Request, name: str, user: RequireDeveloper):
     try:
         pb = _service().get_playbook(name)
     except QuestError as exc:
@@ -72,7 +72,7 @@ def api_playbook_get(request: Request, name: str, user: RequireUser):
 
 
 @router.get("/api/quest/playbooks/{name}/state")
-def api_playbook_state(request: Request, name: str, user: RequireUser):
+def api_playbook_state(request: Request, name: str, user: RequireDeveloper):
     """设计沙箱状态：{task_id: 实例运行态}，供编辑器叠加显示（与设备无关）。"""
     try:
         _ensure_sandbox(name)
@@ -83,7 +83,7 @@ def api_playbook_state(request: Request, name: str, user: RequireUser):
 
 
 @router.delete("/api/quest/playbooks/{name}")
-def api_playbook_delete(request: Request, name: str, user: RequireUser):
+def api_playbook_delete(request: Request, name: str, user: RequireDeveloper):
     try:
         if _service().get_playbook(name) is None:
             return jsonify({"ok": False, "error": f"剧本不存在: {name}"}), 404
@@ -94,7 +94,7 @@ def api_playbook_delete(request: Request, name: str, user: RequireUser):
 
 
 @router.get("/api/quest/playbooks/{name}/export")
-def api_playbook_export(request: Request, name: str, user: RequireUser):
+def api_playbook_export(request: Request, name: str, user: RequireDeveloper):
     try:
         pb = _service().get_playbook(name)
     except QuestError as exc:
@@ -113,7 +113,7 @@ def api_playbook_export(request: Request, name: str, user: RequireUser):
 
 
 @router.post("/api/quest/playbooks/{name}/import")
-def api_playbook_import(request: Request, name: str, user: RequireUser):
+def api_playbook_import(request: Request, name: str, user: RequireDeveloper):
     """整体覆盖导入：body 为剧本 JSON（含 tasks），校验通过后原子写盘。"""
     data = get_json(request, silent=True)
     if not isinstance(data, dict):
@@ -128,7 +128,7 @@ def api_playbook_import(request: Request, name: str, user: RequireUser):
 
 
 @router.post("/api/quest/playbooks/{name}/tasks")
-def api_task_create(request: Request, name: str, user: RequireUser):
+def api_task_create(request: Request, name: str, user: RequireDeveloper):
     body = get_json(request, silent=True) or {}
     try:
         return jsonify({"ok": True, "task": _service().add_task(name, body)})
@@ -137,7 +137,7 @@ def api_task_create(request: Request, name: str, user: RequireUser):
 
 
 @router.put("/api/quest/playbooks/{name}/tasks/{task_id}")
-def api_task_update(request: Request, name: str, task_id: str, user: RequireUser):
+def api_task_update(request: Request, name: str, task_id: str, user: RequireDeveloper):
     body = get_json(request, silent=True) or {}
     try:
         return jsonify({"ok": True, "task": _service().update_task(name, task_id, body)})
@@ -146,7 +146,7 @@ def api_task_update(request: Request, name: str, task_id: str, user: RequireUser
 
 
 @router.delete("/api/quest/playbooks/{name}/tasks/{task_id}")
-def api_task_delete(request: Request, name: str, task_id: str, user: RequireUser):
+def api_task_delete(request: Request, name: str, task_id: str, user: RequireDeveloper):
     try:
         _service().delete_task(name, task_id)
         return jsonify({"ok": True})
@@ -158,7 +158,7 @@ def api_task_delete(request: Request, name: str, task_id: str, user: RequireUser
 
 
 @router.put("/api/quest/playbooks/{name}/edges")
-def api_edge_set(request: Request, name: str, user: RequireUser):
+def api_edge_set(request: Request, name: str, user: RequireDeveloper):
     body = get_json(request, silent=True) or {}
     from_id = str(body.get("from") or "").strip()
     port = str(body.get("port") or "").strip()
@@ -173,7 +173,7 @@ def api_edge_set(request: Request, name: str, user: RequireUser):
 
 
 @router.delete("/api/quest/playbooks/{name}/edges")
-def api_edge_remove(request: Request, name: str, user: RequireUser):
+def api_edge_remove(request: Request, name: str, user: RequireDeveloper):
     from_id = args_get(request, "from", "", type=str) or ""
     port = args_get(request, "port", "", type=str) or ""
     to_id = args_get(request, "to", "", type=str) or ""
@@ -188,7 +188,7 @@ def api_edge_remove(request: Request, name: str, user: RequireUser):
 
 
 @router.post("/api/quest/playbooks/{name}/simulate/{task_id}")
-def api_quest_simulate(request: Request, name: str, task_id: str, user: RequireUser):
+def api_quest_simulate(request: Request, name: str, task_id: str, user: RequireDeveloper):
     """沙箱模拟：
     action=score → 加对话贡献分（points，默认 1）
     action=success|failed → 判定任务结果（result 必填，成功结果/失败原因）
