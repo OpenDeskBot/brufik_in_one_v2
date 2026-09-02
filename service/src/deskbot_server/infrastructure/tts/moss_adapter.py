@@ -1,7 +1,9 @@
 """TtsPort 的 HTTP 实现：转发到外部 MOSS-TTS-Nano 进程（moss-tts-nano，默认 TTS provider）。
 
-MOSS 只返回 WAV 音频、不返回音素时间戳，口型用 ``utils.phoneme_duration``
-按文本 + 音频总时长补充音素时间轴，再复用 ``doubao_phoneme_align`` 的 PCM 切分。
+MOSS 只返回 WAV 音频、不返回音素时间戳；引擎输出为原生 48kHz，此处先统一
+降采样到 ``settings.tts.sample_rate``（默认 16k，与豆包下发一致，设备端
+解码预算余量最大），口型用 ``utils.phoneme_duration`` 按文本 + 音频总时长
+补充音素时间轴，再复用 ``doubao_phoneme_align`` 的 PCM 切分。
 请求格式：multipart/form-data POST /api/generate（text + demo_id），响应 JSON
 含 audio_base64（WAV，16-bit PCM）。无第三方 HTTP 依赖（stdlib urllib）。
 """
@@ -23,6 +25,7 @@ import numpy as np
 
 from deskbot_server.infrastructure.tts.doubao_phoneme_align import pcm_duration_ms, split_pcm_by_timed_phonemes
 from deskbot_server.model.settings import AppSettings
+from deskbot_server.utils.audio_resample import resample_pcm16_mono
 from deskbot_server.utils.phoneme_duration import text_to_phoneme_durations
 
 logger = logging.getLogger("deskbot-server")
@@ -68,6 +71,15 @@ class MossTtsAdapter:
         pcm, sr = _wav_to_pcm16_mono(wav)
         if not pcm:
             raise RuntimeError(f"moss-tts-nano WAV 无 PCM 数据: {clean!r}")
+
+        # 引擎原生 48k → 统一下发采样率（默认 16k，与豆包一致）：降采样后再切分，
+        # 避免设备端解码突发超出 I2S DMA 环覆盖导致的块边界断音
+        # （见 utils/audio_resample 模块说明）。
+        target = int(self._settings.tts.sample_rate or 0)
+        if 0 < target < sr:
+            pcm = await asyncio.to_thread(resample_pcm16_mono, pcm, sr, target)
+            logger.info("[TTS/moss] 引擎 %dHz → 统一下发 %dHz", sr, target)
+            sr = target
 
         total_ms = pcm_duration_ms(pcm, sr)
         timed = text_to_phoneme_durations(clean, total_ms)

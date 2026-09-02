@@ -8,9 +8,13 @@ from deskbot_server.utils.paths import DATA_DIR, MODELS_DIR
 
 LOG_FILE = os.environ.get("DESKBOT_SERVER_LOG_FILE", "app.log")
 SAFE_SEND_TIMEOUT = float(os.environ.get("WS_SEND_TIMEOUT_SEC", "10.0"))
-# pb：JSON 解析后再收 binary；chunk 间给设备消化时间（秒，0=关闭）
+# pb：JSON 解析后再收 binary（同帧内，毫秒级；历史遗留，已无引用）
 PB_JSON_BIN_GAP_SEC = max(0.0, float(os.environ.get("PB_JSON_BIN_GAP_MS", "50")) / 1000.0)
-PB_CHUNK_GAP_SEC = max(0.0, float(os.environ.get("PB_CHUNK_GAP_MS", "150")) / 1000.0)
+# 片间固定间隙默认关闭：节奏由 pb_ack 窗口流控（PB_WAIT_ACK + 固件 executor space
+# 门控）接管。历史默认 150ms 曾是早期无 ack 流控时给设备"消化时间"的保险丝，
+# 但在 chunk 音频时长 < 间隙时会饿死设备（供给 < 实时播放 → 每个块边界断音）。
+# 仅当 PB_WAIT_ACK=0 时再按需打开（需保证 gap_ms < PB_CHUNK_MS_MAX）。
+PB_CHUNK_GAP_SEC = max(0.0, float(os.environ.get("PB_CHUNK_GAP_MS", "0")) / 1000.0)
 # 有 audio 的 pb 片：发完后等待设备 pb_ack.idx>=该片 idx 再发下一片（0=关闭）
 PB_WAIT_ACK = os.environ.get("PB_WAIT_ACK", "1").strip().lower() not in ("0", "false", "no", "off")
 # ESP32 打包帧 JSON 上限（字节）；与固件 DESKBOT_MAX_PACKED_JSON_LEN 对齐

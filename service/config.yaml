@@ -66,7 +66,11 @@ llm:
     \ []。\n- tools: 可选数组，服务端立即执行；不需要时写 []。"
   ark_base_url: https://ark.cn-beijing.volces.com/api/v3
 tts:
-  sample_rate: 48000
+  # 统一下发采样率：moss（引擎 48k）音频在服务端归一化到该值（豆包由
+  # DOUBAO_TTS_SAMPLE_RATE 直接请求 16k，两路一致）。设备端 opus 是"整块解码
+  # →播放"，解码预算按采样率吃紧：16k 解码突发远小于 I2S DMA 环覆盖，
+  # 块边界不断音（24k/48k 会进入边缘带出现偶发断点）。
+  sample_rate: 16000
   pb_random_servo:
     enabled: false
     probability: 0.35
