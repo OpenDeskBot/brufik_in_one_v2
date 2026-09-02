@@ -292,7 +292,7 @@ class PbSeq:
     entries: tuple[PbBlock, ...] = ()
     level: int = 1
     action: PbAction = PbAction.REPLACE
-    sr: int = 24000
+    sr: int = 16000
     ch: int = 1
     fmt: str = "opus"
     _done: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
@@ -369,4 +369,4 @@ class PbSeq:
         # action 从 wire 顶层取（如果有），否则默认 REPLACE
         if pairs:
             action = PbAction.from_wire(pairs[0][0].get("action", ""))
-        return cls(req=req, entries=tuple(entries), level=level, action=action, sr=sr or 24000, ch=ch or 1, fmt=fmt or "opus")
+        return cls(req=req, entries=tuple(entries), level=level, action=action, sr=sr or 16000, ch=ch or 1, fmt=fmt or "opus")

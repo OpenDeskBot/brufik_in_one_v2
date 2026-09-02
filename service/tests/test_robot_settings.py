@@ -32,7 +32,7 @@ MINIMAL_CONFIG = {
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "model_name": "ep-test",
     },
-    "tts": {"sample_rate": 24000},
+    "tts": {"sample_rate": 16000},
 }
 
 
@@ -623,9 +623,9 @@ def test_tts_test_moss_synthesize(fake_tts_engine, tmp_path):
         svc.tts_test("moss-tts-nano", "你好，测试", voice_id="demo-3", overrides={"base_url": "http://127.0.0.1:9205"})
     )
     assert result["provider"] == "moss-tts-nano"
-    assert result["sample_rate"] == 48000
+    assert result["sample_rate"] == 16000  # 48k 引擎原生 → 统一下发 16k（config tts.sample_rate）
     assert result["wav_base64"]
-    assert result["pcm_total_bytes"] == 4800 * 2  # mono 100ms @ 48k
+    assert result["pcm_total_bytes"] == 1600 * 2  # mono 100ms @ 16k（4800 样本 @48k 降采样）
     assert result["segments"] and any(s["phoneme"] for s in result["segments"])
     assert fake_tts_engine.last_text == "你好，测试"
     assert fake_tts_engine.last_demo_id == "demo-3"

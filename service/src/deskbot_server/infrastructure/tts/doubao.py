@@ -53,7 +53,7 @@ class DoubaoTtsConfig:
     resource_id: str = DEFAULT_RESOURCE_ID
     model: str = DEFAULT_MODEL
     ws_url: str = DEFAULT_WS_URL
-    sample_rate: int = 24000
+    sample_rate: int = 16000
     audio_format: str = "pcm"
     enable_timestamp: bool = True
 
@@ -137,9 +137,9 @@ def load_doubao_tts_config(
     audio_format = _pick("audio_format", "DOUBAO_TTS_FORMAT", "pcm")
     sample_rate_raw = str(ov.get("sample_rate") or "").strip() or (os.environ.get("DOUBAO_TTS_SAMPLE_RATE") or "").strip()
     try:
-        sample_rate = int(sample_rate_raw or 24000)
+        sample_rate = int(sample_rate_raw or 16000)
     except (TypeError, ValueError):
-        sample_rate = 24000
+        sample_rate = 16000
     from deskbot_server.infrastructure.tts.speakers import find_doubao_tts_speaker_preset, suggest_resource_id
 
     expected_rid = suggest_resource_id(speaker)

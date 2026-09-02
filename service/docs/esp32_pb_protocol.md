@@ -121,7 +121,7 @@ JSON flush
 | 项目 | 约定 |
 |------|------|
 | 版本 | `pb_ver: 2`（wire v2.1） |
-| 音频 | mono **opus**（默认，`config.yaml` → `audio.output_codec`）或 **s16le**，**sr = 24000**（首包声明） |
+| 音频 | mono **opus**（默认，`config.yaml` → `audio.output_codec`）或 **s16le**，**sr = 16000**（首包声明，统一下发采样率） |
 | 画布 | **284 × 240**，原点左上 |
 | 单包 | 硬件上限 `chunk_ms ≤ 10000`；服务端合并默认 ≤ **500**（`PB_CHUNK_MS_MAX`） |
 | 口播默认 | `level = 1`，`action = "replace"` |
@@ -259,7 +259,7 @@ c  = (R5 << 11) | (G6 << 5) | B5
 "audio": { "next_bin_len": 92112 }
 ```
 
-| `sr`/`fmt`/`ch` 以本 `req` **首条含音频**的包为准（当前 24000 / opus 或 s16le / 1）。
+| `sr`/`fmt`/`ch` 以本 `req` **首条含音频**的包为准（当前 16000 / opus 或 s16le / 1）。
 
 ### 6.2 舵机 `servo[]`
 

@@ -9,7 +9,7 @@ from deskbot_server.service.robot_capability import CapabilityError, RobotCapabi
 MINIMAL_CONFIG = {
     "asr": {"external_url": "http://127.0.0.1:9102"},
     "llm": {"base_url": "https://example.invalid", "model_name": "ep-test"},
-    "tts": {"sample_rate": 24000},
+    "tts": {"sample_rate": 16000},
 }
 
 

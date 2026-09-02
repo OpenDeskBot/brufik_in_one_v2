@@ -16,8 +16,8 @@ def _tone_pcm(sample_rate: int, duration_ms: int = 200, freq: float = 440.0) -> 
     return wave.tobytes()
 
 
-def test_opus_downlink_roundtrip_24k():
-    sr = 24000
+def test_opus_downlink_roundtrip_16k():
+    sr = 16000
     pcm = _tone_pcm(sr, duration_ms=400)
     batch, nframes = encode_pcm_s16le_to_opus_batch(pcm, sr)
     assert nframes > 0
@@ -30,7 +30,7 @@ def test_opus_downlink_roundtrip_24k():
 
 
 def test_opus_downlink_single_frame():
-    sr = 24000
+    sr = 16000
     pcm = _tone_pcm(sr, duration_ms=20)
     enc = opuslib_next.Encoder(sr, 1, opuslib_next.APPLICATION_AUDIO)
     frame_samples = opus_frame_samples(sr)

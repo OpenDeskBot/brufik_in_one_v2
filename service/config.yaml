@@ -52,7 +52,7 @@ asr:
 llm:
   protocol: ark_responses
   base_url: https://ark.cn-beijing.volces.com/api/v3
-  model_name: minicpm5-1b
+  model_name: deepseek-v4-flash-ga-260731
   system_prompt_file: data/global/llm_system.txt
   system_prompt: '你是"小歪"，桌面上活泼俏皮、温柔体贴的小型陪伴机器人。情绪用眼睛、表情、动作明显表达，不只靠说话。识别到用户名就称呼那个名字；说话口语化、简短自然，像好朋友，不书面腔、不客套、不自我介绍。
 

@@ -4,8 +4,14 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
-from deskbot_server.infrastructure.llm.runtime import chat_acompletion, is_local_llm_url, resolve_llm_config
+from deskbot_server.infrastructure.llm.runtime import (
+    chat_acompletion,
+    is_local_llm_url,
+    resolve_llm_config,
+    tool_acompletion,
+)
 from deskbot_server.infrastructure.llm.utils import (
     build_llm_system_prompt,
     build_llm_user_message,
@@ -73,6 +79,19 @@ def _wrap_plain_text_llm_answer(text: str) -> str | None:
     )
 
 
+@dataclass(frozen=True)
+class LlmToolRoundResult:
+    """原生 function calling 单回合结果。
+
+    ``content`` 为模型文本输出（工具轮通常为空）；``tool_calls`` 为
+    ``[{id, name, arguments(str)}]``（无工具调用 → []）；``meta`` 与文本路径同构。
+    """
+
+    content: str
+    tool_calls: list[dict[str, Any]]
+    meta: dict[str, Any]
+
+
 class OpenAiLlmAdapter:
     """OpenAI-compatible 适配器：支持设备级模型配置，未设置时回退系统默认。"""
 
@@ -115,6 +134,125 @@ class OpenAiLlmAdapter:
                 on_system_prompt=on_system_prompt,
                 user_message_override=user_message_override,
             )
+
+    async def llm_tool_round(
+        self,
+        user_text: str,
+        *,
+        device_context: str | None = None,
+        device_id: str | None = None,
+        history_messages: list[dict[str, Any]] | None = None,
+        extra_messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any = "auto",
+        on_system_prompt: Callable[[str], None] | None = None,
+        user_message_override: str | None = None,
+    ) -> LlmToolRoundResult:
+        """原生 function calling 单回合（工具轮恒非流式、不带 json 约束）。
+
+        - ``extra_messages`` 一旦含 assistant(tool_calls)/role=tool 消息，
+          本轮不再重复注入 user（round1 的 user 已在历史中）；
+        - 本地引擎 400 上下文超限：裁掉最旧一半历史重建重试（≤3 次）；
+        - JSON 包装/收尾轮重试不属本层：最终轮语义由 chat_flow 决策
+          （可用 ``complete()`` 文本路径收口 JSON envelope）。
+        """
+        async with _device_llm_lock(device_id):
+            return await self._tool_round_locked(
+                user_text,
+                device_context=device_context,
+                device_id=device_id,
+                history_messages=history_messages,
+                extra_messages=extra_messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                on_system_prompt=on_system_prompt,
+                user_message_override=user_message_override,
+            )
+
+    async def _tool_round_locked(
+        self,
+        user_text: str,
+        *,
+        device_context: str | None = None,
+        device_id: str | None = None,
+        history_messages: list[dict[str, Any]] | None = None,
+        extra_messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any = "auto",
+        on_system_prompt: Callable[[str], None] | None = None,
+        user_message_override: str | None = None,
+    ) -> LlmToolRoundResult:
+        llm_cfg = resolve_llm_config(device_id)
+        local_engine = is_local_llm_url(llm_cfg.api_base)
+
+        system_content = self._build_system_prompt(device_id=device_id)
+        if on_system_prompt is not None:
+            try:
+                on_system_prompt(system_content)
+            except Exception:
+                logger.debug("[LLM] on_system_prompt 回调异常（忽略）", exc_info=True)
+        user_content = user_message_override or build_llm_user_message(
+            user_text, device_id=device_id, device_context=device_context
+        )
+        history = list(history_messages or [])
+        extra = list(extra_messages or [])
+        # 出现工具 trail（assistant.tool_calls / role=tool）后不再重复注入本轮 user
+        has_tool_trail = any(
+            isinstance(m, dict) and (m.get("role") == "tool" or m.get("tool_calls")) for m in extra
+        )
+        if local_engine and history:
+            trimmed = _trim_history_for_budget(
+                history, system_content=system_content, user_content=user_content, extra=extra
+            )
+            if len(trimmed) < len(history):
+                logger.info(
+                    "[LLM] 本地引擎上下文预算裁剪 device_id=%s history=%d→%d 条",
+                    device_id,
+                    len(history),
+                    len(trimmed),
+                )
+            history = trimmed
+
+        def _assemble(hist: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            msgs: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
+            msgs.extend(hist)
+            if not has_tool_trail:
+                msgs.append({"role": "user", "content": user_content})
+            msgs.extend(extra)
+            return msgs
+
+        messages = _assemble(history)
+        cur_history = list(history)
+        attempts = 0
+        while True:
+            try:
+                content, calls, meta = await tool_acompletion(
+                    messages,
+                    device_id=device_id,
+                    temperature=0.7,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
+                return LlmToolRoundResult(content=str(content or ""), tool_calls=calls, meta=meta)
+            except RuntimeError as exc:
+                if (
+                    not local_engine
+                    or not cur_history
+                    or attempts >= _MAX_EXCEED_RETRY
+                    or not _is_exceed_ctx_error(exc)
+                ):
+                    raise
+                attempts += 1
+                prev_len = len(cur_history)
+                cur_history = cur_history[prev_len // 2 :]
+                messages = _assemble(cur_history)
+                logger.info(
+                    "[LLM] 本地引擎上下文超限，裁剪历史重试 device_id=%s history=%d→%d attempt=%d",
+                    device_id,
+                    prev_len,
+                    len(cur_history),
+                    attempts,
+                )
 
     async def _complete_locked(
         self,

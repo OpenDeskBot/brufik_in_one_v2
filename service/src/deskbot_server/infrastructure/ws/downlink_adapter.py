@@ -56,3 +56,5 @@ class WsPipelineEventsAdapter:
 
     async def touch_device(self, device_id: str, status: str) -> None:
         await self._device_ws.touch(device_id, status)
+        # 对话轮结束打点：publish_chat_turn 唯一经此刷新设备对话时钟（供 live 冷场判定）
+        self._device_ws.note_convo(device_id)

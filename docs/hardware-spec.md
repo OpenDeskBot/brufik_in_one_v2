@@ -276,7 +276,7 @@ D8  = GPIO7    D9  = GPIO8    D10 = GPIO9
 
 - 音频前端集成 **ESP-SR AFE**（`audio_frontend_esp_sr.cpp`）：AEC 回声消除 / NS 降噪 / AGC / VAD
 - **全双工**：已移除 speaker/mic 半双工互斥，播放时麦克风照常采集，机器人可以边听边说、随时被打断
-- 上行统一 16kHz（`SAMPLE_RATE`），下行 TTS 24kHz；切句在服务端 Silero VAD
+- 上行统一 16kHz（`SAMPLE_RATE`），下行 TTS 音频同样统一 16kHz（config.yaml `tts.sample_rate`）；切句在服务端 Silero VAD
 
 ---
 
@@ -309,7 +309,7 @@ D8  = GPIO7    D9  = GPIO8    D10 = GPIO9
 
 ### 📡 通信
 1. WebSocket 最大帧 1MB，单帧 JPEG 最大 32KB
-2. 下行 PB 帧最大 64KB JSON + 480KB 二进制（10s @ 24kHz PCM）
+2. 下行 PB 帧最大 64KB JSON + 320KB 二进制（10s @ 16kHz PCM，统一下发采样率）
 3. PB 帧间需 50ms 间隔，PB 块间需 150ms 间隔
 4. WiFi 默认 SSID：`deskbot_wifi`，密码：`hello2026`
 

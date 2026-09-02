@@ -160,8 +160,6 @@ def llm_tools_prompt_appendix() -> str:
         "可用工具（可选 ``tools`` 数组；需要工具时 ``tools`` 非空、``tts`` 可留空，"
         "服务端执行后会再次调用你；最终回复时 ``tools`` 写 [] 并填写 ``tts``。"
         "用户已说话时优先在 ``tts`` 里正常回答；不要只返回 tools 而省略完整 JSON 对象）：\n"
-        '  - set_camera_follow: {"tool":"set_camera_follow","mode":"follow"} 让镜头转向对着用户的脸。'
-        "mode: follow（跟随人脸）/ follow_frontal（跟随正脸）/ 省略（关闭）。说话前画面有人时必须调用。\n"
         '  - register_face: {"tool":"register_face","name":"姓名","face_id":1} 把当前画面 face_id 的人脸注册/更新到档案。'
         "face_id 见每轮 user 消息「图像识别」；仅一张脸时可省略；多人须指定 face_id 或先向用户澄清。\n"
         '  - register_voiceprint: {"tool":"register_voiceprint","name":"姓名"} 记住刚说话的人的声音（注册样本来自最近一次对话语音）。'

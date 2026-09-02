@@ -200,9 +200,6 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center;justify-conten
   flex:none;box-sizing:border-box;border-bottom:1px solid rgba(255,255,255,.08)}
 .media-hd span{font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:#9a9a90;font-weight:700}
 .media-hd b{font-size:12px;color:#f4f4ef;font-weight:700}
-.media-hd a{font-family:var(--mono);font-size:10px;font-weight:700;color:#d8d6cc;text-decoration:none;
-  border:1px solid rgba(255,255,255,.2);border-radius:var(--rs);padding:3px 8px;white-space:nowrap}
-.media-hd a:hover{border-color:var(--accent);color:#fff}
 .media-stage{position:relative;flex:1;min-height:236px;display:grid;place-items:center;background:#111318;overflow:hidden}
 .media-stage>*{grid-area:1/1;max-width:100%}
 .media-stage .face{width:100%;height:100%;max-width:230px;border:none;background:transparent;box-shadow:none}
@@ -210,13 +207,30 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center;justify-conten
 .media-stage .home-robot-host{width:100%;height:100%}
 .media-stage img{width:100%;height:100%;object-fit:contain;background:#0b0c0f;display:block}
 .media-stage .home-camera-empty{padding:18px}
+/* 摄像头 · 老电视：待机屏 + 旋钮开机 */
+.home-tv{background:#07080a}
+.home-tv-standby{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;
+  width:100%;height:100%;text-align:center;color:#3c3e45;
+  background:radial-gradient(ellipse at center,rgba(255,255,255,.05),transparent 70%),
+    repeating-linear-gradient(0deg,transparent 0 2px,rgba(255,255,255,.014) 2px 4px)}
+.home-tv-standby span{font-family:var(--mono);font-size:13px;letter-spacing:.3em;font-weight:700}
+.home-tv-standby small{font-family:var(--mono);font-size:10px;letter-spacing:.06em}
+/* TV 右下角 ⏻ 电源键（嵌在机身边缘，不进画面区域） */
+.tv-power{position:absolute;right:8px;bottom:8px;z-index:4;width:34px;height:34px;margin:0;
+  padding:7px;box-sizing:border-box;border:none;border-radius:50%;cursor:pointer;
+  background:radial-gradient(circle at 35% 30%,#4a4d55,#26282d 72%);
+  box-shadow:0 1px 6px rgba(0,0,0,.55),inset 0 1px 2px rgba(255,255,255,.22)}
+.tv-power svg{width:100%;height:100%;display:block}
+.tv-power .p-ring{fill:none;stroke:#9aa0a8;stroke-width:3}
+.tv-power .p-bar{stroke:#e8e6dc;stroke-width:3.4;stroke-linecap:round}
+.tv-power:hover{box-shadow:0 1px 8px rgba(255,255,255,.22),inset 0 1px 2px rgba(255,255,255,.3)}
+.tv-power:active{transform:scale(.94)}
+.tv-power.on .p-ring{stroke:#ffb928}
+.tv-power.on .p-bar{stroke:#ffcf6b}
+.tv-power.on{box-shadow:0 1px 10px rgba(255,185,40,.35),inset 0 1px 2px rgba(255,255,255,.3)}
 .home-robot-host{position:relative;min-height:0;display:grid;place-items:center;background:transparent;overflow:hidden}
 .home-robot-host canvas{display:block;width:100%!important;height:100%!important}
 .home-robot-fallback{position:relative;z-index:2;color:#f7f3e8;font-weight:800;text-align:center;margin:0}
-/* 主控台底部操作 */
-.home-deck{display:flex;justify-content:flex-end;gap:12px;margin-top:14px;flex-wrap:wrap;position:relative;z-index:2}
-.home-deck-actions{display:flex;gap:8px}
-.home-deck-actions .btn{justify-content:center;text-decoration:none;padding:9px 14px;font-size:12px;white-space:nowrap}
 /* 底部：快捷入口（一行 5 块）+ 快捷下发面板 */
 .home-quicknav{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:16px}
 .quicknav-tile{display:flex;flex-direction:column;gap:6px;min-width:0;background:var(--panel);
@@ -751,8 +765,6 @@ details.voice-advanced-fields:not([open]) .voice-advanced-grid{display:none}
   .home-quicknav{grid-template-columns:1fr 1fr}
   .home-media{grid-template-columns:1fr}
   .media-stage{min-height:210px}
-  .home-deck{flex-direction:column}
-  .home-deck-actions .btn{flex:1 1 150px}
   .topbar{padding:0 12px}
   .topbar .tb-l,.topbar .tb-r{gap:8px}
   .topbar .tb-sub,.topbar .tb-clock{display:none}

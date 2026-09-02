@@ -1,11 +1,11 @@
 """豆包（火山引擎）ASR 2.0：Seed-ASR 大模型极速版（一次性识别 Flash）。
 
-配置优先走设备级 ``devices.asr_param``（resolve.py 注入 overrides），
-全局兜底走环境变量（与旧版同模式，不落 config.yaml）：
-- DOUBAO_ASR_API_KEY     新版控制台「API Key 管理」的 API Key（Authorization: X-Api-Key）
-- DOUBAO_ASR_RESOURCE_ID 资源 ID（默认 volc.seedasr.auc）
-- DOUBAO_ASR_UID         用户标识（默认 deskbot）
-- DOUBAO_ASR_URL         端点（默认 https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash）
+配置一律为设备级：resolve.py 从 ``devices.asr_param`` 注入 overrides，
+本模块仅提供纯默认构造（``DoubaoAsrConfig()``），不含任何全局密钥：
+- api_key      设备「配置」中填写的 API Key（Authorization: X-Api-Key）
+- resource_id  资源 ID（默认 volc.seedasr.auc）
+- uid          用户标识（默认 deskbot）
+- url          端点（默认 https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash）
 
 协议（Express Flash，一次性识别）：
 POST JSON（Content-Type: application/json），请求体
@@ -24,14 +24,12 @@ import asyncio
 import base64
 import json
 import logging
-import os
 import time
 import urllib.error
 import urllib.request
 import uuid
 
 from deskbot_server.utils.audio import pcm_to_wav_bytes
-from deskbot_server.utils.env import load_dotenv
 
 logger = logging.getLogger("deskbot-server")
 
@@ -48,6 +46,26 @@ _STATUS_OK_CODES = (STATUS_OK, STATUS_SILENCE)
 
 # 表单字段名（robot-settings 对话框 / asr_test 覆盖字段 / resolve overrides 共用）
 DOUBAO_ASR_FIELDS = ("api_key", "resource_id", "uid", "url")
+
+
+def _mask_secret(value: str) -> str:
+    """头 3 尾 3 + 星号；≤6 位全星号（与 tts/doubao._mask_secret 同模式）。"""
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= 6:
+        return "*" * len(raw)
+    return raw[:3] + "*" * (len(raw) - 6) + raw[-3:]
+
+
+def _is_masked_secret(value: str) -> bool:
+    """判断是否为 _mask_secret 产生的占位串，避免误当作真实密钥覆盖。"""
+    raw = (value or "").strip()
+    if not raw or "*" not in raw:
+        return False
+    if len(raw) <= 6:
+        return all(c == "*" for c in raw)
+    return raw[3:-3] == "*" * (len(raw) - 6)
 
 
 class DoubaoAsrConfig:
@@ -67,20 +85,9 @@ class DoubaoAsrConfig:
     def validate(self) -> None:
         if not self.api_key:
             raise RuntimeError(
-                "豆包 ASR 缺少 API Key（设备「配置」或 DOUBAO_ASR_API_KEY）"
+                "豆包 ASR 缺少 API Key：请在机器人设置 → ASR「配置」中为该设备填写"
                 "（火山引擎控制台 → API Key 管理）"
             )
-
-
-def load_doubao_asr_config() -> DoubaoAsrConfig:
-    """从 env 加载豆包 ASR 配置（load_dotenv 每次调用，.env 可热改）。"""
-    load_dotenv()
-    return DoubaoAsrConfig(
-        api_key=(os.environ.get("DOUBAO_ASR_API_KEY") or "").strip(),
-        resource_id=(os.environ.get("DOUBAO_ASR_RESOURCE_ID") or "").strip(),
-        uid=(os.environ.get("DOUBAO_ASR_UID") or "").strip(),
-        url=(os.environ.get("DOUBAO_ASR_URL") or "").strip(),
-    )
 
 
 def merge_doubao_config(base: DoubaoAsrConfig, overrides: dict[str, str]) -> DoubaoAsrConfig:

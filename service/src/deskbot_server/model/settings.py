@@ -89,7 +89,7 @@ class TtsSettings:
     ws_url: str = ""
     lang: str = "zh"
     spk_id: int = 0
-    sample_rate: int = 24000
+    sample_rate: int = 16000
     pb_random_servo: dict[str, Any] = field(default_factory=dict)
     pb_face_bundle_json: str = ""
     pb_face_bundle_file: str = ""
@@ -202,7 +202,7 @@ class AppSettings:
                 ws_url=str(tts.get("ws_url", "")),
                 lang=str(tts.get("lang", "zh")),
                 spk_id=int(tts.get("spk_id", 0)),
-                sample_rate=int(tts.get("sample_rate", 24000)),
+                sample_rate=int(tts.get("sample_rate", 16000)),
                 pb_random_servo=dict(tts.get("pb_random_servo") or {}),
                 pb_face_bundle_json=str(tts.get("pb_face_bundle_json") or ""),
                 pb_face_bundle_file=str(tts.get("pb_face_bundle_file") or ""),

@@ -32,16 +32,21 @@ def _dedupe_request_id(source: str, device_id: str) -> str | None:
 
 
 class BusService(metaclass=SingletonMeta):
-    """设备事件总线。
+    """设备事件总线（实时对话采集门控在发布侧）。
 
     职责：
     - 滚动窗口：存最近 N 条完整事件，供 ``GET /api/pipeline_recent`` 查询。
     - WS 订阅广播：web 调试页面通过 ``subscribe_ws()`` 接收实时事件。
     - 回调 pub/sub：应用层通过 ``sub()``/``pub()`` 注册回调（与 WS 广播独立）。
 
-    - ``pub()``          ：写入滚动窗口 + WS 广播 + 回调通知。
+    采集门控：滚动窗口仅在目标设备存在 WS 订阅者时写入（``pub()`` 内判断）——实验台
+    「实时对话」按需采集，无人查看不落事件数据；最后一位订阅者离开时由
+    ``unsubscribe_ws()`` 清空该设备窗口与媒体留存。
+
+    - ``pub()``          ：写入滚动窗口（仅有人在看时）+ WS 广播 + 回调通知。
     - ``broadcast()``    ：纯 WS 广播，不写入窗口（pipeline_stage、camera_frame 等）。
     - ``subscribe_ws()`` / ``unsubscribe_ws()``：web 调试页面 WS 订阅管理。
+    - ``has_subscribers()`` / ``has_subscribers_sync()``：采集门控判活。
     - ``sub()`` / ``unsub()``：应用层回调订阅。
     """
 
@@ -87,7 +92,11 @@ class BusService(metaclass=SingletonMeta):
     # ── 发布 ──────────────────────────────────────────────────────────
 
     async def pub(self, device_id: str, event: dict[str, Any]) -> dict:
-        """发布事件：写入滚动窗口 + WS 广播 + 回调通知。返回带 seq 的事件副本。"""
+        """发布事件：写入滚动窗口 + WS 广播 + 回调通知。返回带 seq 的事件副本。
+
+        采集门控：滚动窗口只在有 WS 订阅者（实验台「实时对话」/调试页）监听该设备时写入；
+        无人查看不落任何事件数据（seq 照常分配，供上行生产者 ack）。
+        """
         async with self._lock:
             self._seq += 1
             evt = dict(event)
@@ -99,22 +108,24 @@ class BusService(metaclass=SingletonMeta):
             if not evt.get("received_at"):
                 evt["received_at"] = _format_ts(float(evt["received_ts"]))
 
-            source = str(evt.get("source") or "")
-            dedupe_rid = _dedupe_request_id(source, device_id)
-            if dedupe_rid:
-                evt["request_id"] = dedupe_rid
-                self._events = deque(
-                    (e for e in self._events if e.get("request_id") != dedupe_rid), maxlen=self._max_events
-                )
-            else:
-                rid = str(evt.get("request_id") or "").strip()
-                if rid:
-                    self._events = deque(
-                        (e for e in self._events if e.get("request_id") != rid), maxlen=self._max_events
-                    )
-            self._events.appendleft(evt)
-
             targets = [ws for ws, flt in self._ws_subscribers.items() if not flt or flt == device_id]
+
+            # 采集门控：无订阅者时不写滚动窗口（仅此设备无人在看时也不缓存，避免后台滞留数据）
+            if targets:
+                source = str(evt.get("source") or "")
+                dedupe_rid = _dedupe_request_id(source, device_id)
+                if dedupe_rid:
+                    evt["request_id"] = dedupe_rid
+                    self._events = deque(
+                        (e for e in self._events if e.get("request_id") != dedupe_rid), maxlen=self._max_events
+                    )
+                else:
+                    rid = str(evt.get("request_id") or "").strip()
+                    if rid:
+                        self._events = deque(
+                            (e for e in self._events if e.get("request_id") != rid), maxlen=self._max_events
+                        )
+                self._events.appendleft(evt)
 
         # WS fanout
         msg = json.dumps({"type": "pipeline_event", "event": evt})
@@ -163,19 +174,45 @@ class BusService(metaclass=SingletonMeta):
         )
 
     async def unsubscribe_ws(self, ws) -> None:
-        """取消 WS 订阅，清理 fanout 资源。"""
+        """取消 WS 订阅，清理 fanout 资源。
+
+        采集清场：若某设备因此失去最后一位订阅者，立即清空该设备的滚动窗口与媒体
+        留存——实时对话数据仅在有人查看时存在（无人查看不持久化、不后台滞留）。
+        """
+        flt: str | None = None
+        remaining = False
         async with self._lock:
-            self._ws_subscribers.pop(ws, None)
+            flt = self._ws_subscribers.pop(ws, None)
+            if flt:
+                remaining = any(not f or f == flt for _w, f in self._ws_subscribers.items())
         self._fanout.discard(ws)
+        if flt and not remaining:
+            self._prune_device(flt)
+
+    def _prune_device(self, device_id: str) -> None:
+        """清空某设备的滚动窗口事件 + 音频/图像媒体留存（最后一位订阅者离开）。"""
+        self._events = deque(
+            (e for e in self._events if e.get("device_id") != device_id), maxlen=self._max_events
+        )
+        try:
+            from deskbot_server.service.application.convo_audio_store import ConvoAudioStore
+
+            ConvoAudioStore().clear(device_id)
+        except Exception:
+            logger.warning("[bus] 清理设备媒体失败 device_id=%s", device_id, exc_info=True)
 
     async def has_subscribers(self, device_id: str | None = None) -> bool:
         """是否有 WS 订阅者在监听该设备（或全部设备）。"""
+        return self.has_subscribers_sync(device_id)
+
+    def has_subscribers_sync(self, device_id: str | None = None) -> bool:
+        """同步版监听判断（采集门控用）。
+
+        服务为单线程事件循环，``_ws_subscribers`` 只在锁内增删，这里直接读字典即可；
+        异步路径仍可用 ``has_subscribers()``。
+        """
         device_id = str(device_id or "").strip() or None
-        async with self._lock:
-            for _ws, flt in self._ws_subscribers.items():
-                if not flt or flt == device_id:
-                    return True
-        return False
+        return any(not flt or flt == device_id for _ws, flt in self._ws_subscribers.items())
 
     # ── 快照查询 ──────────────────────────────────────────────────────
 

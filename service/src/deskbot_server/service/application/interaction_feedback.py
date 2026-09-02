@@ -33,13 +33,54 @@ _FACE_STALE_SEC = 0.7
 _MOTION_MS = 2000
 _LLM_WAIT_NOD_MS = 800
 _GAZE_SERVO_MS = 500
+# 说话前自动转向：短步快速转头 + 设备级防抖间隔
+_SPEAK_TURN_MS = 350
+_SPEAK_TURN_MIN_GAP_SEC = 1.5
 
 _listen_last_mono: dict[str, float] = {}
 _face_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_speak_turn_last: dict[str, float] = {}
 
 
 def _face_follow_active(device_id: str) -> bool:
     return get_camera_servo_auto_mode(device_id) in ("follow", "follow_frontal", "gaze")
+
+
+def maybe_speak_face_turn(
+    device_id: str | None, *, parsed_moves: list[Any], now: float | None = None
+) -> dict[str, Any] | None:
+    """说话（need_reply=true 口播）前的一次性转向步（__custom__，前插语音链）。
+
+    替代已移除的 ``set_camera_follow`` LLM 工具：只要这轮要开口说话且画面有人，
+    程序自动让机器人先转向说话人。触发条件（全满足）：
+    1. 自动回复开启（get_auto_reply）；
+    2. 未处于持续跟随（follow/frontal/gaze 激活时每帧 tick 已在管，不插一手）；
+    3. 0.7s 内有新鲜人脸可换算；
+    4. 模型 moves 无 look_* / __custom__ 朝向表达（已有明确朝向意图时不叠加）；
+    5. 设备级防抖 ≥ _SPEAK_TURN_MIN_GAP_SEC。
+
+    返回可前插 ``parsed["moves"]`` 的 __custom__ step dict；不满足 → None。
+    """
+    dev = str(device_id or "").strip()
+    if not dev or not get_auto_reply(dev):
+        return None
+    if _face_follow_active(dev):
+        return None
+    analysis = get_valid_face_analysis(dev)
+    if analysis is None:
+        return None
+    step = _gaze_servo_step(analysis, device_id=dev)
+    if step is None:
+        return None
+    for mv in parsed_moves or []:
+        ident = str(mv.get("move") if isinstance(mv, dict) else mv or "").strip()
+        if ident.startswith("look_") or ident == "__custom__":
+            return None
+    now = now if now is not None else time.monotonic()
+    if now - _speak_turn_last.get(dev, 0.0) < _SPEAK_TURN_MIN_GAP_SEC:
+        return None
+    _speak_turn_last[dev] = now
+    return {"move": "__custom__", "ms": _SPEAK_TURN_MS, "x": step["x"], "y": step["y"], "xm": 0, "ym": 0}
 
 
 def note_face_analysis(device_id: str, analysis: dict[str, Any]) -> None:

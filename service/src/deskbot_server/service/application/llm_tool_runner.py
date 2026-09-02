@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from deskbot_server.dao.device_mapper import get_camera_servo_auto_mode, set_camera_servo_auto_mode
 from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory
 from deskbot_server.dao.device_session_mapper import execute_session_tool
 from deskbot_server.service.application.face_registration import register_face_for_device
@@ -17,30 +16,6 @@ from deskbot_server.service.scheduled_task_service import execute_schedule_task_
 from deskbot_server.service.web_tools import webfetch, websearch
 
 logger = logging.getLogger("deskbot-server")
-
-_FOLLOW_ALIASES = {
-    "": "",
-    "off": "",
-    "none": "",
-    "关闭": "",
-    "关": "",
-    "follow": "follow",
-    "跟随": "follow",
-    "跟随人脸": "follow",
-    "follow_frontal": "follow_frontal",
-    "正脸": "follow_frontal",
-    "跟随正脸": "follow_frontal",
-    "gaze": "gaze",
-    "注视": "gaze",
-    "注视感知": "gaze",
-}
-
-
-def _normalize_follow_mode(raw: object) -> str:
-    key = str(raw or "").strip().lower()
-    if key in _FOLLOW_ALIASES:
-        return _FOLLOW_ALIASES[key]
-    return str(raw or "").strip()
 
 
 def _require_quest_playbook(device_id: str) -> str:
@@ -100,20 +75,6 @@ async def execute_llm_tools(
                     results.append({"tool": tool, "ok": False, "error": cap.get("error")})
                 else:
                     results.append({"tool": tool, **cap})
-            elif tool in ("set_camera_follow", "set_camera_follow_mode", "camera_follow"):
-                mode = _normalize_follow_mode(raw.get("mode") or raw.get("value"))
-                if mode not in ("", "follow", "follow_frontal", "gaze"):
-                    raise ValueError(f"未知跟随模式: {mode!r}")
-                before = get_camera_servo_auto_mode(device_id)
-                norm = set_camera_servo_auto_mode(device_id, mode)
-                already = before == norm
-                row: dict[str, Any] = {"tool": tool, "ok": True, "mode": norm}
-                if already:
-                    row["already_active"] = True
-                    row["hint"] = (
-                        f"摄像头跟随已是 {norm or '关闭'}，无需再次调用。请返回完整 JSON（tools:[] + tts 回答用户）。"
-                    )
-                results.append(row)
             elif tool == "memory_add":
                 text = str(raw.get("text") or raw.get("value") or "").strip()
                 if not text:

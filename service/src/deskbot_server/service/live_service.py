@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import time
@@ -25,6 +26,12 @@ WANDER_MIN_CYCLES = 1
 WANDER_MAX_CYCLES = 3
 SLEEP_MIN_SEC = 30.0
 SLEEP_MAX_SEC = 60.0
+
+# ── 剧情主动推进（冷场触发）──
+QUEST_ATTEMPT_IDLE_SEC = 60.0        # 距最后一轮对话超过此时长才尝试推进剧情
+QUEST_CHECK_SEC = 5.0                # 人脸帧内检查节流
+QUEST_NO_TASK_COOLDOWN_SEC = 60.0    # 无 running 任务 / 设备离线时空转冷却（避免高频查库）
+_QUEST_DB_TS_CACHE_SEC = 30.0        # DB 会话表兜底时间戳的内存缓存时长
 
 
 class LiveState(str, Enum):
@@ -101,9 +108,19 @@ class LiveService(metaclass=SingletonMeta):
     def __init__(self) -> None:
         self._hub: Any = None
         self._devs: dict[str, _Dev] = {}
+        # ── 剧情主动推进（_quest_runner 异步 attempt(device_id) -> bool）──
+        self._quest_runner: Any = None
+        self._quest_inflight: set[str] = set()
+        self._quest_last_check: dict[str, float] = {}
+        self._quest_next_ok: dict[str, float] = {}
+        self._quest_db_ts: dict[str, tuple[float, float]] = {}
 
     def bind(self, hub: Any) -> None:
         self._hub = hub
+
+    def bind_quest_runner(self, runner: Any) -> None:
+        """注入剧本主动推进器（冷场 1 分钟且用户在时由 LiveService 调度调用）。"""
+        self._quest_runner = runner
 
     @property
     def hub(self) -> Any:
@@ -176,11 +193,77 @@ class LiveService(metaclass=SingletonMeta):
         dev = str(device_id or "").strip()
         if not dev or not self.active(dev) or not analysis.get("landmarks"):
             return
+        # 用户在面前且长时间无对话 → 剧本主动推进（与 gaze 独立）
+        await self._maybe_quest_attempt(dev)
         st = self._ensure(dev)
         if st.mode == LiveState.GAZE:
             await self._send_gaze(dev, analysis, st)
             return
         st.mode = LiveState.GAZE
+
+    # ── 剧情主动推进（冷场 ≥1 分钟触发一轮任务尝试）──
+
+    async def _maybe_quest_attempt(self, device_id: str) -> None:
+        """人脸 tick 内节流判定；满足冷场条件时 spawn 一次剧本尝试。"""
+        runner = self._quest_runner
+        if runner is None or self._hub is None:
+            return
+        dev = str(device_id or "").strip()
+        if not dev or dev in self._quest_inflight:
+            return
+        now_m = time.monotonic()
+        if now_m - self._quest_last_check.get(dev, 0.0) < QUEST_CHECK_SEC:
+            return
+        self._quest_last_check[dev] = now_m
+        if now_m < self._quest_next_ok.get(dev, 0.0):
+            return  # 空转冷却（无任务/离线），不重复打扰
+
+        idle = await self._quiet_seconds(dev)
+        if idle < QUEST_ATTEMPT_IDLE_SEC:
+            return  # 最近 1 分钟内有对话轮
+        self._quest_inflight.add(dev)
+        asyncio.create_task(self._run_quest_attempt(dev), name=f"quest_attempt_{dev[:8]}")
+
+    async def _run_quest_attempt(self, device_id: str) -> None:
+        try:
+            started = await self._quest_runner.attempt(device_id)
+            if not started:
+                # 无 running 任务 / 设备离线 → 冷却后复查
+                self._quest_next_ok[device_id] = time.monotonic() + QUEST_NO_TASK_COOLDOWN_SEC
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[live] quest attempt 异常 device_id=%s", device_id)
+        finally:
+            self._quest_inflight.discard(device_id)
+
+    async def _quiet_seconds(self, device_id: str) -> float:
+        """距最后一轮对话的秒数（内存打点优先，进程冷启动时用会话表 updated_at 兜底）。
+
+        从未有过任何对话 → 返回极大值（视为冷场已满足）。
+        """
+        hub = self._hub
+        if hub is not None:
+            mem = hub.last_convo_ts(device_id)
+            if mem > 0:
+                return time.time() - mem
+        return time.time() - await self._db_last_convo_ts(device_id)
+
+    async def _db_last_convo_ts(self, device_id: str) -> float:
+        now = time.time()
+        cached = self._quest_db_ts.get(device_id)
+        if cached is not None and now - cached[1] < _QUEST_DB_TS_CACHE_SEC:
+            return cached[0]
+        try:
+            from deskbot_server.dao.device_session_mapper import get_current_session
+            from deskbot_server.utils.async_helpers import run_blocking
+
+            sess = await run_blocking(get_current_session, device_id)
+            ts = float((sess or {}).get("updated_at") or 0.0)
+        except Exception:
+            ts = 0.0
+        self._quest_db_ts[device_id] = (ts, time.time())
+        return ts
 
     def on_face_lost(self, device_id: str) -> None:
         st = self._devs.get(str(device_id or "").strip())

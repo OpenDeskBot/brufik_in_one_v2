@@ -19,15 +19,15 @@ from deskbot_server.pb.shapes import (
 
 logger = logging.getLogger("deskbot-server")
 
-# 分片合并：单片时长上限默认 500ms；仍受 ESP32 WS BINARY 单帧上限约束（约 10s@24kHz）
+# 分片合并：单片时长上限默认 500ms；仍受 ESP32 WS BINARY 单帧上限约束（约 10s@16kHz，统一下发采样率）
 _PB_CHUNK_MS_USER = max(100, int(os.environ.get("PB_CHUNK_MS_MAX", "500")))
-PB_CHUNK_MS_MAX = min(_PB_CHUNK_MS_USER, pb_max_chunk_ms_for_pcm(24000))
+PB_CHUNK_MS_MAX = min(_PB_CHUNK_MS_USER, pb_max_chunk_ms_for_pcm(16000))
 if PB_CHUNK_MS_MAX < _PB_CHUNK_MS_USER:
     logger.info(
         "[pb] PB_CHUNK_MS_MAX 由 %d 收紧为 %d（ESP32 PCM 单帧上限，约 %d 字节）",
         _PB_CHUNK_MS_USER,
         PB_CHUNK_MS_MAX,
-        (PB_CHUNK_MS_MAX * 24000 // 1000) * 2,
+        (PB_CHUNK_MS_MAX * 16000 // 1000) * 2,
     )
 
 

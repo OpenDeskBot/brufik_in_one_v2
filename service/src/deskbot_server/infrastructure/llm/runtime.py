@@ -84,69 +84,79 @@ def resolve_first_token_timeout(protocol: str) -> float:
     return LLM_FIRST_TOKEN_TIMEOUT_SECONDS
 
 
-def _default_base_url(protocol: str, *, api_key_source: str | None = None) -> str | None:
+def _default_base_url(protocol: str) -> str | None:
     protocol = _normalized_protocol(protocol)
     if protocol in VOLCENGINE_PROTOCOLS:
         return ARK_OPENAI_BASE_URL
-    if protocol == "dashscope" or api_key_source in {"DASHSCOPE_API_KEY", "QWEN_API_KEY"}:
+    if protocol == "dashscope":
         return DASHSCOPE_BASE_URL
-    if protocol == "openai" and api_key_source in {"ARK_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY"}:
-        return ARK_OPENAI_BASE_URL
     if protocol == "openai":
         return OPENAI_BASE_URL
     return None
 
 
-def _resolve_api_base(
-    protocol: str, configured_base_url: str | None, *, api_key_source: str | None = None
-) -> str | None:
+def _resolve_api_base(protocol: str, configured_base_url: str | None) -> str | None:
     base_url = str(configured_base_url or "").strip()
     if base_url:
         return base_url.rstrip("/")
-    default_base = _default_base_url(protocol, api_key_source=api_key_source)
+    default_base = _default_base_url(protocol)
     return default_base.rstrip("/") if default_base else None
 
 
 def resolve_system_llm_config(cfg: dict | None = None) -> ResolvedLlmConfig:
+    """系统默认 LLM：只读 config.yaml ``llm`` 段（本地免费引擎）。
+
+    云端模型密钥一律为设备级（data/{device_id}/llm_models.json）；系统默认不读取
+    任何环境变量密钥，api_key 恒为空。
+    """
     if cfg is None:
         cfg = load_config()
     llm_cfg = dict(cfg.get("llm") or {})
-    api_key, api_key_source = _first_env(
-        "LLM_API_KEY", "ARK_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY", "DASHSCOPE_API_KEY", "QWEN_API_KEY"
-    )
-    protocol = _normalized_protocol(
-        os.environ.get("LLM_PROTOCOL")
-        or llm_cfg.get("protocol")
-        or ("ark" if api_key_source in {"ARK_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY"} else None)
-        or "openai"
-    )
-    model_name = str(
-        os.environ.get("LLM_MODEL")
-        or os.environ.get("ARK_MODEL")
-        or os.environ.get("VOLCENGINE_LLM_MODEL")
-        or llm_cfg.get("model_name")
-        or ""
-    ).strip()
-    base_url = (
-        _first_env(
-            "LLM_BASE_URL",
-            "ARK_BASE_URL",
-            "VOLCENGINE_LLM_BASE_URL",
-            "VOLCENGINE_API_BASE",
-            "DOUBAO_LLM_BASE_URL",
-            "DASHSCOPE_BASE_URL",
-        )[0]
-        or str(llm_cfg.get("base_url") or "").strip()
-    )
-    resolved_base = _resolve_api_base(protocol, base_url, api_key_source=api_key_source)
+    protocol = _normalized_protocol(llm_cfg.get("protocol") or "openai")
+    model_name = str(llm_cfg.get("model_name") or "").strip()
+    base_url = str(llm_cfg.get("base_url") or "").strip()
+    resolved_base = _resolve_api_base(protocol, base_url)
     return ResolvedLlmConfig(
         model=build_chat_model(protocol, model_name),
-        api_key=api_key,
+        api_key="",
         api_base=resolved_base,
         protocol=protocol,
         source="system",
         display_name=f"系统默认 ({model_name})",
     )
+
+
+def _coerce_bool_flag(raw: Any) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return raw != 0
+    s = str(raw or "").strip().lower()
+    return s in ("1", "true", "yes", "on")
+
+
+def native_tools_enabled(device_id: str | None = None) -> bool:
+    """原生 function calling 开关。
+
+    设备级 ``devices.llm_param.native_tools`` 优先；缺省回退 config.yaml
+    ``llm.native_tools``（默认 False——本地小模型 tool-call 未验证前保持关闭）。
+    """
+    did = str(device_id or "").strip()
+    if did:
+        try:
+            from deskbot_server.dao.device_mapper import get_llm_param
+
+            raw = get_llm_param(did).get("native_tools")
+        except Exception:
+            raw = None
+        if raw is not None:
+            return _coerce_bool_flag(raw)
+    try:
+        from deskbot_server.config import load_config
+
+        return _coerce_bool_flag((load_config().get("llm") or {}).get("native_tools"))
+    except Exception:
+        return False
 
 
 def resolve_llm_config(device_id: str | None = None) -> ResolvedLlmConfig:
@@ -218,13 +228,48 @@ def _completion_url(api_base: str | None, protocol: str) -> str:
     return f"{base}/chat/completions"
 
 
-def _messages_to_ark_input(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
-    """OpenAI ``messages`` → 火山方舟 Responses API ``input``。"""
+def _messages_to_ark_input(messages: list[dict[str, str] | dict[str, Any]]) -> list[dict[str, Any]]:
+    """OpenAI ``messages`` → 火山方舟 Responses API ``input``。
+
+    原生 function calling 映射：assistant ``tool_calls`` → ``function_call`` item；
+    role=tool → ``function_call_output`` item。
+    """
     out: list[dict[str, Any]] = []
     for msg in messages:
         if not isinstance(msg, dict):
             continue
         role = str(msg.get("role") or "user").strip() or "user"
+        # 原生工具调用：assistant 带 tool_calls
+        if role == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                name = str(fn.get("name") or "").strip()
+                if not name:
+                    continue
+                args = fn.get("arguments")
+                if isinstance(args, dict):
+                    args = json.dumps(args, ensure_ascii=False)
+                out.append(
+                    {
+                        "type": "function_call",
+                        "call_id": str(tc.get("id") or ""),
+                        "name": name,
+                        "arguments": str(args or "{}"),
+                    }
+                )
+            continue
+        # 原生工具结果
+        if role == "tool":
+            out.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(msg.get("tool_call_id") or ""),
+                    "output": _stringify_content(msg.get("content")),
+                }
+            )
+            continue
         content = msg.get("content")
         if isinstance(content, list):
             parts: list[dict[str, Any]] = []
@@ -280,15 +325,23 @@ def _validate_api_key(cfg: ResolvedLlmConfig) -> None:
         return  # 本地引擎不校验 Authorization（服务端不鉴权）
     if not cfg.api_key or "请替换" in cfg.api_key:
         raise ValueError(
-            "LLM API Key 未配置。请在设备 LLM 管理中设置，或通过环境变量 "
-            "LLM_API_KEY / ARK_API_KEY / VOLCENGINE_API_KEY / DOUBAO_API_KEY / "
-            "DASHSCOPE_API_KEY 传入。"
+            "LLM API Key 未配置。系统默认仅支持本地免费引擎；"
+            "云端模型密钥请在该设备的 LLM 配置（llm_models.json）中设置。"
         )
 
 
 def _build_completion_payload(
-    messages: list[dict[str, str]], cfg: ResolvedLlmConfig, *, temperature: float, json_mode: bool, stream: bool
+    messages: list[dict[str, str]],
+    cfg: ResolvedLlmConfig,
+    *,
+    temperature: float,
+    json_mode: bool,
+    stream: bool,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: Any = None,
 ) -> dict[str, Any]:
+    # 原生 function calling 轮：带 tools 时不叠加 json_object 约束（两者并存易冲突）
+    want_json = json_mode and not tools
     if _uses_ark_responses_api(cfg.protocol):
         payload: dict[str, Any] = {
             "model": build_chat_model(cfg.protocol, cfg.model),
@@ -296,8 +349,12 @@ def _build_completion_payload(
             "stream": stream,
             "thinking": {"type": "disabled"},
         }
-        if json_mode:
+        if want_json:
             payload["text"] = {"format": {"type": "json_object"}}
+        if tools:
+            payload["tools"] = tools
+            if tool_choice is not None:
+                payload["tool_choice"] = tool_choice
         return payload
 
     payload = {
@@ -306,8 +363,12 @@ def _build_completion_payload(
         "temperature": temperature,
         "stream": stream,
     }
-    if json_mode:
+    if want_json:
         payload["response_format"] = {"type": "json_object"}
+    if tools:
+        payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
     return payload
 
 
@@ -410,6 +471,67 @@ def _usage_from_ark_response(response: dict[str, Any]) -> dict[str, Any] | None:
         "completion_tokens": usage.get("output_tokens"),
         "total_tokens": usage.get("total_tokens"),
     }
+
+
+def _tool_calls_from_openai_response(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """解析 OpenAI Chat Completions 的 ``message.tool_calls`` → [{id, name, arguments(str)}]。"""
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return []
+    first = choices[0]
+    if not isinstance(first, dict):
+        return []
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return []
+    raw_calls = message.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for tc in raw_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            continue
+        name = str(fn.get("name") or "").strip()
+        if not name:
+            continue
+        args = fn.get("arguments")
+        if isinstance(args, dict):
+            args = json.dumps(args, ensure_ascii=False)
+        out.append({"id": str(tc.get("id") or ""), "name": name, "arguments": str(args or "")})
+    return out
+
+
+def _tool_calls_from_ark_response(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """解析火山 Responses API ``output[]`` 的 ``function_call`` 条目。"""
+    output = response.get("output")
+    if not isinstance(output, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") != "function_call":
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        args = item.get("arguments")
+        if isinstance(args, dict):
+            args = json.dumps(args, ensure_ascii=False)
+        out.append({"id": str(item.get("id") or item.get("call_id") or ""), "name": name, "arguments": str(args or "")})
+    return out
+
+
+def _tool_calls_from_response(response: Any, *, protocol: str = "openai") -> list[dict[str, Any]]:
+    """按协议解析响应的原生 tool_calls；非 dict（mock/对象形态）→ []。"""
+    if not isinstance(response, dict):
+        return []
+    if _uses_ark_responses_api(protocol):
+        return _tool_calls_from_ark_response(response)
+    return _tool_calls_from_openai_response(response)
 
 
 def _delta_content_from_sse_event(data: dict[str, Any], *, protocol: str = "openai") -> str:
@@ -531,11 +653,15 @@ def _request_chat_completion(
     temperature: float,
     json_mode: bool,
     stream: bool,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: Any = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     _validate_api_key(cfg)
     url = _completion_url(cfg.api_base, cfg.protocol)
-    payload = _build_completion_payload(messages, cfg, temperature=temperature, json_mode=json_mode, stream=stream)
+    payload = _build_completion_payload(
+        messages, cfg, temperature=temperature, json_mode=json_mode, stream=stream, tools=tools, tool_choice=tool_choice
+    )
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -762,6 +888,43 @@ async def chat_acompletion(
         "usage": usage_dict,
     }
     return content, meta
+
+
+async def tool_acompletion(
+    messages: list[dict[str, str] | dict[str, Any]],
+    *,
+    device_id: str | None = None,
+    temperature: float = 0.7,
+    config: ResolvedLlmConfig | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: Any = None,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """原生 function calling 回合（恒非流式）。
+
+    返回 ``(content, tool_calls, meta)``：``content`` 为该轮模型文本输出（可空），
+    ``tool_calls`` 为 ``[{id, name, arguments(str)}]``（无工具调用 → []）。
+    ``tools`` 为空时等价于一次不带 json 约束的普通调用。
+    """
+    cfg = config or resolve_llm_config(device_id)
+    response = await asyncio.to_thread(
+        _request_chat_completion,
+        messages,
+        cfg,
+        temperature=temperature,
+        json_mode=False,
+        stream=False,
+        tools=tools,
+        tool_choice=tool_choice,
+    )
+    content = _content_from_response(response, protocol=cfg.protocol)
+    calls = _tool_calls_from_response(response, protocol=cfg.protocol)
+    meta = {
+        "model": build_chat_model(cfg.protocol, cfg.model),
+        "source": cfg.source,
+        "display_name": cfg.display_name,
+        "usage": _usage_from_response(response, protocol=cfg.protocol),
+    }
+    return content, calls, meta
 
 
 def chat_completion(

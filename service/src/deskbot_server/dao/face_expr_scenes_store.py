@@ -283,10 +283,10 @@ def design_frames_to_pb_chain(frames: list[dict[str, Any]], *, runtime_req: str)
         elements = _extract_frame_elements(fr if isinstance(fr, dict) else {})
         sub_rows.append({"chunk_ms": ms, "anim": [make_anim_item(elements, ms)]})
         pcm_empty.append(b"")
-    merged_rows, merged_pcm = merge_pb_subchunks(sub_rows, pcm_empty, sample_rate=24000, max_chunk_ms=PB_CHUNK_MS_MAX)
+    merged_rows, merged_pcm = merge_pb_subchunks(sub_rows, pcm_empty, sample_rate=16000, max_chunk_ms=PB_CHUNK_MS_MAX)
     pairs = pb_json_messages(
         pb_req=runtime_req,
-        sample_rate=24000,
+        sample_rate=16000,
         fmt="s16le",
         channels=1,
         anim_rows=merged_rows,

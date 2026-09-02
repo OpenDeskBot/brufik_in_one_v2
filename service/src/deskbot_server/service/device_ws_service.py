@@ -67,6 +67,7 @@ class _DeviceEntry:
     last_pb_ack_ts: float = 0.0
     last_pb_ack_mono: float = 0.0
     last_pb_send_mono: float = 0.0    # 最后一次 PbBlock 发送的单调时间戳
+    convo_ts: float = 0.0             # 最后一轮对话结束的 wall-clock 时间（touch_device 打点）
     last_status: str | None = None
     event_count: int = 0
 
@@ -671,6 +672,22 @@ class DeviceWsService(metaclass=SingletonMeta):
                 entry.last_status = status
             entry.event_count += 1
 
+    def note_convo(self, device_id: str) -> None:
+        """记录一轮对话结束时刻（对话轮发布链路打点，与心跳 touch 区分）。"""
+        if not device_id:
+            return
+        entry = self._devices.get(str(device_id).strip())
+        if entry is None:
+            return
+        entry.convo_ts = time.time()
+
+    def last_convo_ts(self, device_id: str) -> float:
+        """最后一轮对话结束时刻（wall-clock）；设备未注册 / 无对话记录返回 0.0。"""
+        if not device_id:
+            return 0.0
+        entry = self._devices.get(str(device_id).strip())
+        return entry.convo_ts if entry is not None else 0.0
+
     async def record_pb_ack(self, device_id: str, ack: dict[str, Any]) -> None:
         """记录设备最近一次 pb_ack。"""
         if not device_id or not isinstance(ack, dict):
@@ -931,9 +948,15 @@ class DeviceWsService(metaclass=SingletonMeta):
 
         # 先留存媒体（原声 / 最近帧），再发 asr_done：让用户气泡在 ASR 完成当下
         # 就能拿到音频与人脸图（live 广播即时渲染，不等 LLM/TTS 终态事件）
-        audio_saved = ConvoAudioStore().put(device_id, request_id, "asr", pcm_segment, sample_rate=sample_rate)
-        frame_jpeg = self.latest_camera_frame(device_id)
-        face_saved = bool(frame_jpeg) and ConvoAudioStore().put_raw(device_id, request_id, "face", frame_jpeg)
+        # 采集门控：仅当后台有订阅者查看该设备实时对话时才留存（无人查看不采集）
+        _bus = self._bus_service
+        _watching = bool(_bus) and bool(getattr(_bus, "has_subscribers_sync", None) and _bus.has_subscribers_sync(device_id))
+        audio_saved = False
+        face_saved = False
+        if _watching:
+            audio_saved = ConvoAudioStore().put(device_id, request_id, "asr", pcm_segment, sample_rate=sample_rate)
+            frame_jpeg = self.latest_camera_frame(device_id)
+            face_saved = bool(frame_jpeg) and ConvoAudioStore().put_raw(device_id, request_id, "face", frame_jpeg)
 
         # asr_done stage：仅广播给页面订阅者，供前端先渲染用户气泡（不向设备下发）
         from deskbot_server.ws.stages import _emit_stage

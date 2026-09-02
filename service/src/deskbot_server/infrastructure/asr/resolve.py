@@ -6,7 +6,8 @@
 
 设备级参数（device 表 ``asr_param``，JSON）按 provider 注入 adapter：
 - funasr：``funasr.url`` 覆盖 config.yaml 的 external_url
-- doubao：``doubao.{api_key,resource_id,uid,url}`` 覆盖全局 env（未填字段回落 env）
+- doubao：``doubao.{api_key,resource_id,uid,url}`` 覆盖纯默认配置（未填字段回落
+  doubao.py 内置默认；密钥一律设备自配，无全局 env 兜底）
 两个 adapter 均无状态，每次调用解析构造即可。
 """
 
@@ -16,9 +17,8 @@ import logging
 
 from deskbot_server.config import load_config
 from deskbot_server.dao.device_mapper import get_asr_param, get_asr_provider
-from deskbot_server.infrastructure.asr.doubao import DOUBAO_ASR_FIELDS
+from deskbot_server.infrastructure.asr.doubao import DOUBAO_ASR_FIELDS, _is_masked_secret
 from deskbot_server.infrastructure.asr.doubao_adapter import DoubaoAsrAdapter
-from deskbot_server.infrastructure.asr.env_store import _is_masked_secret
 from deskbot_server.infrastructure.asr.funasr_adapter import FunAsrAdapter
 from deskbot_server.model.settings import AppSettings
 from deskbot_server.ports.asr import AsrPort
@@ -53,7 +53,7 @@ def _doubao_overrides(params: dict) -> dict[str, str]:
 def resolve_asr_adapter(device_id: str | None = None, settings: AppSettings | None = None) -> AsrPort:
     """按设备解析 ASR adapter（无状态，可每次调用构造）。
 
-    参数优先级：设备 asr_param > 全局 env > config.yaml/默认值。
+    参数优先级：设备 asr_param > 内置默认（密钥仅设备级）。
     """
     provider = resolve_asr_provider(device_id)
     if settings is None:

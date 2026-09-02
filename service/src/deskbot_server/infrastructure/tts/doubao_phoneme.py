@@ -28,13 +28,13 @@ class DoubaoPhonemeTtsAdapter:
     async def synthesize_phoneme_segments(self, text: str) -> tuple[int, list[PhonemeSegment]]:
         clean = (text or "").strip()
         if not clean:
-            sr = int(self._settings.tts.sample_rate or 24000)
+            sr = int(self._settings.tts.sample_rate or 16000)
             return sr, []
 
         cfg = load_doubao_tts_config(self._settings.tts.extra, self._overrides)
         result = await synthesize_doubao_tts(clean, cfg)
         pcm = bytes(result.pcm or b"")
-        sr = int(result.sample_rate or cfg.sample_rate or 24000)
+        sr = int(result.sample_rate or cfg.sample_rate or 16000)
         if not pcm:
             raise RuntimeError(f"豆包 TTS 无 PCM: {clean!r}")
 

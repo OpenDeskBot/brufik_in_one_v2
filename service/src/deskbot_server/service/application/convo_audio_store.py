@@ -113,7 +113,7 @@ class ConvoAudioStore(metaclass=SingletonMeta):
         return self.get(device_id, request_id, kind) is not None
 
     def clear(self, device_id: str | None = None) -> None:
-        """清空全部或某设备条目（切换设备/测试用）。"""
+        """清空全部或某设备条目（切换设备/最后一位订阅者离开/测试用）。"""
         if device_id is None:
             self._items.clear()
             self._bytes = 0

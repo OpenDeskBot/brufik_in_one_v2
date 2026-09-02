@@ -19,14 +19,14 @@ PB_CHUNK_GAP_SEC = max(0.0, float(os.environ.get("PB_CHUNK_GAP_MS", "0")) / 1000
 PB_WAIT_ACK = os.environ.get("PB_WAIT_ACK", "1").strip().lower() not in ("0", "false", "no", "off")
 # ESP32 打包帧 JSON 上限（字节）；与固件 DESKBOT_MAX_PACKED_JSON_LEN 对齐
 PB_MAX_WIRE_JSON_BYTES = max(4096, int(os.environ.get("PB_MAX_WIRE_JSON_BYTES", str(64 * 1024))))
-# ESP32 WS 单帧 BINARY（PCM）上限；默认按 10s@24kHz mono s16le（10000ms→480000B）
+# ESP32 WS 单帧 BINARY（PCM）上限；默认按 10s@16kHz mono s16le（统一下发采样率，10000ms→320000B）
 _PB_PCM_MS_CAP_DEFAULT = 10000
 PB_MAX_PCM_BIN_BYTES = max(
-    4096, int(os.environ.get("PB_MAX_PCM_BIN_BYTES", str((_PB_PCM_MS_CAP_DEFAULT * 24000 // 1000) * 2)))
+    4096, int(os.environ.get("PB_MAX_PCM_BIN_BYTES", str((_PB_PCM_MS_CAP_DEFAULT * 16000 // 1000) * 2)))
 )
 
 
-def pb_max_chunk_ms_for_pcm(sample_rate: int = 24000, *, max_pcm_bytes: int | None = None) -> int:
+def pb_max_chunk_ms_for_pcm(sample_rate: int = 16000, *, max_pcm_bytes: int | None = None) -> int:
     """由 R6 反推 ``chunk_ms`` 上限，使 mono s16le PCM 字节数不超过 ``max_pcm_bytes``。"""
     limit = PB_MAX_PCM_BIN_BYTES if max_pcm_bytes is None else max_pcm_bytes
     sr = max(1, int(sample_rate))

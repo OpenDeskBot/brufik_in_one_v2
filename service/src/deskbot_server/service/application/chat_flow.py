@@ -39,6 +39,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger("deskbot-server")
 
 _SCHEDULED_TASK_PREFIX = "[系统定时任务]"
+_QUEST_PROACTIVE_PREFIX = "[系统剧情推进]"
+_SYSTEM_INITIATED_PREFIXES = (_SCHEDULED_TASK_PREFIX, _QUEST_PROACTIVE_PREFIX)
+
+
+def _convo_watching_sync(device_id: str | None) -> bool:
+    """实时对话采集门控：是否有后台订阅者在查看该设备的实时对话。
+
+    无人查看时不写媒体留存（采集按需开启）；BusService 为进程内单例，此处同步读
+    订阅者表（单线程事件循环内安全），失败按无订阅者处理。
+    """
+    if not device_id:
+        return False
+    try:
+        from deskbot_server.service.bus_service import BusService
+
+        return BusService().has_subscribers_sync(device_id)
+    except Exception:
+        return False
 
 
 class _TtsPrefetch:
@@ -115,6 +133,7 @@ async def _play_interim_tts(
         device_id=device_id,
         result=interim_result,
         t_asr_start=None,
+        auto_face_turn=True,
         prefetch_tts=task,
         device_ws=device_ws,
     )
@@ -181,6 +200,11 @@ async def _play_llm_error_fallback(
 
 def _is_scheduled_task_user_text(user_text: str) -> bool:
     return str(user_text or "").strip().startswith(_SCHEDULED_TASK_PREFIX)
+
+
+def _is_system_initiated_user_text(user_text: str) -> bool:
+    """系统发起的对话轮（定时任务 / 剧情主动推进）：强制开口并做 meta 汇报兜底。"""
+    return str(user_text or "").strip().startswith(_SYSTEM_INITIATED_PREFIXES)
 
 
 def _scheduled_task_description(user_text: str) -> str:
@@ -538,6 +562,7 @@ async def run_chat_turn(
     """在已有用户侧文本后执行 LLM + TTS/pb 管道（应用层，不依赖 WebSocket 类型）。"""
     result = ChatTurnResult()
     is_scheduled = _is_scheduled_task_user_text(user_text)
+    is_quest_proactive = str(user_text or "").strip().startswith(_QUEST_PROACTIVE_PREFIX)
     sched_desc = _scheduled_task_description(user_text) if is_scheduled else ""
 
     # 语音轮在 asr 完成后「一次性装配」user 消息（含该时刻的人脸识别）：
@@ -634,8 +659,8 @@ async def run_chat_turn(
         llm_moves = list(parsed.get("moves") or [])
         llm_anims = list(parsed.get("anims") or [])
         need_reply = bool(parsed.get("need_reply", True))
-        if is_scheduled:
-            need_reply = True
+        if is_scheduled or is_quest_proactive:
+            need_reply = True  # 系统发起轮必须开口，禁止静默
 
         if parsed.get("volume") is not None and device_id:
             from deskbot_server.pb.servo_pcm import parse_pb_volume
@@ -702,7 +727,7 @@ async def run_chat_turn(
         if not parsed["json_ok"]:
             logger.warning("[LLM] 输出未通过 JSON 解析，按整段文本走 TTS。device_id=%s req=%s", device_id, request_id)
 
-        if not need_reply and not is_scheduled:
+        if not need_reply and not (is_scheduled or is_quest_proactive):
             has_motion = bool(llm_moves or llm_anims)
             if has_motion:
                 logger.info(
@@ -733,10 +758,17 @@ async def run_chat_turn(
             return result
 
         playback_text = (reply_text or "").strip()
-        if is_scheduled and (not playback_text or _scheduled_tts_looks_like_meta_report(playback_text)):
-            playback_text = _scheduled_reminder_tts(sched_desc)
+        if (is_scheduled or is_quest_proactive) and (
+            not playback_text or _scheduled_tts_looks_like_meta_report(playback_text)
+        ):
+            playback_text = (
+                _scheduled_reminder_tts(sched_desc)
+                if is_scheduled
+                else "主人，来和我一起推进一个小任务好吗？"
+            )
             logger.info(
-                "[scheduler] 定时任务使用兜底提醒语 device_id=%s req=%s tts=%r", device_id, request_id, playback_text
+                "[scheduler] 系统轮使用兜底口播语 device_id=%s req=%s tts=%r is_quest=%s",
+                device_id, request_id, playback_text, is_quest_proactive,
             )
         if not playback_text:
             if llm_moves or llm_anims:
@@ -769,6 +801,7 @@ async def run_chat_turn(
                 device_id=device_id,
                 result=result,
                 t_asr_start=t_asr_start,
+                auto_face_turn=True,
                 prefetch_tts=tts_prefetch.task,
                 device_ws=device_ws,
             )
@@ -984,13 +1017,19 @@ async def _run_pb_playback(
     result: ChatTurnResult,
     t_asr_start: float | None,
     motion_only: bool = False,
+    auto_face_turn: bool = False,
     prefetch_tts: asyncio.Task | None = None,
     device_ws: Any | None = None,
     task_level: int = PB_LEVEL_TASK,
 ) -> None:
-    """下发 pb 音频/动作帧。"""
+    """下发 pb 音频/动作帧。
+
+    ``auto_face_turn``：说话链开启"说话前自动转向"（画面有人且无朝向表达时，
+    把转向 __custom__ 步前插为链首前导舵机段，转向完成后才开始口播）。
+    """
+    parsed_eff = parsed
     if motion_only:
-        sr_pb = int(chat.tts_cfg.get("sample_rate") or 24000)
+        sr_pb = int(chat.tts_cfg.get("sample_rate") or 16000)
         segs: list[dict] = []
         from deskbot_server.pb.llm_plan import expand_llm_anims, expand_llm_moves
         from deskbot_server.pb.servo_pcm import _silence_phoneme_seg
@@ -1014,6 +1053,22 @@ async def _run_pb_playback(
                 request_id,
                 text_chunks,
             )
+        if auto_face_turn:
+            # 说话前自动转向：替代已移除的 set_camera_follow LLM 工具——
+            # 只要开口说话且画面有人，程序先让机器人转向说话人（同链前导段）。
+            from deskbot_server.service.application.interaction_feedback import maybe_speak_face_turn
+
+            turn = maybe_speak_face_turn(device_id, parsed_moves=list(parsed.get("moves") or []))
+            if turn is not None:
+                parsed_eff = dict(parsed)
+                parsed_eff["moves"] = [turn] + list(parsed.get("moves") or [])
+                parsed_eff["leading_move_steps"] = max(1, int(parsed.get("leading_move_steps") or 0))
+                logger.info(
+                    "[LLM] 说话前自动转向 device_id=%s req=%s step=%s",
+                    device_id,
+                    request_id,
+                    {k: turn.get(k) for k in ("x", "y", "ms")},
+                )
 
     n_scene_pb = 0
     pb_aborted = False
@@ -1027,7 +1082,7 @@ async def _run_pb_playback(
     for chunk_i, chunk_text in enumerate(text_chunks):
         if motion_only:
             segs_local = segs
-            sr_pb = int(chat.tts_cfg.get("sample_rate") or 24000)
+            sr_pb = int(chat.tts_cfg.get("sample_rate") or 16000)
         else:
             if prefetch_tts_task is None:
                 prefetch_tts_task = asyncio.create_task(chat.tts_phoneme_segments(chunk_text, device_id=device_id))
@@ -1050,17 +1105,17 @@ async def _run_pb_playback(
         pairs, pb_req, n_pb, sr_pb = build_pb_wire_pairs(
             segs_local,
             chat.tts_cfg,
-            servo_plan=list(parsed.get("servo") or []) if chunk_is_first and not parsed.get("moves") else None,
-            moves=list(parsed.get("moves") or []) if chunk_is_first else None,
-            anims=list(parsed.get("anims") or []) if chunk_is_first else None,
+            servo_plan=list(parsed_eff.get("servo") or []) if chunk_is_first and not parsed_eff.get("moves") else None,
+            moves=list(parsed_eff.get("moves") or []) if chunk_is_first else None,
+            anims=list(parsed_eff.get("anims") or []) if chunk_is_first else None,
             sample_rate=sr_pb,
             request_id=(f"{request_id}_{chunk_i}" if request_id and len(text_chunks) > 1 else request_id),
             random_servo_cfg=chat.settings.pb_random_servo_cfg() if chunk_is_first else None,
-            volume=parsed.get("volume") if chunk_is_first else None,
-            cam_fps=parsed.get("cam_fps") if chunk_is_first else None,
+            volume=parsed_eff.get("volume") if chunk_is_first else None,
+            cam_fps=parsed_eff.get("cam_fps") if chunk_is_first else None,
             device_id=device_id,
             action=PB_ACTION_REPLACE if chunk_is_first else PB_ACTION_APPEND,
-            leading_move_steps=int(parsed.get("leading_move_steps") or 0) if chunk_is_first else 0,
+            leading_move_steps=int(parsed_eff.get("leading_move_steps") or 0) if chunk_is_first else 0,
         )
         total_pb += n_pb
 
@@ -1123,8 +1178,10 @@ async def _run_pb_playback(
             n_scene_pb += len(scene_blocks)
 
     if audio_parts and request_id and device_id and audio_parts_sr:
-        # 存入内存音频仓库，供实验台实时对话按 request_id 回放（失败不影响主流程）
-        ConvoAudioStore().put(device_id, request_id, "tts", b"".join(audio_parts), sample_rate=audio_parts_sr)
+        # 存入内存音频仓库，供实验台实时对话按 request_id 回放（失败不影响主流程）；
+        # 采集门控：仅当后台有订阅者查看该设备实时对话时才留存（无人查看不采集）
+        if _convo_watching_sync(device_id):
+            ConvoAudioStore().put(device_id, request_id, "tts", b"".join(audio_parts), sample_rate=audio_parts_sr)
 
     logger.info(
         "[pb TX] 下发结束 device_id=%s request_id=%s 语音 JSON=%d%s%s",

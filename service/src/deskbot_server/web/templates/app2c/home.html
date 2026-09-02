@@ -29,7 +29,7 @@
     <a v-if="!bound" class="btn ghost" href="{{ url_for('app2c.devices') }}">＋ 绑定设备</a>
   </div>
 
-  <!-- 设备主控台：表情 / 3D / 摄像头 三块等大 + 操作 -->
+  <!-- 设备主控台：表情 / 3D / 摄像头 三块等大 -->
   <div class="stage home-console">
     <div class="brackets"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
     <div class="stage-hd">
@@ -54,15 +54,26 @@
           </div>
         </div>
       </div>
-      <!-- 摄像头 -->
+      <!-- 摄像头（老电视：旋钮开机） -->
       <div class="media-tile" aria-label="摄像头画面">
-        <div class="media-hd"><span>CAMERA · LIVE</span></div>
-        <div class="media-stage">
-          <img v-if="camera.imageUrl" :src="camera.imageUrl" alt="摄像头实时画面">
-          <div v-else class="home-camera-empty">
+        <div class="media-hd"><span>CAMERA · TV</span><b>[[ cameraStateLabel ]]</b></div>
+        <div class="media-stage home-tv">
+          <img v-if="tvPower && camera.imageUrl" :src="camera.imageUrl" alt="摄像头实时画面">
+          <div v-else-if="tvPower" class="home-camera-empty">
             <b>[[ camera.statusText ]]</b>
             <small>[[ bound ? '等待设备上行 camera_view 画面' : '绑定并选择设备后显示实时画面' ]]</small>
           </div>
+          <div v-else class="home-tv-standby">
+            <span>NO SIGNAL</span>
+            <small>拧动旋钮查看实时画面</small>
+          </div>
+          <button type="button" class="tv-power" :class="{on:tvPower}" @click="toggleTvPower"
+            :aria-pressed="tvPower" :title="tvPower ? '关闭摄像头' : '打开摄像头'">
+            <svg viewBox="0 0 48 48" aria-hidden="true">
+              <circle class="p-ring" cx="24" cy="28" r="12"/>
+              <line class="p-bar" x1="24" y1="7" x2="24" y2="23"/>
+            </svg>
+          </button>
         </div>
       </div>
     </div>
@@ -109,7 +120,7 @@
       <div class="home-quick-hd"><b>PB 表情</b><small>仅下发预置表情</small></div>
       <select v-model="quick.pb.selected" :disabled="!bound || quick.pb.busy">
         <option value="">选择预置表情</option>
-        <option v-for="s in quick.pb.scenes" :key="s" :value="s">[[ s ]]</option>
+        <option v-for="s in quick.pb.scenes" :key="s" :value="s">[[ pbSceneTitle(s) ]]</option>
       </select>
       <button type="button" class="btn primary" @click="sendQuickPbScene"
         :disabled="!bound || !quick.pb.selected || quick.pb.busy">下发表情</button>
@@ -149,7 +160,10 @@ createApp({
   data(){ return {
     greeting:'你好', owner:{{ (nav_display_name or '主人')|tojson }},
     bound:false, deviceName:'未绑定', deviceId:'',
-    scenes:[], emotionMap:{}, faceLabel:'待机',
+    tvPower:false, // 老电视旋钮（sessionStorage 记忆）
+    scenes:[], emotionMap:{},
+    // 设备表情模拟：simScene=已下发表情行(循环动画)，null=走 idle 映射；talkEndsAt=说话口型结束时刻
+    simScene:null, simSince:0, simNow:0, talkEndsAt:null,
     quick:{servo:{presets:[],busy:false},pb:{scenes:[],selected:'',busy:false},tts:{text:'你好，我是小歪。',busy:false},msg:''},
     homeRobotError:'', homeRobotServo:{x:90,y:90},
     cameraViewWsBase: {{ camera_view_ws_base|tojson }},
@@ -159,7 +173,23 @@ createApp({
     homeFaceSvg(){
       const preview = window.DeskbotFacePreview;
       if(!preview) return '';
-      return preview.sceneToSvg(preview.pickScene(this.scenes, this.emotionMap, 'idle'));
+      const els = this.faceElsNow();
+      if(!els) return '';
+      // 表情卡与 3D 贴图共用同一份 svg：已下发表情走动画循环，说话中叠口型
+      return preview.sceneToSvg({name:'sim', frames:[{ms:1000, elements:els}]}, 0);
+    },
+    faceLabel(){
+      const s = this.simBaseScene();
+      if(!s) return '待机';
+      return s.title || s.name || '待机';
+    },
+    cameraStateLabel(){
+      if(!this.tvPower) return '待机';
+      const st = this.camera.status;
+      if(this.camera.imageUrl) return '实时画面';
+      if(st === 'connecting' || st === 'connected') return '搜索信号';
+      if(st === 'error' || st === 'closed') return '信号中断';
+      return '无信号';
     },
     homeRobotYawDeg(){
       const x = Number(this.homeRobotServo && this.homeRobotServo.x);
@@ -176,6 +206,17 @@ createApp({
     closeHomeCamera(){
       if(this.camera.ws){ try{ this.camera.ws.close(); }catch(_e){} }
       this.camera.ws = null;
+    },
+    toggleTvPower(){
+      this.tvPower = !this.tvPower;
+      try{ sessionStorage.setItem('home_tv_power', this.tvPower ? '1' : '0'); }catch(_e){}
+      if(this.tvPower){
+        this.openHomeCamera();
+      }else{
+        this.closeHomeCamera();
+        if(this.camera.imageUrl){ URL.revokeObjectURL(this.camera.imageUrl); this.camera.imageUrl = ''; }
+        this.camera.status = 'idle';
+      }
     },
     async openHomeCamera(){
       if(!this.bound || !this.deviceId || !this.cameraViewWsBase){
@@ -447,6 +488,105 @@ createApp({
         frame();
       });
     },
+    // ── 设备表情模拟：下发表情 / 说话口型 同步到「表情 · 当前」与 3D SIM ──
+    simBaseScene(){
+      const preview = window.DeskbotFacePreview;
+      if(!preview) return null;
+      if(this.simScene) return this.simScene; // 已下发表情 → 保持显示直到下次操作
+      return preview.pickScene(this.scenes, this.emotionMap, 'idle');
+    },
+    simFrameIndex(scene){
+      const frames = (scene && Array.isArray(scene.frames)) ? scene.frames : [];
+      if(!this.simScene || frames.length < 2) return 0; // idle 待机沿用原静态帧
+      let total = 0;
+      for(const f of frames) total += Math.max(40, Number(f.ms) || 500);
+      let t = (this.simNow - this.simSince) % total;
+      if(t < 0) t += total;
+      for(let i = 0;i < frames.length;i++){
+        t -= Math.max(40, Number(frames[i].ms) || 500);
+        if(t < 0) return i;
+      }
+      return 0;
+    },
+    primitiveBounds(p){
+      if(!p || typeof p !== 'object') return null;
+      const s = String(p.shape || '').toLowerCase();
+      const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+      if(s === 'line') return {minX:Math.min(n(p.x1),n(p.x2)),minY:Math.min(n(p.y1),n(p.y2)),maxX:Math.max(n(p.x1),n(p.x2)),maxY:Math.max(n(p.y1),n(p.y2))};
+      if(s.indexOf('rect') >= 0 || s === 'pixel') return {minX:n(p.x),minY:n(p.y),maxX:n(p.x)+Math.max(1,n(p.w)),maxY:n(p.y)+Math.max(1,n(p.h))};
+      if(s.indexOf('circle') >= 0){ const r=n(p.r); return {minX:n(p.x)-r,minY:n(p.y)-r,maxX:n(p.x)+r,maxY:n(p.y)+r}; }
+      if(s.indexOf('ellipse') >= 0){ const rw=n(p.rw != null ? p.rw : p.r), rh=n(p.rh != null ? p.rh : p.r); return {minX:n(p.x)-rw,minY:n(p.y)-rh,maxX:n(p.x)+rw,maxY:n(p.y)+rh}; }
+      if(s.indexOf('triangle') >= 0){ const xs=[n(p.x0),n(p.x1),n(p.x2)], ys=[n(p.y0),n(p.y1),n(p.y2)]; return {minX:Math.min(...xs),minY:Math.min(...ys),maxX:Math.max(...xs),maxY:Math.max(...ys)}; }
+      return null; // text / svg_path 无几何，不参与
+    },
+    mouthRegion(els){
+      // 原 mouth 图层包围盒中心；没有嘴时取双眼底部下方的默认位置
+      let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity,any=false;
+      for(const p of (Array.isArray(els.mouth) ? els.mouth : [])){
+        const b = this.primitiveBounds(p);
+        if(!b) continue;
+        any = true;
+        minX=Math.min(minX,b.minX); minY=Math.min(minY,b.minY); maxX=Math.max(maxX,b.maxX); maxY=Math.max(maxY,b.maxY);
+      }
+      if(any) return {x:(minX+maxX)/2, y:(minY+maxY)/2, w:Math.max(20,maxX-minX), h:Math.max(4,maxY-minY)};
+      let eyeBottom = 0;
+      for(const key of ['eye_l','eye_r']){
+        for(const p of (Array.isArray(els[key]) ? els[key] : [])){
+          const b = this.primitiveBounds(p);
+          if(b) eyeBottom = Math.max(eyeBottom, b.maxY);
+        }
+      }
+      return {x:142, y:eyeBottom ? Math.min(200, eyeBottom + 44) : 158, w:30, h:8};
+    },
+    withTalkMouth(els){
+      // 说话口型：以原嘴位置为中心的开口椭圆，按音节节奏开合
+      const reg = this.mouthRegion(els);
+      const now = performance.now();
+      const burst = Math.max(0, Math.sin(now * 0.011)); // ≈3Hz 音节
+      const frac = burst * burst * (0.55 + 0.45 * Math.abs(Math.sin(now * 0.043)));
+      const ry = Math.min(20, Math.max(2, reg.h / 2 + 3 + 14 * frac));
+      const rw = Math.max(12, Math.min(46, reg.w / 2 * (1 + 0.3 * frac)));
+      return Object.assign({}, els, {mouth:[{shape:'ellipse_fill', x:reg.x, y:reg.y, rw, ry}]});
+    },
+    faceElsNow(){
+      const scene = this.simBaseScene();
+      if(!scene) return null;
+      const els = window.DeskbotFacePreview.frameElements(scene, this.simFrameIndex(scene));
+      if(!els) return null;
+      if(this.talkEndsAt != null && performance.now() < this.talkEndsAt) return this.withTalkMouth(els);
+      return els;
+    },
+    bumpSim(){
+      this.simNow = performance.now();
+      this.updateHomeRobotFace();
+    },
+    startTalkSim(text){
+      const n = Array.from(String(text || '')).length;
+      const ms = Math.max(1800, Math.min(30000, n * 280 + 900)); // ≈0.28s/字 + 首尾余量
+      this.talkEndsAt = performance.now() + ms;
+      this._faceLastDraw = 0;
+      this.bumpSim();
+    },
+    simLoop(){
+      // 表情动画循环 / 说话口型期间按帧重绘；无模拟内容时静默
+      this._homeSimRaf = requestAnimationFrame(() => this.simLoop());
+      const now = performance.now();
+      const wasTalk = this.talkEndsAt != null;
+      if(wasTalk && now >= this.talkEndsAt) this.talkEndsAt = null; // 说话结束：下帧闭嘴
+      const talking = this.talkEndsAt != null;
+      const scene = this.simScene;
+      const animated = talking || (!!scene && Array.isArray(scene.frames) && scene.frames.length > 1);
+      if(!animated){
+        if(wasTalk) this.bumpSim(); // 说完了补一帧闭嘴画面
+        return;
+      }
+      const cadence = talking ? 90 : 120;
+      if(now - (this._faceLastDraw || 0) >= cadence){
+        this._faceLastDraw = now;
+        this.simNow = now;
+        this.updateHomeRobotFace();
+      }
+    },
     // ── 快捷下发（实验台简版：仅预置动作 / 预置表情 / 指定文字 TTS）──
     async quickSend(u, opts){
       const r = await fetch(u, opts || {cache:'no-store'});
@@ -466,7 +606,15 @@ createApp({
       this.quick.servo.presets = Array.isArray(cfg.presets) ? cfg.presets : [];
       const ps = await this.j('/api/device_pb_scenes' + q);
       this.quick.pb.scenes = ps.scenes || ps.keys || [];
-      if(!this.quick.pb.selected && this.quick.pb.scenes.length) this.quick.pb.selected = this.quick.pb.scenes[0];
+      if(!this.quick.pb.selected && this.quick.pb.scenes.length){
+        const idleIdx = this.quick.pb.scenes.indexOf('idle');
+        this.quick.pb.selected = idleIdx >= 0 ? this.quick.pb.scenes[idleIdx] : this.quick.pb.scenes[0];
+      }
+    },
+    pbSceneTitle(s){
+      if(!Array.isArray(this.scenes)) return s;
+      const row = this.scenes.find(x => String((x && x.name) || '') === s);
+      return row ? (row.title || row.name) : s;
     },
     async runQuickServoPreset(p){
       this.quick.msg = '';
@@ -502,7 +650,12 @@ createApp({
       try{
         await this.quickSend('/api/device_pb_scene?device_id=' + encodeURIComponent(this.deviceId)
           + '&scene=' + encodeURIComponent(this.quick.pb.selected));
-        this.quick.msg = '已下发预置表情「' + this.quick.pb.selected + '」';
+        // 表情与设备同步：模拟显示该表情（多帧循环），直到下次下发
+        const row = Array.isArray(this.scenes) ? this.scenes.find(x => String((x && x.name) || '') === this.quick.pb.selected) : null;
+        this.simScene = row || null;
+        this.simSince = performance.now();
+        this.quick.msg = '已下发预置表情「' + (row ? (row.title || row.name) : this.quick.pb.selected) + '」，模拟已同步';
+        this.bumpSim();
       }catch(e){
         this.quick.msg = e.message || '下发失败';
       }finally{
@@ -519,6 +672,7 @@ createApp({
         await this.quickSend('/api/device_tts', {method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({device_id:this.deviceId, text:text})});
         this.quick.msg = 'TTS 已提交下发';
+        this.startTalkSim(text); // 按估算播报时长模拟口型
       }catch(e){
         this.quick.msg = e.message || '下发失败';
       }finally{
@@ -526,6 +680,8 @@ createApp({
       }
     },
     async load(){
+      // 电视旋钮：仅记忆本标签页内的开关状态
+      try{ this.tvPower = sessionStorage.getItem('home_tv_power') === '1'; }catch(_e){ this.tvPower = false; }
       // 设备
       const dv = await this.j('/app/api/devices');
       const devices = dv.devices || [];
@@ -535,7 +691,9 @@ createApp({
       this.deviceName = cur ? (cur.display_name || cur.device_id) : (devices.length ? '未选择' : '未绑定');
       this.scenes = [];
       this.emotionMap = {};
-      this.faceLabel = '待机';
+      this.simScene = null; // 表情模拟不跨刷新持久化，回到 idle 映射
+      this.simSince = performance.now();
+      this.talkEndsAt = null;
       // 以下表情数据依赖已选当前设备
       if(this.bound){
         await this.loadQuickControls();
@@ -544,23 +702,23 @@ createApp({
         this.scenes = scenes.config || [];
         const em = await this.j('/api/emotion_expr_map' + q);
         this.emotionMap = em.map || {};
-        const preview = window.DeskbotFacePreview;
-        const face = preview ? preview.pickScene(this.scenes, this.emotionMap, 'idle') : null;
-        this.faceLabel = face ? (face.title || face.name || '待机') : '待机';
       }
       // 设备表情数据就绪后，同步刷新 3D 模型屏幕上的表情，与卡片保持一致
       this.updateHomeRobotFace();
-      await this.openHomeCamera();
+      if(this.tvPower) await this.openHomeCamera(); // 旋钮关闭时不建立摄像头 WS
     },
   },
   mounted(){
     this.setGreeting();
     this.load();
     this.$nextTick(() => { void this.homeRobotInit3d(); });
+    this._faceLastDraw = 0;
+    this.simLoop();
   },
   beforeUnmount(){
     this.closeHomeCamera();
     this.disposeHomeRobot3d();
+    if(this._homeSimRaf) cancelAnimationFrame(this._homeSimRaf);
     if(this.camera.imageUrl) URL.revokeObjectURL(this.camera.imageUrl);
   },
 }).mount('#home');

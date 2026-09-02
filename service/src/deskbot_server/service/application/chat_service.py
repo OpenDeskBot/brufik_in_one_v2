@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from deskbot_server.model.settings import AppSettings
 from deskbot_server.ports.asr import AsrPort
@@ -60,6 +61,32 @@ class ChatService:
             history_messages=history_messages,
             extra_messages=extra_messages,
             on_tts_ready=on_tts_ready,
+            on_system_prompt=on_system_prompt,
+            user_message_override=user_message_override,
+        )
+
+    async def llm_tool_round(
+        self,
+        text: str,
+        *,
+        device_context: str | None = None,
+        device_id: str | None = None,
+        history_messages: list[dict[str, Any]] | None = None,
+        extra_messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any = "auto",
+        on_system_prompt: Callable[[str], None] | None = None,
+        user_message_override: str | None = None,
+    ) -> Any:
+        """原生 function calling 单回合（透传 LlmPort.llm_tool_round）。"""
+        return await self._llm.llm_tool_round(
+            text,
+            device_context=device_context,
+            device_id=device_id,
+            history_messages=history_messages,
+            extra_messages=extra_messages,
+            tools=tools,
+            tool_choice=tool_choice,
             on_system_prompt=on_system_prompt,
             user_message_override=user_message_override,
         )
