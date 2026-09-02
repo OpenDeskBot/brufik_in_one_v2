@@ -125,7 +125,7 @@ def test_tasks_appendix_contains_running(env):
     ax = llm_quest_tasks_prompt_appendix(device_id="dev1")
     assert "当前剧情任务" in ax
     assert "g_greet" in ax and "主动向用户问好" in ax
-    assert "0/100" in ax  # 进度 current_score/activation_score
+    assert "进度" not in ax  # 不展示分数进度
 
 
 def test_tools_appendix_contains_contracts(env):
@@ -135,7 +135,8 @@ def test_tools_appendix_contains_contracts(env):
     ax = llm_quest_tools_prompt_appendix(device_id="dev1")
     assert "update_task_result" in ax
     assert "update_task_strategy" in ax
-    assert "contribute_score" in ax
+    # contribute_score 不向 LLM 广告（加分改为后台判定，不由模型自评）
+    assert "contribute_score" not in ax
     assert "g_greet" in ax  # 可用任务 id
     # 全部置终态后 → 无可用任务 → 空串（不广告不可用工具）
     # 注：g_greet 成功会激活 g_learn_name（+10 达标），需连它也判定掉
@@ -151,8 +152,67 @@ def test_build_llm_system_prompt_injects_quest_sections(env):
     sp = build_llm_system_prompt("你是助手", device_id="dev1")
     assert "当前剧情任务" in sp
     assert "update_task_result" in sp
-    # 未绑定设备 → 不注入（基础内容不受影响）
+    # 时间戳在全文末尾（剧情/工具段之前），且注入任务不带进度行
+    assert "当前时间是: " in sp
+    assert sp.rfind("当前时间是:") > sp.rfind("update_task_result")
+    assert "进度：" not in sp
+    assert "g_greet" in sp and "0/100" not in sp
+    # 未绑定设备且默认剧本缺失（临时目录只有 demo）→ 不注入（基础内容不受影响）
     _bind_device("dev2", None)
     sp2 = build_llm_system_prompt("你是助手", device_id="dev2")
     assert "当前剧情任务" not in sp2
     assert sp2.startswith("你是助手")
+
+
+def test_tasks_appendix_lists_at_most_three(env, monkeypatch):
+    """进行中任务超过 3 个时只列前 3（优先级高的）。"""
+    from deskbot_server.infrastructure.llm.utils import llm_quest_tasks_prompt_appendix
+    from deskbot_server.service import quest_service
+
+    def _fake_tasks(self, device_id):
+        return [
+            {
+                "task_id": f"t{i}",
+                "title": f"任务{i}",
+                "goal": f"目标{i}",
+                "strategy": f"策略{i}",
+                "success_condition": f"成功{i}",
+                "failure_condition": f"失败{i}",
+                "current_score": i,
+                "activation_score": 10,
+            }
+            for i in range(1, 5)  # 4 个 running
+        ]
+
+    monkeypatch.setattr(quest_service.QuestService, "get_current_tasks", _fake_tasks)
+    ax = llm_quest_tasks_prompt_appendix(device_id="dev_cap")
+    assert ax.count("  - [") == 3
+    assert "[t1]" in ax and "[t2]" in ax and "[t3]" in ax and "[t4]" not in ax
+    assert "进度：" not in ax
+
+
+def test_default_binding_applies_when_unset(env):
+    """quest_id 为空且默认剧本存在 → 惰性绑定 xiaoy 并注入。"""
+    from deskbot_server.dao import device_mapper
+    from deskbot_server.infrastructure.llm.utils import llm_quest_tasks_prompt_appendix
+    from deskbot_server.service.quest_service import QuestService
+
+    svc = QuestService()
+    svc.save_playbook("xiaoy", _demo_playbook("xiaoy"))
+    _bind_device("dev_def", None)
+
+    ax = llm_quest_tasks_prompt_appendix(device_id="dev_def")
+    assert "当前剧情任务" in ax
+    bound = device_mapper.get_by_device_id("dev_def")
+    assert bound is not None and bound.quest_id == "xiaoy"
+
+
+def test_default_binding_skipped_when_playbook_missing(env):
+    """默认剧本文件不存在 → 不写脏绑定、不注入。"""
+    from deskbot_server.dao import device_mapper
+    from deskbot_server.infrastructure.llm.utils import llm_quest_tasks_prompt_appendix
+
+    _bind_device("dev_missing", None)
+    assert llm_quest_tasks_prompt_appendix(device_id="dev_missing") == ""
+    bound = device_mapper.get_by_device_id("dev_missing")
+    assert bound is not None and not bound.quest_id

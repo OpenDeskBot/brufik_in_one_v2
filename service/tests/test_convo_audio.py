@@ -109,10 +109,7 @@ def test_extract_face_sight_lines_from_assembled_message():
     from deskbot_server.service.application.chat_flow import _extract_face_sight_lines
 
     message = (
-        "[机器人传感器信息:\n"
-        "水平舵机角度: 未知, 垂直舵机角度: 未知\n"
-        "摄像头跟随模式: 跟随人脸\n"
-        "图像识别:\n"
+        "[图像识别:\n"
         "   faceid=2, 人脸置信度=0.91, name=妈妈, 人物识别置信度=0.72, 脸中心位置=(160,120)\n"
         "   faceid=3, 人脸置信度=0.80, name=未知, 人物识别置信度=0.10, 脸中心位置=(200,150)\n"
         "]\n"
@@ -123,7 +120,7 @@ def test_extract_face_sight_lines_from_assembled_message():
     assert sight is not None and "faceid=2" in sight and "faceid=3" in sight
     assert "用户正文" not in sight
     # 无 faceid 行（未识别到人脸）→ None
-    no_faces = "[机器人传感器信息:\n图像识别:\n   (未检测到人脸)\n]\n\n用户正文: 你好"
+    no_faces = "[图像识别:\n   (未检测到人脸)\n]\n\n用户正文: 你好"
     assert _extract_face_sight_lines(no_faces) is None
     assert _extract_face_sight_lines("") is None
 

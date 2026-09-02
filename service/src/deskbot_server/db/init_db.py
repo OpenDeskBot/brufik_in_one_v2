@@ -62,37 +62,6 @@ def _migrate_devices_schema(engine) -> None:
             conn.execute(text("ALTER TABLE devices ADD COLUMN quest_id VARCHAR(64)"))
 
 
-def _drop_debug_record_schema(engine) -> None:
-    """清理已移除的调试记录（历史对话）schema：device_turn 表 + devices.record_history 列。
-
-    新库由 create_all 直接按最新模型建表，不会出现这两者；此处只兜底老库。
-    删除失败仅告警，不阻断启动。
-    """
-    from sqlalchemy import inspect, text
-
-    try:
-        insp = inspect(engine)
-        with engine.begin() as conn:
-            if "device_turn" in insp.get_table_names():
-                conn.execute(text("DROP TABLE device_turn"))
-                logger.info("迁移：已删除遗留 device_turn 表")
-    except Exception:
-        logger.warning("迁移：删除 device_turn 表失败（忽略）", exc_info=True)
-
-    try:
-        insp = inspect(engine)
-        if "devices" not in insp.get_table_names():
-            return
-        cols = {c["name"] for c in insp.get_columns("devices")}
-        if "record_history" not in cols:
-            return
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE devices DROP COLUMN record_history"))
-            logger.info("迁移：已删除遗留 devices.record_history 列")
-    except Exception:
-        logger.warning("迁移：删除 devices.record_history 列失败（忽略）", exc_info=True)
-
-
 def _migrate_scheduled_tasks_schema(engine) -> None:
     from sqlalchemy import inspect, text
 
@@ -335,7 +304,6 @@ def init_database() -> None:
     _migrate_legacy_schema(engine)
     Base.metadata.create_all(bind=engine)
     _migrate_devices_schema(engine)
-    _drop_debug_record_schema(engine)
     _migrate_scheduled_tasks_schema(engine)
     _migrate_face_profiles_to_db(engine)
     _migrate_memory_to_db(engine)

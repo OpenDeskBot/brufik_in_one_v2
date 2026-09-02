@@ -237,8 +237,12 @@ def test_build_llm_user_message():
     )
     ack = '{"type":"pb_ack","req":"abc","idx":9,"ack_type":"pb_end","space":40}'
     msg = build_llm_user_message("你好", device_id=dev, device_context=ack)
-    assert "水平舵机角度: 未知" in msg
-    assert "垂直舵机角度: 未知" in msg
+    # user 消息只含图像识别/声音识别段：不再注入舵机角度与跟随模式
+    assert "水平舵机角度" not in msg
+    assert "垂直舵机角度" not in msg
+    assert "摄像头跟随模式" not in msg
+    assert "机器人传感器信息" not in msg
+    assert msg.startswith("[图像识别:")
     assert "faceid=1" in msg
     assert "name=小明" in msg
     assert "脸中心位置=(200,140)" in msg

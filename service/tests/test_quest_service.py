@@ -361,9 +361,9 @@ def test_get_current_tasks_and_tool_calls(env):
     # 策略覆盖生效
     svc.update_task_strategy("dev1", "demo", "g_greet", "用户喜欢简洁")
     assert cur[0]["task_id"] == "g_learn_name"
-    # 工具契约：三个工具，available_task_ids = 当前 running 任务
+    # 工具契约：两个工具（contribute_score 不再向 LLM 广告，加分改后台判定），available_task_ids = running 任务
     calls = svc.get_tool_calls("dev1")
-    assert [c["name"] for c in calls] == ["update_task_result", "update_task_strategy", "contribute_score"]
+    assert [c["name"] for c in calls] == ["update_task_result", "update_task_strategy"]
     assert set(calls[0]["available_task_ids"]) == {"g_greet", "g_learn_name"}
     # 无实例设备返回空
     assert svc.get_current_tasks("nobody") == []

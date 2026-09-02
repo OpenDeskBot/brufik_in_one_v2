@@ -151,7 +151,8 @@ def test_2c_advanced_is_account_page_without_debug(temp_db):
     assert "/api/debug/reset-account" not in html
 
 
-def test_2c_lab_surfaces_device_runtime_features(temp_db):
+def test_2c_lab_surfaces_only_realtime_convo(temp_db):
+    """实验台只保留「实时对话」：其余设备控制（舵机/摄像头/场景/PB/流水日志）已移入「家」。"""
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
@@ -165,51 +166,26 @@ def test_2c_lab_surfaces_device_runtime_features(temp_db):
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
     assert "设备实验台" in html
-    assert "舵机控制" in html
-    assert "摄像头" in html
-    assert "场景编排" in html
-    assert "PB 表情" in html
-    assert "ASR / 流水日志" in html
-    assert "/api/servo_config" in html
-    assert "/api/device_servo" in html
-    assert "/api/device_tts" in html
-    assert "/api/device_pb_scenes" in html
-    assert "/api/device_pb_scene" in html
-    assert "/api/device_face_catalog" in html
-    assert "/api/device_face_play" in html
-    assert "/api/device_pb_anim" in html
-    assert "/api/device_pb_expr_scene" in html
-    assert "/api/scene_playbooks" in html
-    assert "/api/scene_playbook/run" in html
-    assert "/api/asr_auto_reply" in html
-    assert "/api/asr_auto_reply" in html
-    assert "/api/camera_servo_auto_mode" in html
-    assert "/api/pipeline_recent" in html
-    assert "cameraViewWsBase" in html
+    # 实时对话数据源与渲染
+    assert "实时对话" in html
     assert "devicePipelineWsBase" in html
-
-
-def test_2c_lab_restores_robot_motion_preview(temp_db):
-    from tests._auth_compat import create_user
-    from deskbot_server.web.app import create_app
-
-    create_user("lab-robot2c@example.com", "password1234")
-    app = create_app()
-    client = app.test_client()
-    client.post("/login", data={"email": "lab-robot2c@example.com", "password": "password1234"})
-
-    resp = client.get("/lab")
-
-    assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert '"three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"' in html
-    assert "3D 形象" in html
-    assert 'ref="robot3dHost"' in html
-    assert "simServo" in html
-    assert "robotInit3d" in html
-    assert "_robotSyncServoAngles" in html
-    assert "animateServoPreview" in html
-    assert "drawDefaultFace" in html
+    assert "/api/pipeline_recent" in html
+    assert "/api/pipeline_audio" in html
+    assert "convoTurns" in html
+    # 已移入「家」的功能在实验台不再出现（含其接口与标签页）
+    assert "舵机控制" not in html
+    assert "场景编排" not in html
+    assert "PB 表情" not in html
+    assert "ASR / 流水日志" not in html
+    assert "/api/servo_config" not in html
+    assert "/api/device_servo" not in html
+    assert "/api/device_pb_scenes" not in html
+    assert "/api/scene_playbooks" not in html
+    assert "/api/camera_servo_auto_mode" not in html
+    assert "/api/asr_auto_reply" not in html
+    # 3D 舵机模拟（Three.js importmap）不再属于实验台
+    assert "cdn.jsdelivr.net/npm/three" not in html
+    assert "cameraViewWsBase" not in html
 
 
 def test_2c_lab_allows_browsing_before_device_selection(temp_db):
@@ -225,15 +201,14 @@ def test_2c_lab_allows_browsing_before_device_selection(temp_db):
 
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "async loadAll()" in html
-    assert "this.loadServoConfig({silent:true})" in html
-    assert "this.loadPbScenes({silent:true})" in html
-    assert "this.loadScenePlaybooks({silent:true})" in html
-    assert "this.loadCameraMode({silent:true})" in html
-    assert "this.loadRuntimeToggles({silent:true})" in html
-    assert "async loadRuntimeToggles(options)" in html
+    # 页面结构与设备选择照常，连接/加载动作均先校验设备
+    assert "async loadDevices()" in html
+    assert "switchDevice" in html
     assert "requireDevice(options)" in html
     assert "请先选择设备" in html
+    assert "ensurePipelineWs" in html
+    assert "loadConvoRecent" in html
+    assert "暂无对话" in html
 
 
 def test_2c_nav_links_to_lab_page(temp_db):
@@ -319,10 +294,10 @@ def test_2c_home_bottom_is_five_quick_entries_without_face_editor(temp_db):
     assert 'href="/robot-settings"' in html
     assert "烧录固件" in html
     assert "模型设置" in html
-    # 摄像头仅保留在左侧 LIVE 面板里，通过「打开实验台」进入
+    # 摄像头仅在左侧 LIVE 面板内联展示，不再深链实验台标签页
     assert 'class="browse-shortcut camera-browse"' not in html
     assert "摄像头浏览" not in html
-    assert 'href="/lab?tab=camera"' in html
+    assert "/lab?tab=" not in html
 
 
 def test_2c_home_embeds_live_camera_view_under_stage(temp_db):
@@ -369,8 +344,8 @@ def test_2c_home_integrates_robot_motion_preview(temp_db):
     assert 'ref="homeRobot3dHost"' in html
     assert "homeRobotInit3d" in html
     assert "animateHomeRobotServo" in html
-    assert "playHomeRobotMotion" in html
-    assert 'href="/lab?tab=servo"' in html
+    # 3D 预览在首页内完成，不再深链实验台舵机标签页
+    assert "/lab?tab=" not in html
     # 3D 模型屏幕上的表情与「表情 · 当前」卡片同源，保持一致
     assert "updateHomeRobotFace" in html
 
@@ -415,7 +390,8 @@ def test_2c_home_has_quick_send_panels_and_no_old_bottom_sections(temp_db):
     assert "sendQuickTts" in html
 
 
-def test_2c_lab_accepts_initial_tab_from_query(temp_db):
+def test_2c_lab_ignores_legacy_tab_query(temp_db):
+    """实验台已无标签页（仅实时对话），?tab= 历史深链参数被忽略、页面照常 200。"""
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
@@ -428,9 +404,8 @@ def test_2c_lab_accepts_initial_tab_from_query(temp_db):
 
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "initialLabTab()" in html
-    assert "URLSearchParams(window.location.search)" in html
-    assert "['servo','camera','scene','pb','logs','convo']" in html
+    assert "initialLabTab()" not in html
+    assert "实时对话" in html
 
 
 def test_2c_lab_convo_realtime_markers(temp_db):

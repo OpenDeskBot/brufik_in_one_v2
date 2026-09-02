@@ -2,53 +2,16 @@
 {% block page_title %}设备实验台 · 小歪{% endblock %}
 {% block global_setup_suppress_device %}1{% endblock %}
 {% block extra_head %}
-<script>
-  window.__LAB_FACE__ = {
-    w: {{ face_lcd_w|int }},
-    h: {{ face_lcd_h|int }},
-    defaultAnim: {{ expr_default_anim|tojson }},
-  };
-</script>
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
-  }
-}
-</script>
 <script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>
 <style>
-  .lab-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}
-  .lab-tabs button{border:var(--bw) solid var(--line);background:var(--panel2);border-radius:var(--r);padding:10px 12px;font-weight:900;box-shadow:var(--shadow);cursor:pointer}
-  .lab-tabs button.on{background:var(--accent);color:#fff}
-  .lab-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-  .lab-panel{border:var(--bw) solid var(--line);border-radius:var(--r);background:var(--panel);padding:14px;box-shadow:var(--shadow);min-width:0}
-  .lab-panel.wide{grid-column:1/-1}
+  .lab-main{max-width:1024px;margin:0 auto}
+  .lab-panel{border:var(--bw) solid var(--line);border-radius:var(--r);background:var(--panel);padding:14px;box-shadow:var(--shadow);min-width:0;margin-bottom:14px}
   .lab-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
   .lab-head b{display:block;font-size:16px}
   .lab-head small,.lab-note{display:block;color:var(--dim);font-size:12px;line-height:1.45}
-  .lab-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0}
-  .lab-form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-  .lab-form-grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .lab-form-grid .wide{grid-column:1/-1}
-  .lab-code{font-family:var(--mono);font-size:11px;background:var(--panel2);border:var(--bw) solid var(--line);border-radius:var(--r);padding:10px;white-space:pre-wrap;max-height:260px;overflow:auto}
-  .lab-stream{aspect-ratio:4/3;background:#111;border:var(--bw) solid var(--line);border-radius:var(--r);display:grid;place-items:center;overflow:hidden}
-  .lab-stream img{width:100%;height:100%;object-fit:contain;background:#111}
-  .lab-kv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-  .lab-kv div{border:var(--bw) solid var(--line);border-radius:var(--r);background:var(--panel2);padding:10px}
-  .lab-kv span{display:block;color:var(--dim);font-size:11px}
-  .lab-kv b{font-family:var(--mono);font-size:13px}
-  .lab-list{display:grid;gap:8px;margin-top:10px}
-  .lab-row{border:var(--bw) solid var(--line);border-radius:var(--r);background:var(--panel2);padding:10px;display:flex;justify-content:space-between;gap:10px;align-items:center}
-  .lab-row b{display:block}
-  .lab-row small{display:block;color:var(--dim)}
-  .lab-table-wrap{overflow:auto;border:var(--bw) solid var(--line);border-radius:var(--r);background:var(--panel);margin-top:10px}
-  .lab-table{width:100%;border-collapse:collapse;font-size:12px}
-  .lab-table th,.lab-table td{border-bottom:1.5px solid var(--line);padding:8px;text-align:left;vertical-align:top}
-  .lab-table th{background:var(--panel2);font-size:11px;text-transform:uppercase}
-  .lab-table tr:last-child td{border-bottom:0}
-  .lab-json-input{min-height:150px;font-family:var(--mono);font-size:12px}
-  .hist-chat{display:grid;gap:18px;max-height:560px;overflow:auto;padding:6px 4px}
+  .ws-status{font-family:var(--mono);font-size:11px;color:var(--dim);white-space:nowrap}
+  .ws-status.on{color:var(--accent)}
+  .hist-chat{display:grid;gap:18px;height:60vh;min-height:320px;overflow:auto;padding:6px 4px}
   .hist-turn{display:grid;gap:10px}
   .hist-bubble{max-width:86%;padding:10px 12px;border-radius:var(--r);border:var(--bw) solid var(--line);box-shadow:var(--shadow-sm)}
   .hist-bubble.bot{background:var(--panel2);justify-self:start;border-bottom-left-radius:2px}
@@ -72,306 +35,40 @@
   .live-dot{color:var(--accent);animation:live-pulse 1.2s ease-in-out infinite}
   @keyframes live-pulse{0%,100%{opacity:.35}50%{opacity:1}}
   .hist-error{color:#d92d20}
-  .lab-robot-panel{overflow:hidden}
-  .lab-robot-layout{display:grid;grid-template-columns:minmax(320px,1.05fr) minmax(260px,.95fr);gap:14px;align-items:stretch}
-  .lab-robot-stage{border:var(--bw) solid var(--line);border-radius:var(--r);background:#111318;box-shadow:var(--shadow-sm);min-height:260px;overflow:hidden}
-  .lab-robot-host{position:relative;width:100%;height:100%;min-height:260px;display:grid;place-items:center}
-  .lab-robot-host canvas{display:block;width:100%!important;height:100%!important}
-  .lab-robot-fallback{color:#fff;font-weight:900;margin:0;text-align:center}
-  .lab-robot-info{display:grid;align-content:space-between;gap:12px}
-  .lab-robot-kv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-  .lab-robot-kv div{border:var(--bw) solid var(--line);border-radius:var(--r);background:var(--panel2);padding:10px;min-width:0}
-  .lab-robot-kv span{display:block;color:var(--dim);font-size:11px;font-weight:900;text-transform:uppercase}
-  .lab-robot-kv b{display:block;font-family:var(--mono);font-size:18px;margin-top:4px}
-  .lab-robot-slider{border:var(--bw) solid var(--line);border-radius:var(--r);background:var(--panel2);padding:12px}
-  .lab-robot-slider label{display:flex;justify-content:space-between;gap:10px;font-weight:900;margin-bottom:8px}
-  .lab-robot-slider input{width:100%}
-  @media(max-width:900px){
-    .lab-grid{grid-template-columns:1fr}
-    .lab-form-grid,.lab-form-grid.two,.lab-kv{grid-template-columns:1fr}
-    .lab-robot-layout{grid-template-columns:1fr}
-    .lab-robot-kv{grid-template-columns:1fr}
-  }
 </style>
 {% endblock %}
 {% block content %}
 <div id="labApp">
   <div class="pagehd">
     <div>
-      <div class="eyebrow">LAB · DEVICE RUNTIME</div>
+      <div class="eyebrow">LAB · LIVE CONVO</div>
       <h1>设备实验台</h1>
-      <p>把后端已经具备的设备控制、摄像头、场景编排、PB 下发和流水日志集中到一个 2C 控制面。</p>
+      <p>实时对话调试台：订阅设备流水（ASR / LLM / TTS / 视觉 / 声纹），逐轮展示模型、耗时与媒体回放。其余设备控制已移入「家」。</p>
     </div>
     <div class="btngroup">
       <select v-model="currentDeviceId" @change="switchDevice">
         <option value="">选择设备</option>
         <option v-for="d in devices" :key="d.device_id" :value="d.device_id">[[ d.display_name ]] · [[ d.device_id ]]</option>
       </select>
-      <button type="button" class="btn ghost" @click="loadAll">刷新</button>
+      <button type="button" class="btn ghost" @click="refresh">刷新</button>
     </div>
-  </div>
-
-  <div class="lab-tabs" role="tablist" aria-label="实验台功能">
-    <button type="button" :class="{on: active==='servo'}" @click="setActive('servo')">舵机控制</button>
-    <button type="button" :class="{on: active==='camera'}" @click="setActive('camera')">摄像头</button>
-    <button type="button" :class="{on: active==='scene'}" @click="setActive('scene')">场景编排</button>
-    <button type="button" :class="{on: active==='pb'}" @click="setActive('pb')">PB 表情</button>
-    <button type="button" :class="{on: active==='logs'}" @click="setActive('logs')">ASR / 流水日志</button>
-    <button type="button" :class="{on: active==='convo'}" @click="setActive('convo')">实时对话</button>
   </div>
 
   <p class="lead" v-if="msg">[[ msg ]]</p>
 
-  <section v-show="active==='servo'" class="lab-grid">
-    <div class="lab-panel wide lab-robot-panel">
-      <div class="lab-head">
-        <div>
-          <b>3D 形象模拟</b>
-          <small>模拟舵机 x / y 和机器人视角；下发舵机或运行预设时会同步动作预览。</small>
-        </div>
-        <button type="button" class="btn ghost" @click="robotInit3d">重新载入 3D</button>
-      </div>
-      <div class="lab-robot-layout">
-        <div class="lab-robot-stage">
-          <div ref="robot3dHost" class="lab-robot-host" aria-label="机器人 3D 预览">
-            <p v-if="robot3dError" class="lab-robot-fallback">[[ robot3dError ]]</p>
-          </div>
-        </div>
-        <div class="lab-robot-info">
-          <div class="lab-robot-kv">
-            <div><span>servo x</span><b>[[ robotServoXLabel ]]</b></div>
-            <div><span>servo y</span><b>[[ robotServoYLabel ]]</b></div>
-            <div><span>view</span><b>[[ robotViewYawLabel ]]</b></div>
-          </div>
-          <div class="lab-robot-slider">
-            <label><span>观察视角</span><span>[[ robotViewYawLabel ]]</span></label>
-            <input type="range" min="-180" max="180" step="1" v-model.number="robotViewYawDeg" aria-label="水平旋转 3D 形象">
-          </div>
-          <div class="lab-toolbar">
-            <button type="button" class="btn ghost" @click="animateServoPreview({x:90,y:90,xm:0,ym:0,ms:450})">回正模拟</button>
-            <button type="button" class="btn ghost" @click="animateServoPreview({x:-18,y:0,xm:1,ym:1,ms:360})">左看模拟</button>
-            <button type="button" class="btn ghost" @click="animateServoPreview({x:18,y:0,xm:1,ym:1,ms:360})">右看模拟</button>
-          </div>
-          <small class="lab-note">本地模拟不需要选择设备；真正下发仍会在接口调用前检查设备。</small>
-        </div>
-      </div>
-    </div>
-
+  <div class="lab-main">
     <div class="lab-panel">
-      <div class="lab-head"><div><b>舵机限位与视角</b><small>读取 / 保存 servo.json，含左右视角语义和动作预设。</small></div></div>
-      <div class="lab-form-grid">
-        <input class="tinput" v-model.number="servo.config.x_min" type="number" min="0" max="180" placeholder="X min">
-        <input class="tinput" v-model.number="servo.config.x_max" type="number" min="0" max="180" placeholder="X max">
-        <input class="tinput" v-model.number="servo.config.y_min" type="number" min="0" max="180" placeholder="Y min">
-        <input class="tinput" v-model.number="servo.config.y_max" type="number" min="0" max="180" placeholder="Y max">
-        <select v-model.number="servo.config.x_reverse"><option :value="0">X 不反向</option><option :value="1">X 反向</option></select>
-        <select v-model.number="servo.config.y_reverse"><option :value="0">Y 不反向</option><option :value="1">Y 反向</option></select>
-        <select v-model="servo.config.perspective"><option value="viewer">观众视角</option><option value="robot">机器人本体视角</option></select>
-        <button type="button" class="btn primary" @click="saveServoConfig">保存配置</button>
-      </div>
-      <small class="lab-note">接口：/api/servo_config</small>
-    </div>
-
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>直接下发舵机</b><small>绝对 / 相对移动，支持同步追加一个表情场景。</small></div></div>
-      <div class="lab-form-grid">
-        <input class="tinput" v-model.number="servo.direct.x" type="number" min="0" max="180" placeholder="x / dyaw">
-        <input class="tinput" v-model.number="servo.direct.y" type="number" min="0" max="180" placeholder="y / dpitch">
-        <select v-model.number="servo.direct.xm"><option :value="0">X 绝对</option><option :value="1">X 相对</option></select>
-        <select v-model.number="servo.direct.ym"><option :value="0">Y 绝对</option><option :value="1">Y 相对</option></select>
-        <input class="tinput" v-model.number="servo.direct.ms" type="number" min="40" step="10" placeholder="ms">
-        <select v-model="servo.direct.action"><option value="replace">replace</option><option value="append">append</option><option value="default">default</option></select>
-        <input class="tinput" v-model.trim="servo.direct.with_scene" placeholder="with_scene / append_scene">
-        <button type="button" class="btn primary" @click="sendServo">下发舵机</button>
-      </div>
-      <small class="lab-note">接口：/api/device_servo</small>
-    </div>
-
-    <div class="lab-panel wide">
-      <div class="lab-head">
-        <div><b>动作预设</b><small>从 servo.json 读取，点击即可按 preset 下发。</small></div>
-        <button type="button" class="btn ghost" @click="loadServoConfig({silent:true})">重新载入</button>
-      </div>
-      <div class="lab-list">
-        <div class="lab-row" v-for="p in servo.presets" :key="p.id || p.label">
-          <div><b>[[ p.label || p.id ]]</b><small>[[ p.id ]] · [[ (p.steps || []).length ]] 步</small></div>
-          <button type="button" class="btn ghost" @click="runServoPreset(p)">运行</button>
-        </div>
-        <div class="lab-row" v-if="!servo.presets.length"><div><b>暂无预设</b><small>保存 servo.json 后会显示在这里。</small></div></div>
-      </div>
-    </div>
-  </section>
-
-  <section v-show="active==='camera'" class="lab-grid">
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>摄像头</b><small>订阅 camera_view；设备经 /asr_chat 上行 camera_frame。</small></div></div>
-      <div class="lab-stream">
-        <img v-if="camera.imageUrl" :src="camera.imageUrl" alt="camera frame">
-        <span v-else style="color:#fff">[[ camera.status || '未连接' ]]</span>
-      </div>
-      <div class="lab-toolbar">
-        <button type="button" class="btn primary" @click="openCamera">连接画面</button>
-        <button type="button" class="btn ghost" @click="closeCamera">断开</button>
-        <button type="button" class="btn ghost" @click="loadCameraMode({silent:true})">刷新跟随模式</button>
-      </div>
-      <small class="lab-note">WebSocket：cameraViewWsBase · camera_view</small>
-    </div>
-
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>人脸跟随模式</b><small>控制 camera_servo_auto_mode，配合自动应答和 camera_frame 生效。</small></div></div>
-      <div class="lab-form-grid two">
-        <select v-model="camera.mode">
-          <option value="">关闭跟随</option>
-          <option value="follow">跟随人脸</option>
-          <option value="follow_frontal">跟随正脸</option>
-          <option value="gaze">注视人脸</option>
-        </select>
-        <button type="button" class="btn primary" @click="saveCameraMode">保存模式</button>
-      </div>
-      <div class="lab-kv" style="margin-top:12px">
-        <div><span>连接状态</span><b>[[ camera.status || 'idle' ]]</b></div>
-        <div><span>最新帧</span><b>[[ camera.frameBytes ? fmtBytes(camera.frameBytes) : '-' ]]</b></div>
-        <div><span>模式</span><b>[[ camera.mode || 'off' ]]</b></div>
-      </div>
-      <small class="lab-note">接口：/api/camera_servo_auto_mode</small>
-    </div>
-  </section>
-
-  <section v-show="active==='scene'" class="lab-grid">
-    <div class="lab-panel wide">
-      <div class="lab-head">
-        <div><b>场景编排</b><small>每个 chunk 可包含口播、表情和舵机，按 PB 协议顺序串行下发。</small></div>
-        <div class="btngroup">
-          <button type="button" class="btn ghost" @click="loadScenePlaybooks({silent:true})">载入</button>
-          <button type="button" class="btn primary" @click="saveScenePlaybooks">保存</button>
-          <button type="button" class="btn ghost" @click="addPlaybook">新增</button>
-        </div>
-      </div>
-      <div class="lab-table-wrap">
-        <table class="lab-table">
-          <thead><tr><th>名称</th><th>标题</th><th>Chunks</th><th>操作</th></tr></thead>
-          <tbody>
-            <tr v-for="(pb, idx) in scene.playbooks" :key="pb.name + idx">
-              <td><input class="tinput" v-model.trim="pb.name"></td>
-              <td><input class="tinput" v-model.trim="pb.title"></td>
-              <td>
-                <div class="lab-list">
-                  <div class="lab-row" v-for="(c, cidx) in pb.chunks" :key="c.id + cidx">
-                    <div style="flex:1">
-                      <input class="tinput" v-model.trim="c.text" placeholder="口播文本">
-                      <div class="lab-form-grid" style="margin-top:8px">
-                        <input class="tinput" v-model.trim="c.expr.scene" placeholder="表情 scene">
-                        <input class="tinput" v-model.number="c.expr.ms" type="number" placeholder="表情 ms">
-                        <input class="tinput" v-model.trim="c.servo.preset" placeholder="舵机 preset">
-                        <input class="tinput" v-model.number="c.servo.ms" type="number" placeholder="舵机 ms">
-                      </div>
-                    </div>
-                    <button type="button" class="btn ghost" @click="pb.chunks.splice(cidx,1)">删除</button>
-                  </div>
-                </div>
-                <button type="button" class="btn ghost" @click="addChunk(pb)">新增 chunk</button>
-              </td>
-              <td>
-                <div class="btngroup">
-                  <button type="button" class="btn primary" @click="runPlaybook(pb)">运行</button>
-                  <button type="button" class="btn ghost" @click="exportPlaybook(pb)">排查包</button>
-                  <button type="button" class="btn ghost" @click="scene.playbooks.splice(idx,1)">删除</button>
-                </div>
-              </td>
-            </tr>
-            <tr v-if="!scene.playbooks.length"><td colspan="4">暂无场景编排</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <small class="lab-note">接口：/api/scene_playbooks · /api/scene_playbook/run</small>
-    </div>
-  </section>
-
-  <section v-show="active==='pb'" class="lab-grid">
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>PB 表情场景</b><small>列出 deskbot-face.json 中可直接下发的场景。</small></div></div>
-      <div class="lab-toolbar">
-        <button type="button" class="btn ghost" @click="loadPbScenes({silent:true})">刷新场景</button>
-        <button type="button" class="btn primary" @click="sendPbScene">下发表情</button>
-      </div>
-      <select v-model="pb.selectedScene">
-        <option value="">选择 PB scene</option>
-        <option v-for="s in pb.scenes" :key="s" :value="s">[[ s ]]</option>
-      </select>
-      <small class="lab-note">接口：/api/device_pb_scenes · /api/device_pb_scene</small>
-    </div>
-
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>Face Catalog / Play</b><small>按 phoneme 或 emotion 直接播放文件内表情。</small></div></div>
-      <div class="lab-toolbar">
-        <button type="button" class="btn ghost" @click="loadFaceCatalog">载入目录</button>
-        <select v-model="pb.faceKind"><option value="emotion">emotion</option><option value="phoneme">phoneme</option></select>
-        <input class="tinput" v-model.trim="pb.faceName" placeholder="名称">
-        <button type="button" class="btn primary" @click="playFaceCatalog">播放</button>
-      </div>
-      <pre class="lab-code">[[ json(pb.catalog) ]]</pre>
-      <small class="lab-note">接口：/api/device_face_catalog · /api/device_face_play</small>
-    </div>
-
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>PB Anim / Expr Scene</b><small>用于单片 anim 预览和从 2C 表情编辑器保存的 expr scene 下发。</small></div></div>
-      <textarea class="tinput lab-json-input" v-model="pb.animJson" spellcheck="false"></textarea>
-      <div class="lab-toolbar">
-        <button type="button" class="btn primary" @click="sendPbAnim">下发 PB Anim</button>
-        <input class="tinput" v-model.trim="pb.exprScene" placeholder="expr scene name">
-        <button type="button" class="btn ghost" @click="sendExprScene">下发 Expr Scene</button>
-      </div>
-      <small class="lab-note">接口：/api/device_pb_anim · /api/device_pb_expr_scene</small>
-    </div>
-
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>直发 TTS</b><small>跳过 LLM，直接把文本合成为 PB 下发；可追加 scene。</small></div></div>
-      <textarea class="tinput" v-model.trim="pb.ttsText" rows="4" placeholder="要播报的文本"></textarea>
-      <div class="lab-toolbar">
-        <input class="tinput" v-model.trim="pb.ttsScene" placeholder="追加 scene（可选）">
-        <button type="button" class="btn primary" @click="sendDeviceTts">下发 TTS</button>
-      </div>
-      <small class="lab-note">接口：/api/device_tts</small>
-    </div>
-  </section>
-
-  <section v-show="active==='logs'" class="lab-grid">
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>ASR / 自动行为</b><small>控制自动应答和流水订阅。</small></div></div>
-      <div class="lab-form-grid two">
-        <button type="button" class="btn ghost" @click="toggleAsrAuto">[[ toggles.asr_auto_reply ? '关闭自动应答' : '开启自动应答' ]]</button>
-        <button type="button" class="btn primary" @click="openPipeline">连接实时流水</button>
-        <button type="button" class="btn ghost" @click="loadPipelineRecent">拉取最近事件</button>
-      </div>
-      <small class="lab-note">接口：/api/asr_auto_reply · /api/pipeline_recent</small>
-      <small class="lab-note">WebSocket：devicePipelineWsBase</small>
-    </div>
-    <div class="lab-panel">
-      <div class="lab-head"><div><b>运行状态</b><small>实时 WS 和 HTTP 快照会合并显示。</small></div></div>
-      <div class="lab-kv">
-        <div><span>pipeline</span><b>[[ pipeline.status || 'idle' ]]</b></div>
-        <div><span>events</span><b>[[ pipeline.events.length ]]</b></div>
-        <div><span>device</span><b>[[ currentDeviceId || '-' ]]</b></div>
-      </div>
-    </div>
-    <div class="lab-panel wide">
-      <pre class="lab-code">[[ json(pipeline.events.slice(0, 80)) ]]</pre>
-    </div>
-  </section>
-
-  <section v-show="active==='convo'" class="lab-grid">
-    <div class="lab-panel wide">
       <div class="lab-head">
         <div>
           <b>实时对话</b>
-          <small>由流水日志驱动：WS 实时订阅 + /api/pipeline_recent 初始加载（窗口 100 条）。只显示对话轮次，自动下发事件见「流水日志」tab。</small>
-          <small>每条消息展示 ASR / LLM / TTS 的模型与耗时；LLM 多次调用逐条列出（调用输出过长可展开）。用户气泡内含本轮 System Prompt 与机器人看到的画面/图像识别（均可折叠）；ASR 原声与 TTS 合成音可回放（媒体仅会话内存保留，过期后自动隐藏）。</small>
+          <small>WS 实时订阅 + /api/pipeline_recent 初始加载（窗口 100 条，仅本会话内存保留）。只显示对话轮次；每条消息展示 ASR / LLM / TTS 的模型与耗时，LLM 多次调用逐条列出（输出过长可展开）。用户气泡内含本轮 System Prompt 与机器人看到的画面 / 图像识别 / 声纹识别（均可折叠）；ASR 原声与 TTS 合成音可回放（媒体仅内存保留，过期后自动隐藏）。</small>
         </div>
+        <span class="ws-status" :class="{on: pipeline.status==='connected'}">[[ wsLabelText() ]]</span>
       </div>
       <small class="lab-note">接口：/api/pipeline_recent · /api/pipeline_audio · /device_pipeline（role=subscriber）</small>
     </div>
 
-    <div class="lab-panel wide">
+    <div class="lab-panel">
       <div class="lab-head"><div><b>对话记录</b><small>按时间升序 · 实时刷新 · 仅本会话内存保留。机器人左对齐 · 用户右对齐。</small></div></div>
       <div class="hist-chat" ref="histChat" @scroll="onHistScroll">
         <template v-if="convoTurns.length">
@@ -448,99 +145,36 @@
             </div>
           </div>
         </template>
-        <p v-else class="lab-note">暂无对话。开启一轮对话后，实时显示在这里。</p>
+        <p v-else class="lab-note">暂无对话。选择设备并开启一轮对话后，实时显示在这里。</p>
       </div>
     </div>
-  </section>
+  </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
 const { createApp } = Vue;
-const LAB_FACE = window.__LAB_FACE__ || {};
-const FACE_LCD_W = Number(LAB_FACE.w) || 284;
-const FACE_LCD_H = Number(LAB_FACE.h) || 240;
-const EXPR_DEFAULT_ANIM = LAB_FACE.defaultAnim || {
-  elements: {
-    nose: [{shape:'circle',x:142,y:124,r:11}],
-    eye_l: [{shape:'circle',x:93,y:107,r:16}],
-    eye_r: [{shape:'circle',x:191,y:107,r:16}],
-    mouth: [{shape:'rect',x:102,y:151,w:80,h:20}],
-    extra: [],
-  },
-};
-const ROBOT_SERVO_CENTER = 90;
-function initialLabTab(){
-  const allowed = ['servo','camera','scene','pb','logs','convo'];
-  const params = new URLSearchParams(window.location.search);
-  const tab = params.get('tab') || '';
-  return allowed.includes(tab) ? tab : 'servo';
-}
 createApp({
   delimiters:['[[',']]'],
   data(){ return {
-    active:initialLabTab(), msg:'',
-    cameraViewWsBase: {{ camera_view_ws_base|tojson }},
+    msg:'',
     devicePipelineWsBase: {{ device_pipeline_ws_base|tojson }},
     devices:[], currentDeviceId:'',
-    simServo:{x:90,y:90},
-    robotViewYawDeg:0,
-    robot3dError:'',
-    servo:{
-      config:{x_min:0,x_max:180,y_min:0,y_max:180,x_reverse:0,y_reverse:0,perspective:'viewer'},
-      presets:[],
-      direct:{x:90,y:90,xm:0,ym:0,ms:450,action:'replace',with_scene:''},
-    },
-    camera:{ws:null,status:'',imageUrl:'',frameBytes:0,mode:''},
-    toggles:{asr_auto_reply:false},
-    scene:{playbooks:[], export:null},
-    pb:{
-      scenes:[], selectedScene:'', catalog:null, faceKind:'emotion', faceName:'',
-      exprScene:'', ttsText:'你好，我是小歪。', ttsScene:'',
-      animJson:'{"anim":[{"ms":500,"elements":{"mouth":[],"nose":[],"eye_l":[],"eye_r":[],"extra":[]}}]}',
-    },
-    pipeline:{ws:null,status:'',events:[],retry:0,retryTimer:null},
+    pipeline:{ws:null,status:'',retry:0,retryTimer:null},
     convo:{rows:{}},
     // 实时对话：新消息到达是否自动滚到底部（用户上翻查看历史时暂停跟随）
     convoFollowBottom:true,
   }; },
   computed:{
-    robotServoXLabel(){
-      const x=Number(this.simServo && this.simServo.x);
-      return Number.isFinite(x) ? String(Math.round(x)) : String(ROBOT_SERVO_CENTER);
-    },
-    robotServoYLabel(){
-      const y=Number(this.simServo && this.simServo.y);
-      return Number.isFinite(y) ? String(Math.round(y)) : String(ROBOT_SERVO_CENTER);
-    },
-    robotViewYawLabel(){
-      const v=Number(this.robotViewYawDeg)||0;
-      return v.toFixed(0) + '°';
-    },
-    robotHorizDeg(){
-      const x=Number(this.simServo && this.simServo.x);
-      if(!Number.isFinite(x)) return 0;
-      return (this.servo.config.x_reverse ? -1 : 1) * (x - ROBOT_SERVO_CENTER);
-    },
-    robotVertDeg(){
-      const y=Number(this.simServo && this.simServo.y);
-      if(!Number.isFinite(y)) return 0;
-      return (this.servo.config.y_reverse ? -1 : 1) * (y - ROBOT_SERVO_CENTER);
-    },
     convoTurns(){
       return Object.values(this.convo.rows).sort((a,b)=>(a.ts||0)-(b.ts||0));
     },
   },
   watch:{
     'convo.rows':{deep:true,handler(){ if(this.convoFollowBottom) this.$nextTick(this.scrollHistToBottom); }},
-    simServo:{deep:true,handler(){ this._robotSyncServoAngles(); }},
-    'servo.config.x_reverse'(){ this._robotSyncServoAngles(); },
-    'servo.config.y_reverse'(){ this._robotSyncServoAngles(); },
-    robotViewYawDeg(){ this._robotSyncViewYaw(); },
   },
   methods:{
     json(v){ return JSON.stringify(v || {}, null, 2); },
-    fmtBytes(n){ n=Number(n)||0; if(n>=1048576) return (n/1048576).toFixed(1)+' MB'; if(n>=1024) return (n/1024).toFixed(1)+' KB'; return n+' B'; },
     async api(url, opts){
       const r=await fetch(url, opts||{cache:'no-store'});
       const d=await r.json().catch(()=>({ok:false,error:'响应解析失败'}));
@@ -563,37 +197,33 @@ createApp({
       }
       return true;
     },
-    setActive(tab){
-      this.active=tab; this.msg='';
-      if(tab==='servo') this.$nextTick(()=>{ if(!this._robot3d) void this.robotInit3d(); });
-      if(tab==='camera') this.loadCameraMode({silent:true});
-      if(tab==='logs') this.loadRuntimeToggles({silent:true});
-      if(tab==='convo'){ this.ensurePipelineWs(); this.loadConvoRecent(); this.$nextTick(this.resizeConvo); }
+    wsLabelText(){
+      return ({connecting:'连接中…', connected:'实时连接中', closed:'已断开 · 自动重连', error:'连接异常'})[this.pipeline.status] || '未连接';
     },
     async loadDevices(){
       const d=await this.api('/app/api/devices');
       this.devices=d.devices||[];
       this.currentDeviceId=d.current_device_id || (this.devices[0] && this.devices[0].device_id) || '';
     },
+    async refresh(){
+      try{
+        await this.loadDevices();
+        this.msg='';
+        if(this.currentDeviceId){
+          this.closePipeline();
+          this.ensurePipelineWs();
+          this.loadConvoRecent();
+        }
+      }catch(e){ this.msg=e.message||'刷新失败'; }
+    },
     async switchDevice(){
       await this.api('/app/api/devices/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:this.currentDeviceId})});
       this.msg=this.currentDeviceId ? '已切换当前设备' : '已清空当前设备';
       this.convo.rows={};
       this.closePipeline();
-      await this.loadAll();
+      await this.loadDevices();
       this.ensurePipelineWs();
-    },
-    async loadAll(){
-      try{
-        await this.loadDevices();
-        await Promise.allSettled([
-          this.loadServoConfig({silent:true}),
-          this.loadPbScenes({silent:true}),
-          this.loadScenePlaybooks({silent:true}),
-          this.loadRuntimeToggles({silent:true}),
-          this.loadCameraMode({silent:true})
-        ]);
-      }catch(e){ this.msg=e.message||'刷新失败'; }
+      this.loadConvoRecent();
     },
     // ── 实时对话 ──
     async loadConvoRecent(){
@@ -644,9 +274,6 @@ createApp({
       if(frame && frame.type==='pipeline_snapshot'){ this.onPipelineSnapshot(frame.items||[]); }
       else if(frame && frame.type==='pipeline_stage' && frame.event){ this.applyStage(frame.event); }
       else if(frame && frame.type==='pipeline_event' && frame.event){ this.applyPipeEvent(frame.event); }
-      if(frame){ this.pipeline.events.unshift(frame); }
-      else { this.pipeline.events.unshift({raw:String(ev.data)}); }
-      this.pipeline.events=this.pipeline.events.slice(0,120);
     },
     applyStage(evt){
       const rid=evt.request_id;
@@ -679,7 +306,7 @@ createApp({
       const rid=evt.request_id;
       if(!rid || evt.device_id!==this.currentDeviceId) return;
       if('stage' in evt){ this.applyStage(evt); return; } // pub 冗余帧，幂等
-      if('e2e_ms' in evt){ // 轮次完成：合并进现有行，气泡保留在实时对话中（不再落库/重拉）
+      if('e2e_ms' in evt){ // 轮次完成：合并进现有行，气泡保留在实时对话中
         const row=this.convo.rows[rid] || {request_id:rid, ts:(evt.received_ts||Date.now()/1000)};
         row.final=true;
         row.e2e_ms=evt.e2e_ms;
@@ -747,392 +374,28 @@ createApp({
     },
     // 对话区高度延伸到窗口底部（不超界），最大化聊天可视范围
     resizeConvo(){
-      if(this.active!=='convo') return;
       const el=this.$refs.histChat;
       if(!el) return;
       const gap=16; // 距窗口底部留白
-      const h=Math.max(180, window.innerHeight - el.getBoundingClientRect().top - gap);
+      const h=Math.max(320, window.innerHeight - el.getBoundingClientRect().top - gap);
       el.style.height=h+'px';
       el.style.maxHeight=h+'px';
     },
     onWinResize(){
-      if(this.active==='convo') this.resizeConvo();
+      this.resizeConvo();
     },
     fmtMs(v){ if(v===null || v===undefined) return '-'; v=Number(v); if(v>=1000) return (v/1000).toFixed(3)+'s'; return v+'ms'; },
     tsText(ts){ if(!ts) return ''; const d=new Date(ts*1000); const p=n=>String(n).padStart(2,'0'); return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); },
-    normalizeServoConfig(cfg){
-      const c = cfg || {};
-      this.servo.config = Object.assign({}, this.servo.config, {
-        x_min:c.x_min ?? c.xMin ?? 0,
-        x_max:c.x_max ?? c.xMax ?? 180,
-        y_min:c.y_min ?? c.yMin ?? 0,
-        y_max:c.y_max ?? c.yMax ?? 180,
-        x_reverse:c.x_reverse ?? c.xReverse ?? 0,
-        y_reverse:c.y_reverse ?? c.yReverse ?? 0,
-        perspective:c.perspective || c.left_right_perspective || 'viewer',
-      });
-      this.servo.presets = Array.isArray(c.presets) ? c.presets : [];
-    },
-    async loadServoConfig(options){
-      if(!this.requireDevice(options)) return;
-      const d=await this.api(this.proxyPath('/api/servo_config'));
-      this.normalizeServoConfig(d.config || d);
-    },
-    async saveServoConfig(){
-      if(!this.requireDevice()) return;
-      const body=Object.assign({}, this.servo.config, {presets:this.servo.presets});
-      const d=await this.api(this.proxyPath('/api/servo_config'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      this.normalizeServoConfig(d.config || body);
-      this.msg='舵机配置已保存';
-    },
-    async sendServo(){
-      if(!this.requireDevice()) return;
-      const p=this.servo.direct;
-      await this.api(this.proxyPath('/api/device_servo',{x:p.x,y:p.y,dyaw:p.x,dpitch:p.y,xm:p.xm,ym:p.ym,ms:p.ms,action:p.action,with_scene:p.with_scene}));
-      void this.animateServoPreview(p);
-      this.msg='舵机命令已下发';
-    },
-    async runServoPreset(p){
-      const steps=(Array.isArray(p.steps) && p.steps.length) ? p.steps : [p];
-      const step=steps[0]||p;
-      this.servo.direct=Object.assign({}, this.servo.direct, {x:step.x??90,y:step.y??90,xm:step.xm??0,ym:step.ym??0,ms:step.ms??500});
-      void this.previewServoSteps(steps);
-      await this.sendServo();
-    },
-    async previewServoSteps(steps){
-      for(const step of (steps||[])) await this.animateServoPreview(step);
-    },
-    animateServoPreview(step){
-      const p=step||{};
-      const startX=Number(this.simServo.x)||ROBOT_SERVO_CENTER;
-      const startY=Number(this.simServo.y)||ROBOT_SERVO_CENTER;
-      const xm=Number(p.xm)||0;
-      const ym=Number(p.ym)||0;
-      const rawX=Number(p.x);
-      const rawY=Number(p.y);
-      const c=this.servo.config||{};
-      const minX=Number.isFinite(Number(c.x_min)) ? Number(c.x_min) : 0;
-      const maxX=Number.isFinite(Number(c.x_max)) ? Number(c.x_max) : 180;
-      const minY=Number.isFinite(Number(c.y_min)) ? Number(c.y_min) : 0;
-      const maxY=Number.isFinite(Number(c.y_max)) ? Number(c.y_max) : 180;
-      const endX=Math.max(minX, Math.min(maxX, xm ? startX + (Number.isFinite(rawX)?rawX:0) : (Number.isFinite(rawX)?rawX:startX)));
-      const endY=Math.max(minY, Math.min(maxY, ym ? startY + (Number.isFinite(rawY)?rawY:0) : (Number.isFinite(rawY)?rawY:startY)));
-      const dur=Math.max(40, Number(p.ms)||450);
-      const seq=(this._servoPreviewSeq||0)+1;
-      this._servoPreviewSeq=seq;
-      return new Promise((resolve)=>{
-        const t0=performance.now();
-        const tick=()=>{
-          if(this._servoPreviewSeq!==seq){ resolve(); return; }
-          const t=Math.min(1, (performance.now()-t0)/dur);
-          const eased=1-Math.pow(1-t, 3);
-          this.simServo={x:startX+(endX-startX)*eased, y:startY+(endY-startY)*eased};
-          if(t<1) requestAnimationFrame(tick);
-          else resolve();
-        };
-        tick();
-      });
-    },
-    drawDefaultFace(canvas){
-      if(!canvas) return;
-      const ctx=canvas.getContext('2d');
-      if(!ctx) return;
-      ctx.fillStyle='#0d0f14';
-      ctx.fillRect(0,0,canvas.width,canvas.height);
-      const el=(EXPR_DEFAULT_ANIM && EXPR_DEFAULT_ANIM.elements) || {};
-      const colors={eye_l:'#f6f5ef',eye_r:'#f6f5ef',nose:'#ffb928',mouth:'#ff5a00',extra:'#f6f5ef'};
-      for(const key of ['eye_l','eye_r','nose','mouth','extra']){
-        for(const shape of (el[key]||[])) this._drawFaceShape(ctx, shape, colors[key]||'#f6f5ef');
-      }
-    },
-    _drawFaceShape(ctx, s, color){
-      if(!s) return;
-      ctx.fillStyle=s.color||color;
-      ctx.strokeStyle=s.color||color;
-      ctx.lineWidth=Math.max(1, Number(s.line_width)||2);
-      const shape=String(s.shape||'rect').toLowerCase();
-      if(shape==='circle'){
-        ctx.beginPath();
-        ctx.arc(Number(s.x)||0, Number(s.y)||0, Math.max(1, Number(s.r)||4), 0, Math.PI*2);
-        ctx.fill();
-        return;
-      }
-      if(shape==='line'){
-        ctx.beginPath();
-        ctx.moveTo(Number(s.x1 ?? s.x)||0, Number(s.y1 ?? s.y)||0);
-        ctx.lineTo(Number(s.x2 ?? s.x)||0, Number(s.y2 ?? s.y)||0);
-        ctx.stroke();
-        return;
-      }
-      const x=Number(s.x)||0, y=Number(s.y)||0, w=Math.max(1, Number(s.w)||12), h=Math.max(1, Number(s.h)||6);
-      if(shape==='rect_outline') ctx.strokeRect(x,y,w,h);
-      else ctx.fillRect(x,y,w,h);
-    },
-    async _ensureThreeLoaded(){
-      if(window.__THREE__) return window.__THREE__;
-      if(!this._threeLoadPromise){
-        this._threeLoadPromise=import('three').then((mod)=>{ window.__THREE__=mod; return mod; }).catch((e)=>{ this._threeLoadPromise=null; throw e; });
-      }
-      return this._threeLoadPromise;
-    },
-    _robotMakeForwardArrow(THREE){
-      const mat=new THREE.MeshStandardMaterial({color:0x30d158,metalness:0.05,roughness:0.45});
-      const group=new THREE.Group();
-      const shaft=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.025,0.55,10), mat);
-      shaft.rotation.x=Math.PI/2; shaft.position.set(0,0.015,0.28); group.add(shaft);
-      const tip=new THREE.Mesh(new THREE.ConeGeometry(0.09,0.2,10), mat);
-      tip.rotation.x=Math.PI/2; tip.position.set(0,0.015,0.62); group.add(tip);
-      group.position.set(0,0.005,1.05);
-      return group;
-    },
-    _robotSyncServoAngles(){
-      const st=this._robot3d;
-      const THREE=window.__THREE__;
-      if(!st || !st.headPivot || !THREE) return;
-      st.targetHeadYaw=THREE.MathUtils.degToRad(this.robotHorizDeg);
-      st.targetHeadPitch=THREE.MathUtils.degToRad(this.robotVertDeg);
-    },
-    _robotSyncViewYaw(){
-      const st=this._robot3d;
-      const THREE=window.__THREE__;
-      if(!st || !st.turntable || !THREE) return;
-      st.turntable.rotation.y=THREE.MathUtils.degToRad(Number(this.robotViewYawDeg)||0);
-    },
-    _robotDispose3d(){
-      if(this._robotAnimId){ cancelAnimationFrame(this._robotAnimId); this._robotAnimId=null; }
-      if(this._robotResizeObs){ try{ this._robotResizeObs.disconnect(); }catch(_e){} this._robotResizeObs=null; }
-      const st=this._robot3d;
-      if(st && st.renderer){
-        if(st.faceTexture){ try{ st.faceTexture.dispose(); }catch(_e){} }
-        try{ st.renderer.dispose(); }catch(_e){}
-        if(st.renderer.domElement && st.renderer.domElement.parentNode) st.renderer.domElement.parentNode.removeChild(st.renderer.domElement);
-      }
-      this._robot3d=null;
-    },
-    async robotInit3d(){
-      this._robotDispose3d();
-      this.robot3dError='';
-      const host=this.$refs.robot3dHost;
-      if(!host) return;
-      let THREE;
-      try{ THREE=await this._ensureThreeLoaded(); }
-      catch(_e){ this.robot3dError='Three.js 加载失败'; return; }
-      let renderer;
-      try{ renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,preserveDrawingBuffer:true}); }
-      catch(_e){ this.robot3dError='WebGL 不可用'; return; }
-
-      const w=Math.max(160, host.clientWidth||360);
-      const h=Math.max(160, host.clientHeight||260);
-      const scene=new THREE.Scene();
-      scene.background=new THREE.Color(0x111318);
-      const camera=new THREE.PerspectiveCamera(38, w/h, 0.08, 50);
-      camera.position.set(0,0.92,2.65);
-      camera.lookAt(0,0.78,0);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
-      renderer.setSize(w,h,false);
-      host.appendChild(renderer.domElement);
-
-      scene.add(new THREE.AmbientLight(0xffffff,0.7));
-      const key=new THREE.DirectionalLight(0xffffff,0.95);
-      key.position.set(1.5,3.5,2.5); scene.add(key);
-      const rim=new THREE.DirectionalLight(0xff7a1a,0.35);
-      rim.position.set(-2,1.2,-1.5); scene.add(rim);
-      scene.add(new THREE.GridHelper(2.4,8,0x55565d,0x25272f));
-      scene.add(this._robotMakeForwardArrow(THREE));
-
-      const turntable=new THREE.Group();
-      scene.add(turntable);
-      const bodyMat=new THREE.MeshStandardMaterial({color:0x4f535a,roughness:0.58,metalness:0.18});
-      const headMat=new THREE.MeshStandardMaterial({color:0xf6f5ef,roughness:0.42,metalness:0.06});
-      const neckMat=new THREE.MeshStandardMaterial({color:0xff5a00,roughness:0.36,metalness:0.18});
-      const base=new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.62,0.07,24), new THREE.MeshStandardMaterial({color:0x25272f,roughness:0.58}));
-      base.position.y=-0.02; turntable.add(base);
-      const body=new THREE.Mesh(new THREE.BoxGeometry(0.82,0.62,0.52), bodyMat);
-      body.position.y=0.28; turntable.add(body);
-      const neck=new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.12,0.22,16), neckMat);
-      neck.position.y=0.66; turntable.add(neck);
-      const headPivot=new THREE.Group();
-      headPivot.position.y=0.8; turntable.add(headPivot);
-      const head=new THREE.Mesh(new THREE.BoxGeometry(0.62,0.5,0.54), headMat);
-      head.position.y=0.22; headPivot.add(head);
-
-      const faceCanvas=document.createElement('canvas');
-      faceCanvas.width=FACE_LCD_W; faceCanvas.height=FACE_LCD_H;
-      this.drawDefaultFace(faceCanvas);
-      const faceTexture=new THREE.CanvasTexture(faceCanvas);
-      faceTexture.magFilter=THREE.NearestFilter;
-      faceTexture.minFilter=THREE.NearestFilter;
-      const faceScreen=new THREE.Mesh(
-        new THREE.PlaneGeometry(0.42,0.42*FACE_LCD_H/FACE_LCD_W),
-        new THREE.MeshBasicMaterial({map:faceTexture,toneMapped:false}),
-      );
-      faceScreen.position.set(0,0.22,0.272);
-      headPivot.add(faceScreen);
-
-      this._robot3d={scene,camera,renderer,turntable,headPivot,faceCanvas,faceTexture,currentHeadYaw:0,currentHeadPitch:0,targetHeadYaw:0,targetHeadPitch:0};
-      this._robotSyncServoAngles();
-      this._robotSyncViewYaw();
-      const resize=()=>{
-        const st=this._robot3d;
-        if(!st || !host) return;
-        const rw=Math.max(160, host.clientWidth||360);
-        const rh=Math.max(160, host.clientHeight||260);
-        st.camera.aspect=rw/rh;
-        st.camera.updateProjectionMatrix();
-        st.renderer.setSize(rw,rh,false);
-      };
-      if(typeof ResizeObserver!=='undefined'){
-        this._robotResizeObs=new ResizeObserver(()=>resize());
-        this._robotResizeObs.observe(host);
-      }
-      const tick=()=>{
-        const st=this._robot3d;
-        if(!st) return;
-        st.currentHeadYaw+=(st.targetHeadYaw-st.currentHeadYaw)*0.2;
-        st.currentHeadPitch+=(st.targetHeadPitch-st.currentHeadPitch)*0.2;
-        st.headPivot.rotation.order='YXZ';
-        st.headPivot.rotation.y=st.currentHeadYaw;
-        st.headPivot.rotation.x=st.currentHeadPitch;
-        st.renderer.render(st.scene, st.camera);
-        this._robotAnimId=requestAnimationFrame(tick);
-      };
-      tick();
-    },
-    async openCamera(){
-      if(!this.requireDevice()) return;
-      this.closeCamera();
-      const url=new URL(this.cameraViewWsBase);
-      url.searchParams.set('device_id', this.currentDeviceId);
-      this.camera.status='connecting';
-      const ws=new WebSocket(url.toString());
-      ws.binaryType='blob';
-      ws.onopen=()=>{ this.camera.status='connected'; };
-      ws.onclose=()=>{ this.camera.status='closed'; };
-      ws.onerror=()=>{ this.camera.status='error'; };
-      ws.onmessage=(ev)=>{
-        if(ev.data instanceof Blob){
-          if(this.camera.imageUrl) URL.revokeObjectURL(this.camera.imageUrl);
-          this.camera.frameBytes=ev.data.size;
-          this.camera.imageUrl=URL.createObjectURL(ev.data);
-          return;
-        }
-        try{ const data=JSON.parse(ev.data); this.camera.status=data.type || 'json'; }catch(_e){}
-      };
-      this.camera.ws=ws;
-    },
-    closeCamera(){ if(this.camera.ws){ try{ this.camera.ws.close(); }catch(_e){} } this.camera.ws=null; },
-    async loadCameraMode(options){
-      if(!this.requireDevice(options)) return;
-      try{ const d=await this.api(this.proxyPath('/api/camera_servo_auto_mode')); this.camera.mode=d.mode||''; }catch(_e){}
-    },
-    async saveCameraMode(){
-      await this.api(this.proxyPath('/api/camera_servo_auto_mode',{mode:this.camera.mode}));
-      this.msg='摄像头跟随模式已保存';
-    },
-    cleanChunk(c){
-      const out={id:c.id||Math.random().toString(16).slice(2,10), text:c.text||''};
-      if(c.expr && c.expr.scene) out.expr={scene:c.expr.scene, ms:Number(c.expr.ms)||500};
-      if(c.servo && c.servo.preset) out.servo={preset:c.servo.preset, ms:Number(c.servo.ms)||500};
-      return out;
-    },
-    cleanPlaybook(pb){
-      return {name:pb.name||'demo', title:pb.title||pb.name||'演示', chunks:(pb.chunks||[]).map(this.cleanChunk).filter(c=>c.text||c.expr||c.servo)};
-    },
-    editablePlaybook(pb){
-      const out=Object.assign({name:'demo',title:'演示',chunks:[]}, pb||{});
-      out.chunks=(out.chunks||[]).map(c=>Object.assign({id:Math.random().toString(16).slice(2,10),text:'',expr:{scene:'',ms:500},servo:{preset:'',ms:500}}, c, {expr:Object.assign({scene:'',ms:500}, c.expr||{}), servo:Object.assign({preset:'',ms:500}, c.servo||{})}));
-      return out;
-    },
-    async loadScenePlaybooks(options){
-      if(!this.requireDevice(options)) return;
-      const d=await this.api(this.proxyPath('/api/scene_playbooks'));
-      this.scene.playbooks=(d.config||[]).map(this.editablePlaybook);
-    },
-    async saveScenePlaybooks(){
-      if(!this.requireDevice()) return;
-      const rows=this.scene.playbooks.map(this.cleanPlaybook).filter(pb=>pb.name&&pb.chunks.length);
-      await this.api(this.proxyPath('/api/scene_playbooks'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rows)});
-      this.msg='场景编排已保存';
-      await this.loadScenePlaybooks();
-    },
-    addPlaybook(){ this.scene.playbooks.push(this.editablePlaybook({name:'demo_'+(this.scene.playbooks.length+1),title:'新编排',chunks:[{text:'你好',expr:{scene:'happy_smile',ms:1000},servo:{preset:'center',ms:500}}]})); },
-    addChunk(pb){ pb.chunks.push(this.editablePlaybook({chunks:[{text:'',expr:{scene:'',ms:500},servo:{preset:'',ms:500}}]}).chunks[0]); },
-    async runPlaybook(pb){
-      if(!this.requireDevice()) return;
-      await this.api(this.proxyPath('/api/scene_playbook/run'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:this.currentDeviceId,playbook:this.cleanPlaybook(pb)})});
-      this.msg='场景编排已提交运行';
-    },
-    async exportPlaybook(pb){
-      const d=await this.api('/api/scene_playbook/export_plan?device_id='+encodeURIComponent(this.currentDeviceId),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({playbook:this.cleanPlaybook(pb)})});
-      this.scene.export=d;
-      this.msg='排查包已生成，可在控制台查看 scene.export';
-    },
-    async loadPbScenes(options){
-      if(!this.requireDevice(options)) return;
-      const d=await this.api(this.proxyPath('/api/device_pb_scenes'));
-      this.pb.scenes=d.scenes||d.keys||[];
-      if(!this.pb.selectedScene && this.pb.scenes.length) this.pb.selectedScene=this.pb.scenes[0];
-    },
-    async sendPbScene(){
-      if(!this.requireDevice() || !this.pb.selectedScene) return;
-      await this.api(this.proxyPath('/api/device_pb_scene',{scene:this.pb.selectedScene}));
-      this.msg='PB 表情已下发';
-    },
-    async loadFaceCatalog(){
-      if(!this.requireDevice()) return;
-      this.pb.catalog=await this.api(this.proxyPath('/api/device_face_catalog'));
-    },
-    async playFaceCatalog(){
-      if(!this.requireDevice() || !this.pb.faceName) return;
-      await this.api(this.proxyPath('/api/device_face_play',{kind:this.pb.faceKind,name:this.pb.faceName}));
-      this.msg='Face catalog 表情已下发';
-    },
-    async sendPbAnim(){
-      if(!this.requireDevice()) return;
-      const body=JSON.parse(this.pb.animJson||'{}');
-      await this.api(this.proxyPath('/api/device_pb_anim'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({device_id:this.currentDeviceId}, body))});
-      this.msg='PB Anim 已下发';
-    },
-    async sendExprScene(){
-      if(!this.requireDevice() || !this.pb.exprScene) return;
-      await this.api(this.proxyPath('/api/device_pb_expr_scene',{scene:this.pb.exprScene}));
-      this.msg='Expr Scene 已下发';
-    },
-    async sendDeviceTts(){
-      if(!this.requireDevice() || !this.pb.ttsText) return;
-      await this.api(this.proxyPath('/api/device_tts'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:this.currentDeviceId,text:this.pb.ttsText,scene:this.pb.ttsScene})});
-      this.msg='TTS 已提交下发';
-    },
-    async loadRuntimeToggles(options){
-      if(!this.requireDevice(options)) return;
-      try{ const a=await this.api(this.proxyPath('/api/asr_auto_reply')); this.toggles.asr_auto_reply=!!a.enabled; }catch(_e){}
-    },
-    async toggleAsrAuto(){ const v=this.toggles.asr_auto_reply?0:1; const d=await this.api(this.proxyPath('/api/asr_auto_reply',{enabled:v})); this.toggles.asr_auto_reply=!!d.enabled; },
-    async openPipeline(){
-      if(!this.requireDevice()) return;
-      this.ensurePipelineWs();
-      await this.loadPipelineRecent();
-    },
-    async loadPipelineRecent(){
-      if(!this.requireDevice()) return;
-      const d=await this.api(this.proxyPath('/api/pipeline_recent',{limit:100}));
-      this.pipeline.events=d.events||d.items||[];
-      this.pipeline.status='snapshot';
-    },
   },
   async mounted(){
-    await this.loadAll();
-    this.$nextTick(()=>{ this.ensurePipelineWs(); void this.robotInit3d(); });
+    await this.loadDevices();
+    this.$nextTick(()=>{ this.ensurePipelineWs(); this.loadConvoRecent(); this.resizeConvo(); });
     window.addEventListener('resize', this.onWinResize);
-    if(this.active==='convo') this.$nextTick(this.resizeConvo);
   },
   beforeUnmount(){
     window.removeEventListener('resize', this.onWinResize);
     this._pipelineClosed=true;
-    this.closeCamera();
     this.closePipeline();
-    if(this._reloadTimer) clearTimeout(this._reloadTimer);
-    this._robotDispose3d();
   },
 }).mount('#labApp');
 </script>

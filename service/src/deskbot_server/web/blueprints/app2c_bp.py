@@ -67,9 +67,7 @@ def lab(request: Request, user: RequireUser):
         request,
         "app2c/lab.html",
         active_nav="lab",
-        camera_view_ws_base=camera_view_ws_base(),
         device_pipeline_ws_base=device_pipeline_ws_base(),
-        **_default_robot_face_payload(),
     )
 
 

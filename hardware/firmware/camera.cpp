@@ -36,12 +36,11 @@
 #define PCLK_GPIO_NUM  48
 
 static constexpr bool kCameraCaptureEnabled = true;
-/* 假说复测：XGA 1024×768 恰为 QXGA 的 1/2（整数倍，2×2 binning 理论上是干净降采样，
- * 且帧体 ~½、发送快一半）。注：XGA+质量 5 此前实测过一次"字不清晰"，
- * 本版复测验证整数倍 binning 假说——仍糊则坐实 XGA 有损，回 QXGA。 */
+/* XGA 1024×768（= QXGA 的 1/2）+ 质量 10：质量 5→10 折中带宽与可读性
+ * （5 时帧体 ~70KB/send ~250ms；10 预期 ~50KB/~180ms，浅色字略降）。 */
 static constexpr size_t kMaxJpegBin = 2 * 1024 * 1024;
 static constexpr uint32_t kFbNullLogIntervalMs = 30000u;
-static constexpr uint8_t kJpegQuality = 5;
+static constexpr uint8_t kJpegQuality = 10;
 static constexpr framesize_t kFrameSize = FRAMESIZE_XGA;
 static constexpr const char* kFrameSizeName = "XGA";
 /* 传感器级边缘增强（OV3660 驱动实现，范围 -3..3，0=默认）。denoise 保持关（抹细节）。
@@ -59,7 +58,9 @@ static constexpr uint8_t kFbCount = 1;
 static bool s_camera_ok = false;
 static bool s_hw_inited = false;
 static bool s_task_ready = false;
-static std::atomic<uint32_t> s_interval_ms{1000u};
+/* 默认 2 FPS（500ms）：XGA 质量 10 帧体 ~50KB，2fps 仅 ~0.8Mbps，链路余量充足；
+ * 服务端 pb cam_fps 仍可动态覆盖（抓拍 boost）。 */
+static std::atomic<uint32_t> s_interval_ms{500u};
 static uint32_t s_last_capture_ms = 0;
 static uint32_t s_last_fb_null_log_ms = 0;
 static uint32_t s_seq = 0;

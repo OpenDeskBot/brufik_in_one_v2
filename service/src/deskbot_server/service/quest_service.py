@@ -51,6 +51,9 @@ PORT_FAILED = "failed"
 # 单次分数收入上限（对话贡献分/时间收入的封顶，防单次调用直接打穿激活线）
 MAX_SCORE_PER_CONTRIBUTE = 10
 
+# devices.quest_id 为空时默认绑定的剧本（须与 data/quest/ 下文件一致）
+DEFAULT_QUEST_ID = "xiaoy"
+
 PLAYBOOK_NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 TASK_ID_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,64}$")
 
@@ -518,15 +521,37 @@ class QuestService(metaclass=SingletonMeta):
             return None
         return qid
 
+    def _ensure_default_quest_binding(self, device_id: str) -> None:
+        """devices.quest_id 为空 → 惰性绑定默认剧本（``DEFAULT_QUEST_ID``）。
+
+        仅在默认剧本文件可读时落库（缺文件不写脏绑定，注入自然为空）；
+        设备行不存在 / 已有显式绑定（含绑定到其它剧本）→ 不动。
+        """
+        dev = device_mapper.get_by_device_id(str(device_id or "").strip())
+        if dev is None or str(dev.quest_id or "").strip():
+            return
+        try:
+            if self.get_playbook(DEFAULT_QUEST_ID) is None:
+                return
+        except QuestError:
+            return
+        try:
+            device_mapper.update_quest_id(str(device_id).strip(), DEFAULT_QUEST_ID)
+            logger.info("[quest] 设备未绑定剧本，默认绑定 %s device_id=%s", DEFAULT_QUEST_ID, device_id)
+        except Exception:
+            logger.debug("[quest] 默认绑定失败（忽略） device_id=%s", device_id, exc_info=True)
+
     def get_current_tasks(self, device_id: str) -> list[dict]:
         """设备当前进行中（running）的任务 —— 仅绑定剧本（devices.quest_id）。
 
         分支语义：
-        1. 设备行不存在 / quest_id 空 / 剧本文件缺失 → []
+        0. quest_id 为空 → 尝试默认绑定 ``DEFAULT_QUEST_ID``（xiaoy）
+        1. 设备行不存在 / 仍未绑定 / 剧本文件缺失 → []
         2. (device, quest) 无实例 → ensure_instances 幂等初始化
            （initial_status=running 的最初任务直接 running），再查
         3. 有实例 → 返回 running 列表（目标/策略/成功失败条件/分数，按达成率降序）
         """
+        self._ensure_default_quest_binding(device_id)
         playbook = self.get_bound_playbook(device_id)
         if not playbook:
             return []
@@ -591,15 +616,6 @@ class QuestService(metaclass=SingletonMeta):
                 "parameters": {
                     "task_id": "string（目标任务 id）",
                     "strategy": "string（新的处理策略）",
-                },
-                "available_task_ids": task_ids,
-            },
-            {
-                "name": "contribute_score",
-                "description": "对话对某任务有实质推进时加分（单次 0-10），当前分数达到激活分数后任务自动激活",
-                "parameters": {
-                    "task_id": "string（目标任务 id）",
-                    "points": "number（0-10）",
                 },
                 "available_task_ids": task_ids,
             },

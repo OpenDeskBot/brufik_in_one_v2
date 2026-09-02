@@ -56,7 +56,7 @@
       </div>
       <!-- 摄像头 -->
       <div class="media-tile" aria-label="摄像头画面">
-        <div class="media-hd"><span>CAMERA · LIVE</span><a href="{{ url_for('app2c.lab') }}?tab=camera">打开实验台</a></div>
+        <div class="media-hd"><span>CAMERA · LIVE</span></div>
         <div class="media-stage">
           <img v-if="camera.imageUrl" :src="camera.imageUrl" alt="摄像头实时画面">
           <div v-else class="home-camera-empty">
@@ -67,12 +67,6 @@
       </div>
     </div>
 
-    <div class="home-deck">
-      <div class="home-deck-actions">
-        <button type="button" class="btn ghost" @click="playHomeRobotMotion">打招呼</button>
-        <a class="btn ghost" href="{{ url_for('app2c.lab') }}?tab=servo">舵机实验台</a>
-      </div>
-    </div>
   </div>
 
   <!-- 快捷入口：一行 5 块 -->
@@ -108,7 +102,7 @@
           @click="runQuickServoPreset(p)" :disabled="!bound || quick.servo.busy">[[ p.label || p.id ]]</button>
       </div>
       <small v-if="!bound" class="home-quick-note">绑定设备后可用</small>
-      <small v-else-if="!quick.servo.presets.length" class="home-quick-note">暂无预置动作，可在实验台保存 servo.json</small>
+      <small v-else-if="!quick.servo.presets.length" class="home-quick-note">暂无预置动作</small>
     </div>
 
     <div class="home-quick-panel">
@@ -452,11 +446,6 @@ createApp({
         };
         frame();
       });
-    },
-    async playHomeRobotMotion(){
-      await this.animateHomeRobotServo({x:70,y:86,xm:0,ym:0,ms:360});
-      await this.animateHomeRobotServo({x:110,y:94,xm:0,ym:0,ms:420});
-      await this.animateHomeRobotServo({x:90,y:90,xm:0,ym:0,ms:520});
     },
     // ── 快捷下发（实验台简版：仅预置动作 / 预置表情 / 指定文字 TTS）──
     async quickSend(u, opts){

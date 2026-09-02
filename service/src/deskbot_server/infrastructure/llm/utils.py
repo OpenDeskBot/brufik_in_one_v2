@@ -166,8 +166,6 @@ def llm_tools_prompt_appendix() -> str:
         "face_id 见每轮 user 消息「图像识别」；仅一张脸时可省略；多人须指定 face_id 或先向用户澄清。\n"
         '  - register_voiceprint: {"tool":"register_voiceprint","name":"姓名"} 记住刚说话的人的声音（注册样本来自最近一次对话语音）。'
         "用户说「记住我的声音/我叫xx」时必须调用；若返回样本不足的提示，请引导用户先对机器人说一句完整的话再重新注册。\n"
-        '  - capture_camera: {"tool":"capture_camera"} 获取 ESP32 最近一帧相机 JPEG（返回 jpeg_base64 与尺寸），'
-        "用于结合画面判断；无帧则提示主人确认相机上行已开启。\n"
         '  - memory_add: {"tool":"memory_add","text":"要记住的内容"} 新增长期记忆；'
         'memory_delete: {"tool":"memory_delete","id":"记忆id"} 删除（id 见 system 中长期记忆方括号）。\n'
         "  - schedule_task: cron 定时任务增删改查（北京时间东八区）。**用户要求定时/提醒时必须调用，禁止仅口头答应。**\n"
@@ -192,6 +190,7 @@ def llm_quest_tasks_prompt_appendix(*, device_id: str | None = None) -> str:
     """「当前剧情任务」附录：绑定剧本（devices.quest_id）的 running 任务列表。
 
     未绑定 / 剧本缺失 / 无进行中任务 → 空串（不注入）。
+    只列优先级最高的 3 个进行中任务，不展示分数进度（避免模型以分数为目标）。
     """
     if not device_id:
         return ""
@@ -200,13 +199,12 @@ def llm_quest_tasks_prompt_appendix(*, device_id: str | None = None) -> str:
     tasks = QuestService().get_current_tasks(str(device_id))
     if not tasks:
         return ""
-    lines: list[str] = ["当前剧情任务（进行中，按完成进度排序）："]
-    for t in tasks:
+    lines: list[str] = ["当前剧情任务（进行中，最多列 3 个）："]
+    for t in tasks[:3]:
         lines.append(f"  - [{t['task_id']}] {t['title']}")
         lines.append(f"    目标：{t['goal']}")
         lines.append(f"    策略：{t['strategy']}")
         lines.append(f"    成功条件：{t['success_condition']}｜失败条件：{t['failure_condition']}")
-        lines.append(f"    进度：{t['current_score']}/{t['activation_score']}")
     return "\n".join(lines)
 
 
@@ -232,7 +230,7 @@ def llm_quest_tools_prompt_appendix(*, device_id: str | None = None) -> str:
 
 
 def llm_static_context_prompt_appendix(device_id: str | None = None) -> str:
-    """长期记忆 + 工具说明（传感器/人脸见每轮 user 消息）。"""
+    """长期记忆 + 工具说明（图像/声音识别见每轮 user 消息）。"""
     parts = [llm_memory_prompt_appendix(device_id), llm_tools_prompt_appendix()]
     return "\n\n".join(p for p in parts if p)
 
@@ -248,34 +246,6 @@ def _nose_xy(face: dict[str, Any]) -> tuple[float, float, int, int] | None:
         except (TypeError, ValueError, KeyError):
             continue
     return None
-
-
-def parse_servo_angles_from_pb_ack(device_context: str | dict | None) -> tuple[str, str]:
-    """从 ``pb_ack`` JSON 提取水平/垂直舵机角度；无则返回「未知」。"""
-    ack: Any = device_context
-    if isinstance(device_context, str) and device_context.strip():
-        try:
-            ack = json.loads(device_context)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            ack = None
-    if not isinstance(ack, dict):
-        return "未知", "未知"
-    servo = ack.get("servo")
-    if not isinstance(servo, dict):
-        return "未知", "未知"
-    xs = "未知"
-    ys = "未知"
-    if "x" in servo:
-        try:
-            xs = str(int(servo["x"]))
-        except (TypeError, ValueError):
-            pass
-    if "y" in servo:
-        try:
-            ys = str(int(servo["y"]))
-        except (TypeError, ValueError):
-            pass
-    return xs, ys
 
 
 def _format_face_line(face: dict[str, Any]) -> str:
@@ -319,11 +289,6 @@ def _sorted_faces_for_message(device_id: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _follow_mode_label(mode: str) -> str:
-    labels = {"": "关闭", "follow": "跟随人脸", "follow_frontal": "跟随正脸", "gaze": "注视感知"}
-    return labels.get(mode, mode or "关闭")
-
-
 def _format_voice_line(name: str, score: float | None) -> str:
     parts: list[str] = [f"name={name}"]
     if score is not None:
@@ -363,16 +328,12 @@ def format_sight_voice_text(device_id: str | None) -> str | None:
 
 
 def build_llm_user_message(user_text: str, *, device_id: str | None = None, device_context: str | None = None) -> str:
-    """按约定格式组装 LLM ``user`` 消息正文（传感器 + 图像识别 + 声音识别 + 用户正文）。"""
-    from deskbot_server.dao.device_mapper import get_camera_servo_auto_mode
+    """按约定格式组装 LLM ``user`` 消息正文（图像识别 + 声音识别 + 用户正文）。
 
-    sx, sy = parse_servo_angles_from_pb_ack(device_context)
-    lines: list[str] = [
-        "[机器人传感器信息:",
-        f"水平舵机角度: {sx}, 垂直舵机角度: {sy}",
-        f"摄像头跟随模式: {_follow_mode_label(get_camera_servo_auto_mode(device_id or ''))}",
-        "图像识别:",
-    ]
+    ``device_context``（pb_ack 舵机角度）已不再注入：对话上下文只保留
+    视觉/声纹两个感知段，不再给机器人传感器读数（为保持调用签名兼容仍接收）。
+    """
+    lines: list[str] = ["[图像识别:"]
     dev = str(device_id or "").strip()
     face_rows: list[dict[str, Any]] = []
     if dev:
@@ -397,7 +358,7 @@ def build_llm_user_message(user_text: str, *, device_id: str | None = None, devi
     elif dev and not face_rows:
         lines.append("")
         lines.append(
-            "（传感器未检测到人脸；用户已说话时须正常回答用户正文，"
+            "（图像识别未检测到人脸；用户已说话时须正常回答用户正文，"
             "勿编造「正在看你」或仅回复「看不到人」而忽略用户问题。）"
         )
     lines.append("")
@@ -415,8 +376,8 @@ def beijing_time_str() -> str:
 
 
 def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None) -> str:
-    """组装最终 system prompt：基础人设 + 时间 + 动作/表情清单 + 记忆/工具 + 剧情任务。"""
-    base = f"{base_prompt}\n当前时间是: {beijing_time_str()}（北京时间，东八区）"
+    """组装最终 system prompt：基础人设 + 动作/表情清单 + 记忆/工具 + 剧情任务 + 当前时间（文末）。"""
+    base = str(base_prompt or "")
     px = llm_pb_scenes_prompt_appendix(device_id=device_id)
     if px:
         base += "\n" + px
@@ -429,6 +390,8 @@ def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None) -
     qt = llm_quest_tools_prompt_appendix(device_id=device_id)
     if qt:
         base += "\n\n" + qt
+    # 当前时间放全文末尾（其它规则段在前，时间戳始终最新可见）
+    base += f"\n\n当前时间是: {beijing_time_str()}（北京时间，东八区）"
     return base
 
 
@@ -760,7 +723,6 @@ __all__ = [
     "llm_static_context_prompt_appendix",
     "llm_tools_prompt_appendix",
     "parse_llm_reply",
-    "parse_servo_angles_from_pb_ack",
     "parse_servo_plan_item",
     "coerce_pb_v2_downlink_payload",
     "normalize_pb_servo_dict",

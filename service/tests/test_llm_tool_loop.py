@@ -67,7 +67,7 @@ def test_loop_pins_user_message_override_across_rounds(temp_db):
 
     chat = AsyncMock()
     chat.llm = AsyncMock(side_effect=[round1, round2])
-    override = "[机器人传感器信息:\n…图像识别: faceid=2…\n]\n\n用户正文: 记住我喜欢猫"
+    override = "[图像识别:\n   faceid=2…\n]\n\n用户正文: 记住我喜欢猫"
 
     async def _run():
         return await complete_llm_with_tool_loop(
