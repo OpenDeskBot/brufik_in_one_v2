@@ -414,6 +414,10 @@ def test_api_robot_settings_endpoints(temp_db):
     assert payload["capabilities"]["tts"]["current"] in ("moss-tts-nano", "doubao")
     assert payload["capabilities"]["llm"]["current"] in ("ark", "minicpm", "qwen", "device", "custom")
 
+    # 行为开关（未选设备）：GET 回落默认值，写操作 → 400
+    assert payload["behavior"] == {"auto_reply": True, "follow_mode": ""}
+    assert client.post("/api/robot-settings/behavior", json={"auto_reply": False}).status_code == 400
+
     # 非法 provider → 400
     bad = client.post("/api/robot-settings/asr", json={"provider": "bogus"})
     assert bad.status_code == 400
@@ -438,7 +442,7 @@ def test_robot_settings_page_renders(temp_db):
     resp = client.get("/robot-settings")
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "模型设置" in html
+    assert "机器人配置" in html
     assert "语音识别 ASR" in html
     assert "大脑 LLM" in html
     assert "语音合成 TTS" in html
@@ -451,6 +455,56 @@ def test_robot_settings_page_renders(temp_db):
     assert "/api/robot-settings/tts/config" in html
     assert "openAsrCfg" in html    # ASR 候选行配置按钮 + 对话框
     assert "/api/robot-settings/asr/config-info" in html
+    # 顶部控制面板：自动回复 / 人脸跟随
+    assert "控制面板" in html
+    assert "/api/robot-settings/behavior" in html
+    assert "自动回复" in html
+    assert "跟随人脸" in html
+    assert "跟随正脸" in html
+    assert "注视人脸" in html
+
+
+def test_robot_settings_behavior_writes_device(temp_db):
+    """控制面板 behavior API：写 devices.auto_reply / servo_mode，关自动回复连带清跟随。"""
+    from tests.device_bind_helpers import bind_device_online
+    from deskbot_server.dao.device_mapper import get_auto_reply, get_camera_servo_auto_mode
+    from deskbot_server.service.user_service import UserService
+    from deskbot_server.web.app import create_app
+
+    user = UserService().register("behavior-device@example.com", "password1234")
+    bind_device_online(user.id, "deskbot_behavior")
+    app = create_app()
+    client = app.test_client()
+
+    client.post("/login", data={"email": "behavior-device@example.com", "password": "password1234"})
+    select = client.post("/app/api/devices/select", json={"device_id": "deskbot_behavior"})
+    assert select.status_code == 200
+
+    # 已选设备：非法 follow_mode → 400（参数校验分支）
+    bad = client.post("/api/robot-settings/behavior", json={"auto_reply": True, "follow_mode": "bogus"})
+    assert bad.status_code == 400
+    assert bad.get_json()["ok"] is False
+
+    # 只开跟随三档之一 → 落库 servo_mode
+    ok = client.post("/api/robot-settings/behavior", json={"follow_mode": "gaze"})
+    assert ok.status_code == 200
+    assert ok.get_json()["behavior"] == {"auto_reply": True, "follow_mode": "gaze"}
+    assert get_camera_servo_auto_mode("deskbot_behavior") == "gaze"
+
+    # 关自动回复 → 连带清空跟随（与设备调试页一致）
+    ok = client.post("/api/robot-settings/behavior", json={"auto_reply": False})
+    assert ok.status_code == 200
+    assert ok.get_json()["behavior"] == {"auto_reply": False, "follow_mode": ""}
+    assert get_auto_reply("deskbot_behavior") is False
+    assert get_camera_servo_auto_mode("deskbot_behavior") == ""
+
+    # 再开自动回复 → 开跟随；点亮的模式再点一次（空串）→ 关闭；GET 回读一致
+    ok = client.post("/api/robot-settings/behavior", json={"auto_reply": True, "follow_mode": "follow"})
+    assert ok.get_json()["behavior"] == {"auto_reply": True, "follow_mode": "follow"}
+    ok = client.post("/api/robot-settings/behavior", json={"follow_mode": ""})
+    assert ok.get_json()["behavior"] == {"auto_reply": True, "follow_mode": ""}
+    snap = client.get("/api/robot-settings").get_json()
+    assert snap["behavior"] == {"auto_reply": True, "follow_mode": ""}
 
 
 # ------------------------------------------------------------------ TTS 测试（test-info / test）

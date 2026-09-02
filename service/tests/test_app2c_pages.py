@@ -284,7 +284,7 @@ def test_2c_home_bottom_is_five_quick_entries_without_face_editor(temp_db):
 
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    # 首页底部一行 5 块快捷入口：烧录固件 / 记忆 / 认识的人 / 提醒 / 模型设置
+    # 首页底部一行 5 块快捷入口：烧录固件 / 记忆 / 认识的人 / 提醒 / 机器人配置
     assert "捏表情" not in html
     assert 'class="home-quicknav"' in html
     assert 'href="/flash"' in html
@@ -293,7 +293,7 @@ def test_2c_home_bottom_is_five_quick_entries_without_face_editor(temp_db):
     assert 'href="/my/reminders"' in html
     assert 'href="/robot-settings"' in html
     assert "烧录固件" in html
-    assert "模型设置" in html
+    assert "机器人配置" in html
     # 摄像头仅在左侧 LIVE 面板内联展示，不再深链实验台标签页
     assert 'class="browse-shortcut camera-browse"' not in html
     assert "摄像头浏览" not in html

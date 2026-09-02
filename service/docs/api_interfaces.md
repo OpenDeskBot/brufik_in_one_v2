@@ -122,7 +122,7 @@
 
 这些接口均会校验当前用户是否拥有目标 `device_id`。未选设备返回 `400`，设备不属于当前用户返回 `403`。
 
-### 机器人设置 API（模型设置页；TTS 为设备级配置）
+### 机器人设置 API（机器人配置页；TTS 为设备级配置）
 
 TTS provider / 音色 / 凭证已移至设备级（devices 表 `tts_provider` / `tts_param`），
 `config.yaml` 不再承载 TTS 配置，`/app/api/tts/*` 全局端点（含 preview 配额）已移除。
