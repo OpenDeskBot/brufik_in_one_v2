@@ -99,12 +99,12 @@ sudo apt install -y python3.11 python3.11-venv python3.11-dev ffmpeg curl git
 cd service
 cp .env.example .env
 
-# 3. 一键启动（自动建 venv、下载 ASR 模型，拉起主服务 + Web 控制台）
+# 3. 一键启动（自动建 venv、下载 VAD 模型，拉起主服务 + Web 控制台）
 chmod +x start.sh
 ./start.sh
 ```
 
-首次启动约需数分钟（本地 ASR 模型约 900MB）。启动后：
+首次启动只自动下载 Silero VAD 模型（约 2.3MB，语音切句用）。ASR / 本地 LLM / TTS / 声纹等模型均已迁至**独立外部服务**，由各自 `install.sh` 自备独立 venv 与模型副本：启动后到控制台「外部服务」（高级 → 外部服务）安装并启动所需服务（funasr 9102 / moss-tts-nano 9101 等），详见 [service/docs/external_services.md](service/docs/external_services.md)。启动后：
 
 | 服务 | 地址 |
 |------|------|

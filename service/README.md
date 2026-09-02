@@ -22,12 +22,14 @@ cd service   # monorepo 内；独立 clone 时进入对应目录
 cp .env.example .env
 # 编辑 .env，填写 ARK_API_KEY 与 ARK_MODEL（火山方舟）
 
-# 3. 一键启动（自动建 venv、下载模型、起主服务 + Web 控制台）
+# 3. 一键启动（自动建 venv、下载 VAD 模型、起主服务 + Web 控制台）
 chmod +x start.sh
 ./start.sh
 ```
 
-首次启动约需数分钟（ASR 模型约 900MB）。**第二次及以后**若 `.venv` 已完整，直接 `./start.sh` 会自动跳过 pip 安装；也可显式：
+主服务本身只下载 Silero VAD 模型（约 2.3MB，语音切句用）；**ASR / TTS / 声纹 / 本地 LLM 模型均由各独立外部服务安装时自备**（独立 venv + 服务目录内模型，不再进主服务）——启动后在控制台菜单「外部服务」（高级 → 外部服务）安装并启动所需服务即可，详见 [docs/external_services.md](docs/external_services.md)。
+
+**第二次及以后**若 `.venv` 已完整，直接 `./start.sh` 会自动跳过 pip 安装；也可显式：
 
 ```bash
 SKIP_SETUP=1 ./start.sh

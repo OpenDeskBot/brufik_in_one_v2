@@ -16,8 +16,7 @@ cp .env.example .env   # 必填 ARK_API_KEY / ARK_MODEL（火山方舟）
 
 | 端口 | 服务 |
 |------|------|
-| **9000** | WebSocket + HTTP API（设备主链路） |
-| **9000** | FastAPI Web 控制台（默认合并进主服务；`DESKBOT_START_WEB=1` 时另起独立进程） |
+| **9000** | WebSocket + HTTP API + FastAPI Web 控制台（同一主服务进程，随 start.sh 一并启动） |
 
 ---
 

@@ -181,7 +181,8 @@ auto_start 服务；FastAPI lifespan 关闭时 `shutdown()` 优雅回收全部�
 `externals/insightface-engine/` 以独立进程提供 MediaPipe 检测 + InsightFace 512 维
 embedding：**完全自包含**——独立 venv（`.venv`，`install.sh` 幂等）、服务目录内模型副本
 （`models/mediapipe/face_landmarker.task` 3.6M + `models/buffalo_s/w600k_mbf.onnx` 13M；
-install 双路径：主服务 `models/` 或 `~/.insightface` 缓存有源则 copy，无源则下载）、
+install 双路径：主服务 `models/` 仅历史装机残留可作 copy 源（start.sh 已不再下载人脸模型），
+否则 `~/.insightface` 缓存有源则 copy，无源则下载）、
 `deskbot_server/` 运行子集副本（随仓库提交，各文件头带同步标记；分叉点：`utils/paths.py`
 根目录、`vision/face_embedding.py` 本地模型优先），**运行期零依赖主服务**；**配置完全自治**——
 只读同目录 `config.yaml`（含 `workers` 字段，默认 min(4, CPU 核数)，uvicorn 多 worker

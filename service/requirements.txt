@@ -7,10 +7,9 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.9
 SQLAlchemy==2.0.41
-mediapipe==0.10.33
 Pillow>=12.2.0
-opencv-contrib-python>=4.10,<4.11
-insightface>=0.7.3
+# onnxruntime 为主服务进程内 Silero VAD 使用（人脸/ASR/TTS/声纹/LLM 模型的
+# mediapipe/insightface/opencv 等依赖已随进程内推理迁出，归各外部服务 install.sh）
 onnxruntime>=1.17.0
 croniter==2.0.7
 pypinyin>=0.53.0
