@@ -3,44 +3,72 @@
 {% block extra_head %}<script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>{% endblock %}
 {% block content %}
 <div id="app">
-  <div class="pagehd"><div><div class="eyebrow">FACES · [[ profiles.length ]] KNOWN</div><h1>认识的人</h1><p>机器人通过摄像头认识的人，可改名或删除。</p></div></div>
+  <div class="pagehd"><div><div class="eyebrow">FACES [[ profiles.length ]] · VOICES [[ voiceProfiles.length ]]</div><h1>认识的人</h1><p>机器人通过摄像头与人声认识的人，可改名或删除。</p></div></div>
+
+  <div style="font-weight:600;color:var(--ink);margin:14px 0 6px;font-size:13px;letter-spacing:.05em">👤 记住的样子 · FACES</div>
   <div class="people" v-if="!noDevice">
-    <div class="person" v-for="(p,i) in profiles" :key="p.person_id">
+    <div class="person" v-for="(p,i) in profiles" :key="'f'+p.person_id">
       <div class="pa" :class="{owner: i===0}">[[ (p.name||'?').slice(0,1) ]]</div>
-      <input v-if="editing===p.person_id" class="tinput nameinput" v-model="editName" @keyup.enter="saveName(p)">
+      <input v-if="editing==='f'+p.person_id" class="tinput nameinput" v-model="editName" @keyup.enter="saveName('face', p)">
       <b v-else>[[ p.name || ('#'+p.person_id) ]]</b>
       <div class="btngroup compact">
-        <template v-if="editing===p.person_id">
-          <button class="btn primary" @click="saveName(p)">保存</button>
+        <template v-if="editing==='f'+p.person_id">
+          <button class="btn primary" @click="saveName('face', p)">保存</button>
           <button class="btn ghost" @click="cancelEdit">取消</button>
         </template>
         <template v-else>
-          <button class="btn ghost" @click="startEdit(p)">改名</button>
-          <button class="btn ghost" @click="del(p)">删除</button>
+          <button class="btn ghost" @click="startEdit('f', p)">改名</button>
+          <button class="btn ghost" @click="del('face', p)">删除</button>
         </template>
       </div>
     </div>
   </div>
-  <p class="lead" v-if="!noDevice && !profiles.length">还没有认识的人。</p>
+  <p class="lead" v-if="!noDevice && !profiles.length">还没有通过摄像头记住的人。</p>
+
+  <div style="font-weight:600;color:var(--ink);margin:22px 0 6px;font-size:13px;letter-spacing:.05em">🎙 记住的声音 · VOICES</div>
+  <div class="people" v-if="!noDevice">
+    <div class="person" v-for="(p,i) in voiceProfiles" :key="'v'+p.person_id">
+      <div class="pa">🎙</div>
+      <input v-if="editing==='v'+p.person_id" class="tinput nameinput" v-model="editName" @keyup.enter="saveName('voice', p)">
+      <b v-else>[[ p.name || ('#'+p.person_id) ]]</b>
+      <div class="btngroup compact">
+        <template v-if="editing==='v'+p.person_id">
+          <button class="btn primary" @click="saveName('voice', p)">保存</button>
+          <button class="btn ghost" @click="cancelEdit">取消</button>
+        </template>
+        <template v-else>
+          <button class="btn ghost" @click="startEdit('v', p)">改名</button>
+          <button class="btn ghost" @click="del('voice', p)">删除</button>
+        </template>
+      </div>
+    </div>
+  </div>
+  <p class="lead" v-if="!noDevice && !voiceProfiles.length">还没有记住的声音：对机器人说一句完整的话后说「记住我的声音，我叫xx」，
+  或在「机器人设置」中确认声纹识别已开启。</p>
   <p class="lead" v-if="msg">[[ msg ]]</p>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
 const { createApp } = Vue;
-createApp({ delimiters:['[[',']]'], data(){return{profiles:[], editing:null, editName:'', msg:'', noDevice:false};},
+createApp({ delimiters:['[[',']]'], data(){return{profiles:[], voiceProfiles:[], editing:null, editName:'', msg:'', noDevice:false};},
   methods:{ async load(){
       const d=await (await fetch('/app/api/devices')).json();
       this.noDevice = !d.current_device_id;
-      if(this.noDevice){ this.profiles=[]; return; }
-      const r=await (await fetch('/app/api/face-profiles')).json();
-      if(r.ok) this.profiles=r.profiles||[]; else this.msg=r.error||'加载失败'; },
-    startEdit(p){ this.editing=p.person_id; this.editName=p.name||''; },
+      if(this.noDevice){ this.profiles=[]; this.voiceProfiles=[]; return; }
+      const [fr,vr]=await Promise.all([fetch('/app/api/face-profiles'),fetch('/app/api/voice-profiles')]);
+      const f=await fr.json(), v=await vr.json();
+      if(f.ok) this.profiles=f.profiles||[]; else this.msg=f.error||'加载失败';
+      if(v.ok) this.voiceProfiles=v.profiles||[]; else this.msg=v.error||'加载失败'; },
+    startEdit(kind, p){ this.editing=kind+p.person_id; this.editName=p.name||''; },
     cancelEdit(){ this.editing=null; this.editName=''; },
-    async saveName(p){ const name=this.editName.trim(); if(!name){ this.msg='名字不能为空'; return; }
-      const r=await (await fetch('/app/api/face-profiles/'+p.person_id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})})).json();
+    async saveName(kind, p){ const name=this.editName.trim(); if(!name){ this.msg='名字不能为空'; return; }
+      const url = kind==='face' ? '/app/api/face-profiles/' : '/app/api/voice-profiles/';
+      const r=await (await fetch(url+p.person_id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})})).json();
       if(r.ok){ this.cancelEdit(); this.msg='已保存名字'; this.load(); } else this.msg=r.error||'保存失败'; },
-    async del(p){ if(!confirm('确定删除这个人脸档案？')) return; const r=await (await fetch('/app/api/face-profiles/'+p.person_id,{method:'DELETE'})).json(); if(r.ok){ this.msg='已删除'; this.load(); } else this.msg=r.error||'删除失败'; } },
+    async del(kind, p){ if(!confirm(kind==='face' ? '确定删除这个人脸档案？' : '确定删除这个声纹档案？')) return;
+      const url = kind==='face' ? '/app/api/face-profiles/' : '/app/api/voice-profiles/';
+      const r=await (await fetch(url+p.person_id,{method:'DELETE'})).json(); if(r.ok){ this.msg='已删除'; this.load(); } else this.msg=r.error||'删除失败'; } },
   mounted(){ this.load(); } }).mount('#app');
 </script>
 {% endblock %}

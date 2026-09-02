@@ -63,6 +63,7 @@ from deskbot_server.infrastructure.tts.resolve import resolve_tts_provider
 from deskbot_server.infrastructure.tts.speakers import list_doubao_tts_consumer_speaker_presets
 from deskbot_server.model.settings import AppSettings
 from deskbot_server.service.camera_face_service import CameraFaceService, build_camera_face_runtime
+from deskbot_server.service.voiceprint_service import VoiceprintService, build_voiceprint_runtime
 from deskbot_server.utils.audio import pcm_to_wav_bytes
 
 logger = logging.getLogger("deskbot-server")
@@ -158,8 +159,23 @@ FACE_CANDIDATES = [
         requires_service="insightface-engine",
     ),
 ]
+VOICEPRINT_CANDIDATES = [
+    CapabilityCandidate("none", "不识别", "关闭声纹识别：VAD 出句后不调用声纹引擎（注册工具将提示先开启）"),
+    CapabilityCandidate(
+        "vpr",
+        "独立服务 wespeaker",
+        "WeSpeaker ResNet34 本地声纹引擎（HTTP 9104，256 维 speaker embedding），需先安装并启动该服务",
+        requires_service="wespeaker-resnet34",
+    ),
+]
 
-_CANDIDATES = {"asr": ASR_CANDIDATES, "llm": LLM_CANDIDATES, "tts": TTS_CANDIDATES, "face": FACE_CANDIDATES}
+_CANDIDATES = {
+    "asr": ASR_CANDIDATES,
+    "llm": LLM_CANDIDATES,
+    "tts": TTS_CANDIDATES,
+    "face": FACE_CANDIDATES,
+    "voiceprint": VOICEPRINT_CANDIDATES,
+}
 
 
 def _candidate(cap: str, provider: str) -> CapabilityCandidate:
@@ -175,6 +191,7 @@ class RobotCapabilityService:
     def __init__(self, config_path: str | Path | None = None) -> None:
         self._config_path = config_path
         self._face_lock = threading.Lock()  # apply_face 为同步方法（config 落盘 + 重建），用线程锁
+        self._voiceprint_lock = threading.Lock()  # apply_voiceprint 同上
 
     # ---------- 状态读取 ----------
 
@@ -190,6 +207,7 @@ class RobotCapabilityService:
                 "llm": self._llm_status(cfg, device_id),
                 "tts": self._tts_status(device_id),
                 "face": self._face_status(cfg),
+                "voiceprint": self._voiceprint_status(cfg),
             },
             "services": self._service_snapshots(),
             "env_overrides": {key: bool(os.environ.get(key)) for key in ENV_OVERRIDE_KEYS},
@@ -228,6 +246,18 @@ class RobotCapabilityService:
         if current == "insightface" and not self._service_running("insightface-engine"):
             warning = "insightface-engine 未在运行，人脸识别将失败；请先在「独立服务管理」中启动"
         return {"current": current, "candidates": [c.to_dict() for c in FACE_CANDIDATES], "warning": warning}
+
+    def _voiceprint_status(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        """声纹识别为 config.yaml 真源（voiceprint.mode: none | vpr）。"""
+        current = str((cfg.get("voiceprint") or {}).get("mode") or "none")
+        warning = None
+        if current == "vpr" and not self._service_running("wespeaker-resnet34"):
+            warning = "wespeaker-resnet34 未在运行，声纹识别将失败；请先在「独立服务管理」中启动"
+        return {
+            "current": current,
+            "candidates": [c.to_dict() for c in VOICEPRINT_CANDIDATES],
+            "warning": warning,
+        }
 
     def _llm_status(self, cfg: dict[str, Any], device_id: str | None) -> dict[str, Any]:
         override = None
@@ -624,6 +654,35 @@ class RobotCapabilityService:
                     logger.exception("[robot-settings] 回滚 config 失败")
                 raise CapabilityError(f"切换失败，已回滚（仍为 {old}）：{exc}") from exc
             logger.info("[robot-settings] 人脸识别切换生效 mode=%s", mode)
+            return self.get_status(None)
+
+    # ---------- 声纹识别 ----------
+
+    def apply_voiceprint(self, mode: str) -> dict[str, Any]:
+        """切换声纹识别能力：none=不识别；vpr=外部独立服务（config.yaml 真源）。
+
+        写 config → 重建 VoiceprintRuntime 并 re-configure VoiceprintService 单例
+        （mode=none 时清空全部设备快照与样本）；重建失败回滚 config。
+        """
+        _candidate("voiceprint", mode)
+        with self._voiceprint_lock:
+            cfg = self._load_cfg()
+            old = str((cfg.get("voiceprint") or {}).get("mode") or "none")
+            if mode == old:
+                return self.get_status(None)  # 幂等
+            new_cfg = copy.deepcopy(cfg)
+            new_cfg.setdefault("voiceprint", {})["mode"] = mode
+            save_config(new_cfg, self._config_path)
+            try:
+                runtime = build_voiceprint_runtime(new_cfg)
+                VoiceprintService().configure(runtime)
+            except Exception as exc:
+                try:
+                    save_config(cfg, self._config_path)
+                except Exception:
+                    logger.exception("[robot-settings] 回滚 config 失败")
+                raise CapabilityError(f"切换失败，已回滚（仍为 {old}）：{exc}") from exc
+            logger.info("[robot-settings] 声纹识别切换生效 mode=%s", mode)
             return self.get_status(None)
 
     # ---------- TTS 配置（设备级 tts_param）与测试 ----------

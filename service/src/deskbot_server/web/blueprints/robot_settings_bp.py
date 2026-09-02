@@ -202,6 +202,19 @@ def api_robot_settings_apply_face(request: Request, user: RequireUser):
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@router.post("/api/robot-settings/voiceprint")
+def api_robot_settings_apply_voiceprint(request: Request, user: RequireUser):
+    """声纹识别能力切换：none=不识别；vpr=外部 wespeaker 独立服务（config.yaml 真源，保存即生效）。"""
+    body = get_json(request) or {}
+    try:
+        status = _svc().apply_voiceprint(str(body.get("mode") or ""))
+        return jsonify({"ok": True, **status})
+    except CapabilityError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 @router.get("/api/robot-settings/tts/config-info")
 def api_robot_settings_tts_config_info(request: Request, user: RequireUser):
     """TTS 配置对话框元信息：音色列表 + 当前设备参数（api_key 掩码，设备 tts_param 优先回落 .env）。"""

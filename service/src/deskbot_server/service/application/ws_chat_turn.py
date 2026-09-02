@@ -75,6 +75,10 @@ async def publish_ws_chat_turn(
         error=flow.get("error"),
         voice_auto_reply_off=bool(flow.get("voice_auto_reply_off")),
         scenes=list(flow.get("scenes") or []),
+        llm_calls=list(flow.get("llm_calls") or []),
+        system_prompt=flow.get("system_prompt"),
+        face_sight=flow.get("face_sight"),
+        voice_sight=flow.get("voice_sight"),
     )
     await publish_chat_turn(
         events,

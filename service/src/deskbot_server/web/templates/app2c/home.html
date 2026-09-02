@@ -29,7 +29,7 @@
     <a v-if="!bound" class="btn ghost" href="{{ url_for('app2c.devices') }}">＋ 绑定设备</a>
   </div>
 
-  <!-- 设备主控台：表情 / 3D / 摄像头 三块等大 + 读数 + 操作 -->
+  <!-- 设备主控台：表情 / 3D / 摄像头 三块等大 + 操作 -->
   <div class="stage home-console">
     <div class="brackets"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
     <div class="stage-hd">
@@ -68,11 +68,6 @@
     </div>
 
     <div class="home-deck">
-      <div class="readouts">
-        <a class="readout" href="{{ url_for('app2c.devices') }}"><span class="k">STATUS</span><span class="v"><span class="led" :style="bound ? null : 'background:#9a9a90'"></span>[[ bound ? '在线' : '未连接' ]]</span></a>
-        <a class="readout" href="{{ url_for('app2c.expr') }}"><span class="k">MOOD</span><span class="v">[[ faceLabel ]]</span></a>
-        <a class="readout" href="{{ url_for('app2c.memories') }}"><span class="k">MEMORY</span><span class="v">[[ memoryCount ]] 件</span></a>
-      </div>
       <div class="home-deck-actions">
         <button type="button" class="btn ghost" @click="playHomeRobotMotion">打招呼</button>
         <a class="btn ghost" href="{{ url_for('app2c.lab') }}?tab=servo">舵机实验台</a>
@@ -160,7 +155,6 @@ createApp({
   data(){ return {
     greeting:'你好', owner:{{ (nav_display_name or '主人')|tojson }},
     bound:false, deviceName:'未绑定', deviceId:'',
-    emotionCount:0, memoryCount:0, deviceCount:0,
     scenes:[], emotionMap:{}, faceLabel:'待机',
     quick:{servo:{presets:[],busy:false},pb:{scenes:[],selected:'',busy:false},tts:{text:'你好，我是小歪。',busy:false},msg:''},
     homeRobotError:'', homeRobotServo:{x:90,y:90},
@@ -546,7 +540,6 @@ createApp({
       // 设备
       const dv = await this.j('/app/api/devices');
       const devices = dv.devices || [];
-      this.deviceCount = devices.length;
       this.deviceId = dv.current_device_id || '';
       this.bound = !!this.deviceId;
       const cur = devices.find(x => x.device_id === this.deviceId);
@@ -554,17 +547,14 @@ createApp({
       this.scenes = [];
       this.emotionMap = {};
       this.faceLabel = '待机';
-      // 以下统计依赖已选当前设备
+      // 以下表情数据依赖已选当前设备
       if(this.bound){
-        const mem = await this.j('/app/api/memories'); const memList = mem.memories || [];
-        this.memoryCount = memList.length;
         await this.loadQuickControls();
         const q = '?device_id=' + encodeURIComponent(this.deviceId);
         const scenes = await this.j('/api/face_expr_scenes' + q);
         this.scenes = scenes.config || [];
         const em = await this.j('/api/emotion_expr_map' + q);
         this.emotionMap = em.map || {};
-        this.emotionCount = Object.keys(this.emotionMap).length;
         const preview = window.DeskbotFacePreview;
         const face = preview ? preview.pickScene(this.scenes, this.emotionMap, 'idle') : null;
         this.faceLabel = face ? (face.title || face.name || '待机') : '待机';

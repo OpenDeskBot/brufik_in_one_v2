@@ -10,8 +10,10 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from deskbot_server.dao import device_mapper
-from deskbot_server.infrastructure.llm.utils import parse_llm_reply
+from deskbot_server.infrastructure.llm.utils import build_llm_user_message, parse_llm_reply
 from deskbot_server.infrastructure.tts.text_split import split_tts_by_punctuation
+from deskbot_server.service.application.capability_labels import asr_model_label, llm_model_label, tts_model_label
+from deskbot_server.service.application.convo_audio_store import ConvoAudioStore
 from deskbot_server.model.chat import ChatTurnResult, LlmTurnResult
 from deskbot_server.pb.scenes import _pb_scene_entry_by_name, _prepare_pb_scene_chain_frames
 from deskbot_server.pb.servo_pcm import parse_pb_cam_fps
@@ -215,7 +217,63 @@ def _voice_was_played(result: ChatTurnResult) -> bool:
     return result.t_tts_synth_end > result.t_llm_end + 0.05
 
 
+def _extract_face_sight_lines(user_message: str) -> str | None:
+    """从装配好的 user 消息中抽取「图像识别」人脸行（无 faceid 行 → None）。
+
+    prompt 与实验台气泡共用同一次装配，保证两边识别内容同源。
+    """
+    lines = (user_message or "").splitlines()
+    out = [line for line in lines if line.strip().startswith("faceid=")]
+    return "\n".join(out) if out else None
+
+
+def _extract_voice_sight_lines(user_message: str) -> str | None:
+    """从装配好的 user 消息中抽取「声音识别」段（无该段 → None）。
+
+    与 face_sight 同理：实验台气泡与 prompt 共用同一次装配。
+    """
+    lines = (user_message or "").splitlines()
+    out: list[str] = []
+    seen = False
+    for line in lines:
+        s = line.strip()
+        if not seen:
+            if s.startswith("声音识别:"):
+                seen = True
+                out.append(s)
+            continue
+        if s.startswith("name=") or s.startswith("(未识别出已知说话人)"):
+            out.append(s)
+            continue
+        break  # 声音识别段结束（下一条是 ] 或空行）
+    return "\n".join(out) if out else None
+
+
 MAX_LLM_TOOL_ROUNDS = 8
+
+# 会话上下文策略（run_chat_turn 组装 history_messages）：
+# - 相邻轮次间隔超过该秒数 → 停止向上追溯（丢弃更旧段）
+_HISTORY_MAX_GAP_SECONDS = 5 * 60
+# - 历史消息累计 token 达到当前 LLM 上下文一半 → 停止追溯。
+#   窗口取设备 llm_param.context_window；未配置时回退该默认
+#   （本地引擎 llm-qwen/llm-minicpm 的 n_ctx 被 n_ctx_train 钉死在 8192 → 一半 4096）
+_DEFAULT_LLM_CTX_TOKENS = 8192
+
+
+def _history_token_budget(device_id: str | None) -> int:
+    """当前 LLM 上下文窗口一半作为历史 token 预算（保近弃远）。"""
+    cw: int | None = None
+    did = str(device_id or "").strip()
+    if did:
+        try:
+            from deskbot_server.infrastructure.llm.runtime import resolve_llm_config
+
+            cw = resolve_llm_config(did).context_window
+        except Exception:
+            cw = None
+    if not cw:
+        cw = _DEFAULT_LLM_CTX_TOKENS
+    return max(1024, int(cw) // 2)
 
 _CAPTURE_TOOLS = frozenset({"capture_camera", "get_camera_frame", "camera_capture"})
 _TOOL_RESULT_STRIP_KEYS = frozenset({"jpeg_base64", "image_display"})
@@ -242,6 +300,33 @@ def _tools_need_camera(tools: list[dict[str, Any]]) -> bool:
         if tool in _CAPTURE_TOOLS:
             return True
     return False
+
+
+def build_history_messages(
+    rows: list[dict[str, Any]], *, token_budget: int | None = None
+) -> list[dict[str, str]]:
+    """会话上下文窗口 → LLM history_messages（保近弃远）。
+
+    ``rows`` 来自 ``session_context_window``（已按轮次间隔截断），按时间正序；
+    此处再做 token 预算裁剪：从最新往回保留，累计估算 token 超过预算即停止。
+    预算缺省 = 默认上下文（8192）的一半。
+    """
+    if not rows:
+        return []
+    if token_budget is None:
+        token_budget = _DEFAULT_LLM_CTX_TOKENS // 2
+    from deskbot_server.infrastructure.llm.utils import estimate_text_tokens
+
+    keep: list[dict[str, Any]] = []
+    total = 0
+    for row in reversed(rows):
+        cost = estimate_text_tokens(str(row.get("content") or "")) + 4
+        if keep and total + cost > token_budget:
+            break
+        keep.append(row)
+        total += cost
+    keep.reverse()
+    return [{"role": str(r["role"]), "content": str(r["content"])} for r in keep]
 
 
 def build_llm_tool_followup_message(tool_results: list[dict[str, Any]]) -> str:
@@ -287,8 +372,15 @@ async def complete_llm_with_tool_loop(
     tts_prefetch: _TtsPrefetch | None = None,
     on_interim_tts_play: Callable[[str, int], Awaitable[None]] | None = None,
     bus_service: Any | None = None,
+    user_message_override: str | None = None,
 ) -> LlmTurnResult:
     """多轮 LLM：有 tools 则执行并继续，无 tools 则返回最终 parsed。
+
+    ``history_messages``：会话上下文（调用方已按「5 分钟间隔 + 半量 token
+    预算」裁剪），只注入首轮；工具追加轮沿用 extra_messages。
+    ``user_message_override``：语音轮由应用层在 asr 完成时一次性装配的
+    user 消息全文（含该时刻的人脸识别），整轮各次 LLM 调用锁定使用，
+    保证 prompt 与实验台气泡展示的识别内容同源。
 
     返回 ``LlmTurnResult(parsed, tools, tool_results, answer, system_prompt)``；
     ``system_prompt`` 为每轮 LLM 调用构建的 system prompt（取首轮即主轮）。
@@ -296,10 +388,12 @@ async def complete_llm_with_tool_loop(
     extra_messages: list[dict[str, str]] = []
     all_tools: list[dict[str, Any]] = []
     all_tool_results: list[dict[str, Any]] = []
+    llm_calls: list[dict[str, Any]] = []
     answer = ""
     parsed: dict[str, Any] = parse_llm_reply("")
     system_prompt: str | None = None
     captured_system_prompt = False
+    llm_model = llm_model_label(device_id)
 
     def _on_system_prompt(content: str) -> None:
         nonlocal system_prompt, captured_system_prompt
@@ -308,15 +402,37 @@ async def complete_llm_with_tool_loop(
             captured_system_prompt = True
 
     for round_idx in range(MAX_LLM_TOOL_ROUNDS):
-        answer = await chat.llm(
-            user_text,
-            device_context=device_context if round_idx == 0 else None,
-            device_id=device_id,
-            history_messages=history_messages if round_idx == 0 else None,
-            extra_messages=extra_messages or None,
-            on_tts_ready=tts_prefetch.on_ready if tts_prefetch is not None else None,
-            on_system_prompt=_on_system_prompt,
-        )
+        round_t0 = time.monotonic()
+        try:
+            llm_kwargs = {
+                "device_context": device_context if round_idx == 0 else None,
+                "device_id": device_id,
+                "history_messages": history_messages if round_idx == 0 else None,
+                "extra_messages": extra_messages or None,
+                "on_tts_ready": tts_prefetch.on_ready if tts_prefetch is not None else None,
+                "on_system_prompt": _on_system_prompt,
+            }
+            if user_message_override:
+                # 整轮锁定同一份装配好的 user 消息（仅语音轮提供），避免各轮现读快照漂移
+                llm_kwargs["user_message_override"] = user_message_override
+            answer = await chat.llm(user_text, **llm_kwargs)
+        except Exception as llm_exc:
+            llm_calls.append({
+                "n": round_idx + 1,
+                "model": llm_model,
+                "ms": int((time.monotonic() - round_t0) * 1000),
+                "text": f"[调用失败] {llm_exc}",
+                "truncated": False,
+            })
+            raise
+        answer = str(answer or "")
+        llm_calls.append({
+            "n": round_idx + 1,
+            "model": llm_model,
+            "ms": int((time.monotonic() - round_t0) * 1000),
+            "text": answer[:3000],
+            "truncated": len(answer) > 3000,
+        })
         parsed = parse_llm_reply(answer)
         tools = list(parsed.get("tools") or [])
 
@@ -395,7 +511,12 @@ async def complete_llm_with_tool_loop(
         logger.warning("[LLM] tool 循环达到上限 %d device_id=%s req=%s", MAX_LLM_TOOL_ROUNDS, device_id, request_id)
 
     return LlmTurnResult(
-        parsed=parsed, tools=all_tools, tool_results=all_tool_results, answer=answer, system_prompt=system_prompt
+        parsed=parsed,
+        tools=all_tools,
+        tool_results=all_tool_results,
+        answer=answer,
+        system_prompt=system_prompt,
+        llm_calls=llm_calls,
     )
 
 
@@ -418,6 +539,23 @@ async def run_chat_turn(
     result = ChatTurnResult()
     is_scheduled = _is_scheduled_task_user_text(user_text)
     sched_desc = _scheduled_task_description(user_text) if is_scheduled else ""
+
+    # 语音轮在 asr 完成后「一次性装配」user 消息（含该时刻的人脸识别）：
+    # 同一份文本既作为整轮 LLM 输入（user_message_override），又提取出
+    # face_sight 展示到实验台用户气泡——气泡与 prompt 始终同源、同刻。
+    voice_user_message: str | None = None
+    ack_ctx: str | None = None
+    if device_ws is not None and device_id:
+        ack_ctx = await device_ws.pb_ack_llm_context(device_id)
+    if t_asr_start is not None and device_id:
+        try:
+            voice_user_message = build_llm_user_message(
+                user_text, device_id=device_id, device_context=ack_ctx
+            )
+            result.face_sight = _extract_face_sight_lines(voice_user_message)
+            result.voice_sight = _extract_voice_sight_lines(voice_user_message)
+        except Exception:
+            logger.debug("[LLM] 语音轮 user 消息装配失败 device_id=%s", device_id, exc_info=True)
 
     try:
         if not force_voice and not get_auto_reply(device_id):
@@ -445,25 +583,26 @@ async def run_chat_turn(
             )
             return result
 
-        ack_ctx = None
-        if device_ws is not None and device_id:
-            ack_ctx = await device_ws.pb_ack_llm_context(device_id)
-
+        # 会话上下文：同一 session 向上追溯历史，两条截断策略——
+        # ① 轮次间隔 > _HISTORY_MAX_GAP_SECONDS 即停；② 历史累计 token ≥ _HISTORY_BUDGET_TOKENS 即停。
         session_id: str | None = None
         history_messages: list[dict[str, str]] | None = None
         if device_id:
-            from deskbot_server.dao.device_session_mapper import ensure_active_session, session_history_for_llm
+            from deskbot_server.dao.device_session_mapper import ensure_active_session, session_context_window
             from deskbot_server.utils.async_helpers import run_blocking
 
             if reuse_session_id:
-                session_id = str(reuse_session_id).strip()
-                if session_id:
-                    history_messages = await run_blocking(session_history_for_llm, device_id, session_id)
-            else:
+                session_id = str(reuse_session_id).strip() or None
+            if not session_id:
                 active = await run_blocking(ensure_active_session, device_id, user_text=user_text)
-                session_id = str(active.get("session_id") or "")
-                if session_id:
-                    history_messages = await run_blocking(session_history_for_llm, device_id, session_id)
+                session_id = str(active.get("session_id") or "") or None
+            if session_id:
+                rows = await run_blocking(
+                    session_context_window, device_id, session_id, max_gap_seconds=_HISTORY_MAX_GAP_SECONDS
+                )
+                history_messages = (
+                    build_history_messages(rows, token_budget=_history_token_budget(device_id)) if rows else None
+                )
 
         tts_prefetch = _TtsPrefetch(chat, device_id=device_id)
 
@@ -486,6 +625,7 @@ async def run_chat_turn(
             on_interim_tts_play=_on_interim_tts_play,
             device_ws=device_ws,
             bus_service=bus_service,
+            user_message_override=voice_user_message,
         )
         parsed = llm_turn.parsed
 
@@ -514,6 +654,8 @@ async def run_chat_turn(
         result.servo = list(parsed.get("servo") or [])
         result.need_reply = need_reply
         result.json_ok = parsed["json_ok"]
+        result.llm_calls = list(llm_turn.llm_calls or [])
+        result.system_prompt = llm_turn.system_prompt
         result.t_llm_end = time.monotonic()
 
         if device_id and session_id:
@@ -548,6 +690,11 @@ async def run_chat_turn(
                 "llm_text": reply_text,
                 "llm_raw": result.llm_raw,
                 "llm_ms": llm_ms,
+                "llm_calls": result.llm_calls,
+                "llm_model": (result.llm_calls[0].get("model") if result.llm_calls else None),
+                "system_prompt": result.system_prompt,
+                "face_sight": result.face_sight,
+                "voice_sight": result.voice_sight,
                 "source": "asr" if t_asr_start is not None else "text",
             },
         )
@@ -608,6 +755,7 @@ async def run_chat_turn(
                 "asr_text": user_text,
                 "llm_text": reply_text,
                 "tts_text": playback_text,
+                "tts_model": tts_model_label(device_id),
                 "source": "asr" if t_asr_start is not None else "text",
             },
         )
@@ -683,7 +831,7 @@ async def run_device_tts_only(
         "tts_start",
         request_id=request_id,
         send_client=False,
-        event_fields={"tts_text": reply_text, "source": "device_tts"},
+        event_fields={"tts_text": reply_text, "tts_model": tts_model_label(device_id), "source": "device_tts"},
     )
 
     parsed = {
@@ -872,6 +1020,9 @@ async def _run_pb_playback(
     total_pb = 0
     chunk_is_last = True
     prefetch_tts_task: asyncio.Task | None = prefetch_tts
+    # 整轮 TTS 合成 PCM 累积（分 chunk 合成，尾段按序拼接 = 完整口播），供实时对话音频回放
+    audio_parts: list[bytes] = []
+    audio_parts_sr: int | None = None
 
     for chunk_i, chunk_text in enumerate(text_chunks):
         if motion_only:
@@ -886,6 +1037,9 @@ async def _run_pb_playback(
             pcm_ok = any(len(s.get("pcm") or b"") > 0 for s in segs_local)
             if not segs_local or not pcm_ok:
                 raise RuntimeError(f"phoneme TTS 无分片或无 PCM: {chunk_text!r}")
+            if audio_parts_sr is None:
+                audio_parts_sr = int(sr_pb or 16000)
+            audio_parts.append(b"".join((s.get("pcm") or b"") for s in segs_local))
             if chunk_i + 1 < len(text_chunks):
                 prefetch_tts_task = asyncio.create_task(
                     chat.tts_phoneme_segments(text_chunks[chunk_i + 1], device_id=device_id)
@@ -968,6 +1122,10 @@ async def _run_pb_playback(
             await device_ws.send(device_id, scene_seq)
             n_scene_pb += len(scene_blocks)
 
+    if audio_parts and request_id and device_id and audio_parts_sr:
+        # 存入内存音频仓库，供实验台实时对话按 request_id 回放（失败不影响主流程）
+        ConvoAudioStore().put(device_id, request_id, "tts", b"".join(audio_parts), sample_rate=audio_parts_sr)
+
     logger.info(
         "[pb TX] 下发结束 device_id=%s request_id=%s 语音 JSON=%d%s%s",
         device_id,
@@ -997,11 +1155,23 @@ async def publish_chat_turn(
     t_tts_synth_end = flow.get("t_tts_synth_end")
     t_tts_end = flow.get("t_tts_end")
     end_t = t_tts_end or t_llm_end or t_asr_text
+    llm_calls = list(flow.get("llm_calls") or [])
+    tts_ms_val = _ms_between(t_llm_end, t_tts_synth_end)
+    tts_done = tts_ms_val is not None
+    store = ConvoAudioStore()
     evt = {
         "device_id": device_id,
         "request_id": request_id,
         "asr_text": asr_text,
         "asr_ms": _ms_between(t_asr_start, t_asr_text) if source == "asr" else None,
+        "asr_model": asr_model_label(device_id) if source == "asr" else None,
+        "audio_asr": bool(request_id) and source == "asr" and store.has(device_id, request_id, "asr"),
+        "face_img": bool(request_id) and source == "asr" and store.has(device_id, request_id, "face"),
+        "face_sight": flow.get("face_sight"),
+        "voice_sight": flow.get("voice_sight"),
+        "llm_calls": llm_calls,
+        "llm_model": (llm_calls[0].get("model") if llm_calls else None),
+        "system_prompt": flow.get("system_prompt"),
         "llm_text": flow.get("llm_text"),
         "llm_raw": flow.get("llm_raw"),
         "moves": list(flow.get("moves") or []),
@@ -1014,7 +1184,9 @@ async def publish_chat_turn(
         "voice_auto_reply_off": bool(flow.get("voice_auto_reply_off")),
         "llm_ms": _ms_between(t_asr_text, t_llm_end),
         "tts_text": flow.get("llm_text"),
-        "tts_ms": _ms_between(t_llm_end, t_tts_synth_end),
+        "tts_ms": tts_ms_val,
+        "tts_model": tts_model_label(device_id) if tts_done else None,
+        "audio_tts": bool(request_id) and tts_done and store.has(device_id, request_id, "tts"),
         "pb_ms": _ms_between(t_tts_synth_end, t_tts_end),
         "e2e_ms": _ms_between(t_asr_start, end_t),
         "status": flow.get("status") or "ok",

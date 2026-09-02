@@ -9,6 +9,7 @@ from deskbot_server.dao.device_mapper import get_camera_servo_auto_mode, set_cam
 from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory
 from deskbot_server.dao.device_session_mapper import execute_session_tool
 from deskbot_server.service.application.face_registration import register_face_for_device
+from deskbot_server.service.application.voice_registration import register_voice_for_device
 from deskbot_server.service.camera_face_service import capture_camera_for_device_async
 from deskbot_server.service.miot_tools import execute_miot_tool
 from deskbot_server.service.quest_service import QuestService
@@ -83,7 +84,17 @@ async def execute_llm_tools(
                         "face_id": out.get("face_id"),
                     }
                 )
-            elif tool in ("capture_camera", "get_camera_frame", "camera_capture"):
+            elif tool == "register_voiceprint":
+                name = str(raw.get("name") or raw.get("person_name") or "").strip()
+                out = register_voice_for_device(dev, name)
+                results.append(
+                    {
+                        "tool": tool,
+                        "ok": True,
+                        "profile_id": out["profile"].get("id"),
+                        "name": out["profile"].get("name"),
+                    }
+                )
                 cap = await capture_camera_for_device_async(dev, hub=device_ws, cam_fps=boost_fps)
                 if not cap.get("ok"):
                     results.append({"tool": tool, "ok": False, "error": cap.get("error")})

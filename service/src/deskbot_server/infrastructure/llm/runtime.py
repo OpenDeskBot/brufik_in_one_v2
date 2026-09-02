@@ -16,7 +16,7 @@ import re
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from deskbot_server.config import load_config
@@ -44,6 +44,8 @@ class ResolvedLlmConfig:
     protocol: str
     source: str  # "device" | "system" | "test"
     display_name: str
+    # 模型上下文窗口 token 数；None = 未知（调用方回退默认预算）
+    context_window: int | None = None
 
 
 def _first_env(*names: str) -> tuple[str, str | None]:
@@ -148,10 +150,26 @@ def resolve_system_llm_config(cfg: dict | None = None) -> ResolvedLlmConfig:
 
 
 def resolve_llm_config(device_id: str | None = None) -> ResolvedLlmConfig:
+    """解析设备生效 LLM 配置；context_window 从 devices.llm_param 读取（可选）。
+
+    devices.llm_param JSON：``{"context_window": 8192, ...}``；未填/非法 → None。
+    """
     entry = get_active_llm_model(device_id)
-    if entry is None:
-        return resolve_system_llm_config()
-    return _entry_to_config(entry)
+    cfg = _entry_to_config(entry) if entry is not None else resolve_system_llm_config()
+    did = str(device_id or "").strip()
+    if not did:
+        return cfg
+    from deskbot_server.dao.device_mapper import get_llm_param
+
+    param = get_llm_param(did)
+    raw_cw = param.get("context_window")
+    try:
+        cw = int(raw_cw)
+    except (TypeError, ValueError):
+        return cfg
+    if cw > 0:
+        return replace(cfg, context_window=cw)
+    return cfg
 
 
 def _entry_to_config(entry: LlmModelEntry) -> ResolvedLlmConfig:

@@ -19,6 +19,7 @@ from deskbot_server.dao.camera_face_config_store import (
 )
 from deskbot_server.dao.face_expr_scenes_store import load_face_expr_scenes_file
 from deskbot_server.service.face_profile_service import load_face_profiles
+from deskbot_server.service.voice_profile_service import load_voice_profiles
 from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory, list_memory_for_device
 from deskbot_server.dao.scene_playbooks_store import (
     collect_missing_servo_presets,
@@ -29,6 +30,7 @@ from deskbot_server.dao.scene_playbooks_store import (
 )
 from deskbot_server.infrastructure.llm.utils import parse_llm_reply
 from deskbot_server.service.application.face_registration import register_face_for_device
+from deskbot_server.service.application.voice_registration import register_voice_for_device
 from deskbot_server.service.user_service import UserService
 from deskbot_server.utils.device_data import load_llm_system_prompt, resolve_json_path, save_llm_system_prompt
 from deskbot_server.utils.util import pcm_to_wav_bytes
@@ -840,6 +842,54 @@ def api_face_profiles_register(request: Request, user: RequireUser):
     )
 
 
+@router.get("/api/voice_profiles")
+def api_voice_profiles_get(request: Request, user: RequireUser):
+    device_id, err = _require_device_id(request, user)
+    if err:
+        return err
+    try:
+        profiles = load_voice_profiles(device_id=device_id)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc), "t": time.time()}), 500
+    return jsonify(
+        {"ok": True, "profiles": profiles, "device_id": device_id, "t": time.time()}
+    )
+
+
+@router.post("/api/voice_profiles/register")
+def api_voice_profiles_register(request: Request, user: RequireUser):
+    """用最近一次 VAD 语音注册声纹档案（样本 = 最近一次成功抽出 embedding 的 utterance）。"""
+    payload = get_json(request, silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "body must be a JSON object", "t": time.time()}), 400
+    name = str(payload.get("name") or "").strip()
+    device_id = str(payload.get("device_id") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "name required", "t": time.time()}), 400
+    if not device_id:
+        return jsonify({"ok": False, "error": "device_id required", "t": time.time()}), 400
+    denied = _deny_foreign_device(request, device_id, user)
+    if denied:
+        return denied
+    try:
+        out = register_voice_for_device(device_id, name)
+        profile = out["profile"]
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc), "t": time.time()}), 400
+    return jsonify(
+        {
+            "ok": True,
+            "profile": profile,
+            "device_id": device_id,
+            "hint": (
+                "声纹档案已写入（WeSpeaker 256 维）；样本来自最近一次 VAD 语音，"
+                "请让该用户再对机器人说几句话验证识别"
+            ),
+            "t": time.time(),
+        }
+    )
+
+
 @router.get("/api/user_memory")
 def api_user_memory_get(request: Request, user: RequireUser):
     device_id, err = _require_device_id(request, user)
@@ -1007,6 +1057,8 @@ ENDPOINTS = {
     "debug.api_camera_face_config_post": "/api/camera_face_config",
     "debug.api_face_profiles_get": "/api/face_profiles",
     "debug.api_face_profiles_register": "/api/face_profiles/register",
+    "debug.api_voice_profiles_get": "/api/voice_profiles",
+    "debug.api_voice_profiles_register": "/api/voice_profiles/register",
     "debug.api_user_memory_get": "/api/user_memory",
     "debug.api_user_memory_post": "/api/user_memory",
     "debug.api_user_memory_delete": "/api/user_memory/{entry_id}",

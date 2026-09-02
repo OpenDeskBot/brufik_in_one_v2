@@ -14,6 +14,7 @@ from deskbot_server.infrastructure.bootstrap import build_chat_service
 from deskbot_server.model.settings import AppSettings
 from deskbot_server.service.application.scheduled_task_scheduler import ScheduledTaskScheduler
 from deskbot_server.service.camera_face_service import CameraFaceService, build_camera_face_runtime
+from deskbot_server.service.voiceprint_service import VoiceprintService, build_voiceprint_runtime
 from deskbot_server.service.device_ws_service import DeviceWsService
 from deskbot_server.service.live_service import ENTER_SEC, SLEEP_MAX_SEC, SLEEP_MIN_SEC, WANDER_MAX_CYCLES, LiveService
 from deskbot_server.service.pipeline.audio import AudioConfig
@@ -79,6 +80,8 @@ def build_runtime() -> AppRuntime:
     )
     camera_face_runtime = build_camera_face_runtime(config)
     CameraFaceService().configure(camera_face_runtime)
+    voiceprint_runtime = build_voiceprint_runtime(config)
+    VoiceprintService().configure(voiceprint_runtime)
     logger.info(
         "[server] send_face_info_to_asr_chat=%s（device_pb_only 为 true 时强制关闭；仅经 /asr_chat camera_frame 生效）",
         app_settings.server.send_face_info_to_asr_chat,

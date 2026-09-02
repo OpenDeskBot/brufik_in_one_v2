@@ -19,7 +19,8 @@
     直接调用当前生效的大模型配置（优先设备级模型；系统默认使用火山方舟，API Key 来自
     <code>ARK_API_KEY</code> / <code>VOLCENGINE_API_KEY</code> / <code>LLM_API_KEY</code>）；纯文本对话，不走 ASR/TTS，
     用于快速验证各设备独立的 system prompt 与模型回答效果。模型应返回
-    <code>{"need_reply","tts","moves":[{move,ms}],"anims":[{anim,ms}]}</code> 格式 JSON。
+    <code>{"need_reply","tts","gesture":["nod_head"],"expression":["happy"],"tools":[]}</code> 格式 JSON
+    （旧字段名 moves/anims 仍兼容）。
   </p>
   {% raw %}
   <div id="app" class="llm-debug">
@@ -50,11 +51,11 @@
             {{ savingPrompt ? "保存中…" : "保存到设备" }}
           </button>
           <span class="muted sm" v-if="saveMsg">{{ saveMsg }}</span>
-          <span class="muted sm">提交时会自动追加「当前时间」与 moves/anims 可用列表附录，与线上一致。</span>
+          <span class="muted sm">提交时会自动追加「当前时间」与 gesture/expression 可用列表附录，与线上一致。</span>
         </div>
       </details>
       <details class="meta-row plan-appendix" :open="appendixOpen" @toggle="appendixOpen = $event.target.open">
-        <summary>补充 Prompt（moves / anims 附录，只读）</summary>
+        <summary>补充 Prompt（gesture / expression 附录，只读）</summary>
         <pre class="appendix-pre">{{ planAppendix || "（暂无附录，请检查 data/servo.json 与 data/deskbot-face.json）" }}</pre>
       </details>
       <div class="meta-row controls">
@@ -85,12 +86,12 @@
               <template v-else>
                 <div class="txt">{{ t.assistantText }}</div>
                 <div v-if="t.moves && t.moves.length" class="actions-row">
-                  <span class="lbl">动作 moves</span>
-                  <span v-for="(m, mi) in t.moves" :key="'m'+mi" class="action-chip">{{ m.move }} · {{ m.ms }}ms</span>
+                  <span class="lbl">动作 gesture</span>
+                  <span v-for="(m, mi) in t.moves" :key="'m'+mi" class="action-chip">{{ chipText(m, 'move') }}</span>
                 </div>
                 <div v-if="t.anims && t.anims.length" class="actions-row">
-                  <span class="lbl">动画 anims</span>
-                  <span v-for="(a, ai) in t.anims" :key="'a'+ai" class="action-chip anim">{{ a.anim }} · {{ a.ms }}ms</span>
+                  <span class="lbl">表情 expression</span>
+                  <span v-for="(a, ai) in t.anims" :key="'a'+ai" class="action-chip anim">{{ chipText(a, 'anim') }}</span>
                 </div>
                 <div v-if="t.tools && t.tools.length" class="actions-row">
                   <span class="lbl">tools</span>
@@ -263,6 +264,12 @@
       },
       watch: { turns: { deep: true, handler() { this._scrollEnd(); } } },
       methods: {
+        // gesture/expression 条目：新协议为字符串 id，旧协议为 {move/anim, ms} 对象
+        chipText(item, key) {
+          if (typeof item === "string") return item;
+          const name = item?.[key] || "?";
+          return item?.ms ? `${name} · ${item.ms}ms` : name;
+        },
         _scrollEnd() {
           this.$nextTick(() => {
             const el = this.$refs.chatBox;

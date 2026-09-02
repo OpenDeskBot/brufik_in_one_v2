@@ -162,6 +162,42 @@ def get_tts_param(device_id: str) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+@execute("UPDATE devices SET llm_provider = :llm_provider WHERE device_id = :device_id")
+def update_llm_provider(device_id: str, llm_provider: str) -> int:
+    """更新设备级 LLM provider（空串 = 未配置）。"""
+
+
+def get_llm_provider(device_id: str) -> str:
+    """设备级 LLM provider；设备不存在或未设置 → 空串（未配置）。"""
+    dev = get_by_device_id(device_id)
+    if dev is None:
+        return ""
+    return str(dev.llm_provider or "").strip()
+
+
+def set_llm_provider(device_id: str, provider: str) -> None:
+    """设置设备级 LLM provider。"""
+    update_llm_provider(device_id, str(provider or "").strip())
+
+
+@execute("UPDATE devices SET llm_param = :llm_param WHERE device_id = :device_id")
+def update_llm_param(device_id: str, llm_param: str | None) -> int:
+    """更新设备级 LLM 参数（JSON 文本；None 置 NULL 表示清除）。"""
+
+
+def get_llm_param(device_id: str) -> dict:
+    """设备 llm_param 解析为 dict；无 / 坏 JSON / 设备不存在 → {}。"""
+    dev = get_by_device_id(device_id)
+    raw = dev.llm_param if dev is not None else None
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 @execute("DELETE FROM devices WHERE device_id = :device_id AND owner_user_id = :user_id")
 def delete_by_device_id(device_id: str, user_id: str) -> int:
     """删除设备绑定。"""

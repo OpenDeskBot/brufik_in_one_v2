@@ -16,6 +16,7 @@ _TOOL_INTERIM_PHRASES: dict[str, str] = {
     "memory_add": "我记住了",
     "memory_delete": "好，我删掉这条记忆",
     "register_face": "我记住你的样子了",
+    "register_voiceprint": "我记住你的声音了",
     "set_camera_follow": "我转过来",
     "set_camera_follow_mode": "我转过来",
     "camera_follow": "我转过来",

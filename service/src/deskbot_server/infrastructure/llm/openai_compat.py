@@ -9,6 +9,7 @@ from deskbot_server.infrastructure.llm.runtime import chat_acompletion, is_local
 from deskbot_server.infrastructure.llm.utils import (
     build_llm_system_prompt,
     build_llm_user_message,
+    estimate_text_tokens,
     parse_llm_reply,
 )
 from deskbot_server.model.settings import AppSettings
@@ -30,31 +31,19 @@ def _is_exceed_ctx_error(exc: BaseException) -> bool:
     return any(marker in text for marker in _EXCEED_CTX_MARKERS)
 
 
-def _estimate_tokens(text: str) -> int:
-    """本地引擎无 tokenizer，粗略估算（宁多勿少）：CJK 约 1.1 token/字，其余按 3.2 字符/token。"""
-    if not text:
-        return 0
-    cjk = sum(
-        1
-        for ch in text
-        if "一" <= ch <= "鿿" or "　" <= ch <= "〿" or "＀" <= ch <= "￯"
-    )
-    return int(cjk * 1.1) + int((len(text) - cjk) / 3.2) + 1
-
-
 def _trim_history_for_budget(
     history: list[dict[str, str]], *, system_content: str, user_content: str, extra: list[dict[str, str]]
 ) -> list[dict[str, str]]:
     """本地引擎：按预估 token 预算从最旧开始裁剪历史，至少保留最近一条。"""
     if not history:
         return history
-    fixed = _estimate_tokens(system_content) + _estimate_tokens(user_content) + 8
-    fixed += sum(_estimate_tokens(str(m.get("content") or "")) + 4 for m in extra)
+    fixed = estimate_text_tokens(system_content) + estimate_text_tokens(user_content) + 8
+    fixed += sum(estimate_text_tokens(str(m.get("content") or "")) + 4 for m in extra)
     budget = _LOCAL_CTX_BUDGET_TOKENS - fixed
     keep: list[dict[str, str]] = []
     total = 0
     for msg in reversed(history):
-        cost = _estimate_tokens(str(msg.get("content") or "")) + 4
+        cost = estimate_text_tokens(str(msg.get("content") or "")) + 4
         if keep and total + cost > budget:
             break
         keep.append(msg)
@@ -79,7 +68,9 @@ def _wrap_plain_text_llm_answer(text: str) -> str | None:
         return None
     if plain.startswith("{") or plain.startswith("["):
         return None
-    return json.dumps({"need_reply": True, "tts": plain, "moves": [], "anims": [], "tools": []}, ensure_ascii=False)
+    return json.dumps(
+        {"need_reply": True, "tts": plain, "gesture": [], "expression": [], "tools": []}, ensure_ascii=False
+    )
 
 
 class OpenAiLlmAdapter:
@@ -88,7 +79,8 @@ class OpenAiLlmAdapter:
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
         self._default_system_prompt = settings.llm.system_prompt or (
-            '你是中文语音助手，请简洁回答。每次只输出 JSON：{"tts":"…","servo":[]}。'
+            "你是中文语音助手。回复会转成语音（TTS）播报：只输出适合朗读的简短口语，"
+            "不要 markdown/列表/emoji 等富文本。每轮只输出 JSON：{\"tts\":\"…\"}。"
         )
 
     def _resolve_system_prompt(self, *, device_id: str | None = None) -> str:
@@ -110,6 +102,7 @@ class OpenAiLlmAdapter:
         extra_messages: list[dict[str, str]] | None = None,
         on_tts_ready: Callable[[str], Awaitable[None]] | None = None,
         on_system_prompt: Callable[[str], None] | None = None,
+        user_message_override: str | None = None,
     ) -> str:
         async with _device_llm_lock(device_id):
             return await self._complete_locked(
@@ -120,6 +113,7 @@ class OpenAiLlmAdapter:
                 extra_messages=extra_messages,
                 on_tts_ready=on_tts_ready,
                 on_system_prompt=on_system_prompt,
+                user_message_override=user_message_override,
             )
 
     async def _complete_locked(
@@ -132,6 +126,7 @@ class OpenAiLlmAdapter:
         extra_messages: list[dict[str, str]] | None = None,
         on_tts_ready: Callable[[str], Awaitable[None]] | None = None,
         on_system_prompt: Callable[[str], None] | None = None,
+        user_message_override: str | None = None,
     ) -> str:
         llm_cfg = resolve_llm_config(device_id)
         local_engine = is_local_llm_url(llm_cfg.api_base)
@@ -145,7 +140,11 @@ class OpenAiLlmAdapter:
                 on_system_prompt(system_content)
             except Exception:
                 logger.debug("[LLM] on_system_prompt 回调异常（忽略）", exc_info=True)
-        user_content = build_llm_user_message(user_text, device_id=device_id, device_context=device_context)
+        # 语音轮由应用层单次装配（与实验台展示同一份识别），此处优先用 override；
+        # 其余轮次沿用现拼（每轮现读人脸快照）
+        user_content = user_message_override or build_llm_user_message(
+            user_text, device_id=device_id, device_context=device_context
+        )
         history = list(history_messages or [])
         extra = list(extra_messages or [])
         if local_engine and history:
@@ -243,7 +242,7 @@ class OpenAiLlmAdapter:
                         "role": "user",
                         "content": (
                             "上轮输出不是合法 JSON。请仅输出一个 JSON 对象（不要 markdown 代码围栏、不要解释），"
-                            "格式含 need_reply、tts、moves、anims、tools 等字段。"
+                            "格式含 need_reply、tts、gesture、expression、tools 等字段。"
                         ),
                     },
                 ]

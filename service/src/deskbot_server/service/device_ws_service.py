@@ -140,6 +140,8 @@ class DeviceWsService(metaclass=SingletonMeta):
         # ── 设备索引 ──
         self._devices: dict[str, _DeviceEntry] = {}
         self._lock = asyncio.Lock()
+        # 每设备最近一帧 camera_frame（mono_ts, jpeg bytes），供实时对话按轮采样贴图
+        self._camera_frame_cache: dict[str, tuple[float, bytes]] = {}
 
         # ── PbSeq 队列 ──
         self._queue_lock = asyncio.Lock()
@@ -160,6 +162,20 @@ class DeviceWsService(metaclass=SingletonMeta):
         """判断设备是否在线。"""
         entry = self._devices.get(str(device_id or "").strip())
         return entry is not None and entry.online
+
+    def latest_camera_frame(self, device_id: str | None, *, max_age_s: float = 45.0) -> bytes | None:
+        """最近一帧 camera_frame（jpeg bytes）；超过 ``max_age_s``（monotonic）视为过期。
+
+        语音轮开始时采样，作为该轮机器人「看到的」画面；播放期间固件暂停上行，
+        缓存通常即说话句尾一帧。无人脸跟踪期间也可能无帧，返回 None。
+        """
+        entry = self._camera_frame_cache.get(str(device_id or "").strip())
+        if entry is None:
+            return None
+        mono_ts, jpeg = entry
+        if time.monotonic() - mono_ts > max_age_s:
+            return None
+        return jpeg
 
     def _mark_device_online(self, device_id: str) -> None:
         """测试辅助：标记设备为在线（不建立真实 ws 连接）。"""
@@ -771,6 +787,9 @@ class DeviceWsService(metaclass=SingletonMeta):
 
                         if msg_type == "camera_frame":
                             if attached_media:
+                                if device_id:
+                                    # 最近帧缓存：供该轮对话开始时按 request_id 留存画面
+                                    self._camera_frame_cache[device_id] = (time.monotonic(), bytes(attached_media))
                                 spawn(
                                     CameraFaceService().process(
                                         device_id, attached_media,
@@ -829,6 +848,7 @@ class DeviceWsService(metaclass=SingletonMeta):
                 pass
             if device_id:
                 remove_device(device_id)
+                self._camera_frame_cache.pop(device_id, None)
                 await self.unregister(device_id, websocket)
 
     async def _run_asr_turn(
@@ -843,6 +863,8 @@ class DeviceWsService(metaclass=SingletonMeta):
         uplink_codec: str = "opus",
     ) -> None:
         """VAD 切出一句后：ASR → LLM → TTS。"""
+        from deskbot_server.service.application.capability_labels import asr_model_label
+        from deskbot_server.service.application.convo_audio_store import ConvoAudioStore
         from deskbot_server.service.application.ws_chat_turn import (
             publish_ws_chat_turn,
             run_ws_chat_turn,
@@ -851,6 +873,28 @@ class DeviceWsService(metaclass=SingletonMeta):
 
         request_id = uuid.uuid4().hex[:16]
         sample_rate = uplink_sr or 16000
+        # 声纹识别与 ASR 并行：每次 VAD 判定通过即对 utterance 做说话人识别（写快照，
+        # 供本轮 LLM user 消息「声音识别」段读取）；任何装配异常都不阻塞 ASR 轮
+        vpr_task = None
+        vpr_wait_budget_s = 0.0
+        try:
+            from deskbot_server.service.voiceprint_service import VOICEPRINT_WAIT_BUDGET_S, VoiceprintService
+
+            if VoiceprintService().enabled():
+                vpr_task = asyncio.create_task(
+                    VoiceprintService().identify(
+                        device_id=device_id,
+                        pcm_bytes=pcm_segment,
+                        sample_rate=sample_rate,
+                        request_id=request_id,
+                    ),
+                    name=f"voiceprint:{device_id}:{request_id}",
+                )
+                vpr_wait_budget_s = float(VOICEPRINT_WAIT_BUDGET_S)
+        except Exception:
+            logger.debug("[vpr] 声纹识别任务启动失败（忽略，不阻塞 ASR 轮）", exc_info=True)
+            vpr_task = None
+            vpr_wait_budget_s = 0.0
         seg_duration_ms = int(len(pcm_segment) / 2 / max(1, sample_rate) * 1000)
         logger.info("[ASR] 开始识别 device_id=%s req=%s pcm_bytes=%d audio_ms=%d sr=%d", device_id, request_id, len(pcm_segment), seg_duration_ms, sample_rate)
         t_asr_start = time.monotonic()
@@ -885,15 +929,37 @@ class DeviceWsService(metaclass=SingletonMeta):
             device_id, request_id, seg_duration_ms, asr_ms, text,
         )
 
+        # 先留存媒体（原声 / 最近帧），再发 asr_done：让用户气泡在 ASR 完成当下
+        # 就能拿到音频与人脸图（live 广播即时渲染，不等 LLM/TTS 终态事件）
+        audio_saved = ConvoAudioStore().put(device_id, request_id, "asr", pcm_segment, sample_rate=sample_rate)
+        frame_jpeg = self.latest_camera_frame(device_id)
+        face_saved = bool(frame_jpeg) and ConvoAudioStore().put_raw(device_id, request_id, "face", frame_jpeg)
+
         # asr_done stage：仅广播给页面订阅者，供前端先渲染用户气泡（不向设备下发）
         from deskbot_server.ws.stages import _emit_stage
 
+        asr_model = asr_model_label(device_id)
         await _emit_stage(
             websocket, device_id, request_id, "asr_done",
             send_client=False,
-            event_fields={"asr_text": text, "asr_ms": int(asr_ms), "source": "asr"},
+            event_fields={
+                "asr_text": text,
+                "asr_ms": int(asr_ms),
+                "asr_model": asr_model,
+                "audio_asr": audio_saved,
+                "face_img": face_saved,
+                "source": "asr",
+            },
             bus_service=self._bus_service,
         )
+
+        # 等本句声纹判定落地再进对话轮（与 ASR 并行启动，通常已就绪；超时不阻塞，
+        # 快照由后台任务补写，后续轮次/展示仍可读到）
+        if vpr_task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(vpr_task), timeout=vpr_wait_budget_s)
+            except Exception:
+                pass
 
         try:
             flow = await run_ws_chat_turn(

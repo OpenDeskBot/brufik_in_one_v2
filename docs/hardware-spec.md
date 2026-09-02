@@ -70,10 +70,11 @@
 | 镜头 | v2.0：**异面**，120° 广角，**40mm** 长度（旧 XIAO 版为同面 25mm） |
 | 接口 | 8-bit 并行 + SCCB（I2C）控制 |
 | XCLK 频率 | 10MHz（20MHz 会导致 DMA 损坏/绿屏） |
-| 帧尺寸 | QVGA 320×240 |
-| 像素格式 | 优先硬件 JPEG，回退 YUV422，再回退 RGB565 |
-| JPEG 质量 | 18 |
-| 最大 JPEG 大小 | 32KB/帧 |
+| 帧尺寸 | VGA 640×480（曾用 QVGA 320×240，画质差；OV3660 驱动上限远高于此） |
+| 像素格式 | 传感器内 JPEG（硬件 JPEG） |
+| JPEG 质量 | 8（0-63，越低越好） |
+| 最大 JPEG 大小 | 256KB/帧（VGA+质量 8 最坏场景约 180KB） |
+| 传感器锐化 | +2（-3..3 边缘增强，0=默认）；denoise 关闭（抹细节） |
 | 帧缓冲 | 2 个缓冲区，位于 PSRAM |
 | 抓取模式 | CAMERA_GRAB_WHEN_EMPTY |
 | 默认帧率 | 1 FPS（1000ms 间隔，可服务端动态调整） |
@@ -84,29 +85,31 @@
 
 | 信号 | GPIO |
 |------|------|
-| XCLK | 10 |
-| PCLK | 13 |
-| VSYNC | 38 |
-| HREF | 47 |
-| SIOD (SDA) | 40 |
-| SIOC (SCL) | 39 |
-| Y2 (D0) | 15 |
-| Y3 (D1) | 17 |
-| Y4 (D2) | 18 |
-| Y5 (D3) | 16 |
-| Y6 (D4) | 14 |
-| Y7 (D5) | 12 |
-| Y8 (D6) | 11 |
-| Y9 (D7) | 48 |
+| XCLK | 14 |
+| PCLK | 48 |
+| VSYNC | 11 |
+| HREF | 12 |
+| SIOD (SDA) | 9 |
+| SIOC (SCL) | 10 |
+| Y2 (D0) | 39 |
+| Y3 (D1) | 18 |
+| Y4 (D2) | 8 |
+| Y5 (D3) | 17 |
+| Y6 (D4) | 38 |
+| Y7 (D5) | 47 |
+| Y8 (D6) | 21 |
+| Y9 (D7) | 13 |
 | PWDN | -1（未使用） |
 | RESET | -1（未使用） |
+
+> 引脚以 `firmware/camera.cpp` 顶部宏为准（PCB V2.0 Base 实际布线）；上表原为 v1/XIAO 转接板旧值，勿再参考。
 
 ### 摄像头服务端配置
 
 | 参数 | 默认值 | 范围 |
 |------|--------|------|
-| frame_width | 320 | 160-640 |
-| frame_height | 240 | 120-480 |
+| frame_width | 640 | 160-640 |
+| frame_height | 480 | 120-480 |
 | horizontal_fov_deg | 120 | 30-170 |
 | eye_yaw_range_deg | 50 | 10-90 |
 | frontal_angle_threshold_deg | 15 | 1-90 |
@@ -250,7 +253,7 @@ D8  = GPIO7    D9  = GPIO8    D10 = GPIO9
 | SPI | 显示屏驱动 | Mode 3，80MHz |
 | I2S (STD) | 扬声器输出 | I2S_NUM_1，16kHz 16-bit 单声道 |
 | I2S (PDM_RX) | 麦克风采集 | I2S_NUM_0，16kHz 16-bit PDM |
-| SCCB/I2C | 摄像头控制 | SIOD=GPIO40, SIOC=GPIO39 |
+| SCCB/I2C | 摄像头控制 | SIOD=GPIO9, SIOC=GPIO10 |
 | 8-bit 并行 | 摄像头数据 | D0-D7 + VSYNC/HREF/PCLK |
 | PWM (MCPWM) | 舵机控制 | 50Hz, 1000-2000μs 脉冲 |
 | WiFi | 网络连接 | STA 模式（正常）/ AP 模式（配网） |

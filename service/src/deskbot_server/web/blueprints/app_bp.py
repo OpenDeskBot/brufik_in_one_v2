@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Request
 
 from deskbot_server.service.face_profile_service import (
     delete_face_profile,
     list_face_profiles_summary,
     update_face_profile_name,
+)
+from deskbot_server.service.voice_profile_service import (
+    delete_voice_profile,
+    list_voice_profiles_summary,
+    update_voice_profile_name,
 )
 from deskbot_server.dao import device_mapper
 from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory, get_memory, list_memory_for_device, update_memory
@@ -209,6 +216,45 @@ def api_set_device_quest(request: Request, user: RequireUser, device_id: str):
     return jsonify({"ok": True, "quest_id": quest_id})
 
 
+@router.put("/api/devices/{device_id}/llm")
+def api_set_device_llm(request: Request, user: RequireUser, device_id: str):
+    """设备级 LLM provider 与参数（partial 更新）。
+
+    body ``{"provider": "qwen", "context_window": 8192}``：
+    - ``provider``：可选；提供则整体覆盖（空串/缺省键不写）。
+    - ``context_window``：可选；正整数写入 / 显式 null 或 0 清除该键。
+      llm_param 其余键原样保留（JSON 合并）。
+    """
+    if not UserService().user_owns_device(user.id, device_id):
+        return jsonify({"ok": False, "error": "设备不属于当前账号"}), 403
+    payload = get_json(request, silent=True) or {}
+
+    if "provider" in payload:
+        provider = str(payload.get("provider") or "").strip()
+        device_mapper.update_llm_provider(device_id, provider)
+
+    param = device_mapper.get_llm_param(device_id)
+    if "context_window" in payload:
+        raw = payload.get("context_window")
+        if raw is None or raw == "" or str(raw).strip().lower() in ("0", "null", "none"):
+            param.pop("context_window", None)
+        else:
+            try:
+                cw = int(raw)
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "context_window 须为正整数"}), 400
+            if cw <= 0:
+                return jsonify({"ok": False, "error": "context_window 须为正整数"}), 400
+            param["context_window"] = cw
+    device_mapper.update_llm_param(device_id, json.dumps(param, ensure_ascii=False) if param else None)
+
+    return jsonify({
+        "ok": True,
+        "provider": device_mapper.get_llm_provider(device_id),
+        "llm_param": param,
+    })
+
+
 @router.get("/api/scheduled-tasks")
 def api_list_scheduled_tasks(request: Request, user: RequireUser):
     device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
@@ -280,6 +326,50 @@ def api_update_face_profile(request: Request, user: RequireUser, profile_id: int
         return jsonify({"ok": False, "error": str(exc)}), 400
     if profile is None:
         return jsonify({"ok": False, "error": "人脸档案不存在"}), 404
+    return jsonify({"ok": True, "profile": profile})
+
+
+@router.get("/api/voice-profiles")
+def api_list_voice_profiles(request: Request, user: RequireUser):
+    device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
+    if not device_id:
+        return jsonify({"ok": False, "error": "请先选择设备"}), 400
+    if not UserService().user_owns_device(user.id, device_id):
+        return jsonify({"ok": False, "error": "设备不属于当前账号"}), 403
+    profiles = list_voice_profiles_summary(device_id=device_id)
+    return jsonify({"ok": True, "device_id": device_id, "profiles": profiles})
+
+
+@router.delete("/api/voice-profiles/{profile_id}")
+def api_delete_voice_profile(request: Request, user: RequireUser, profile_id: int):
+    device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
+    if not device_id:
+        return jsonify({"ok": False, "error": "请先选择设备"}), 400
+    if not UserService().user_owns_device(user.id, device_id):
+        return jsonify({"ok": False, "error": "设备不属于当前账号"}), 403
+    if not delete_voice_profile(profile_id, device_id=device_id):
+        return jsonify({"ok": False, "error": "声纹档案不存在"}), 404
+    return jsonify({"ok": True})
+
+
+@router.put("/api/voice-profiles/{profile_id}")
+@router.patch("/api/voice-profiles/{profile_id}")
+def api_update_voice_profile(request: Request, user: RequireUser, profile_id: int):
+    device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
+    if not device_id:
+        return jsonify({"ok": False, "error": "请先选择设备"}), 400
+    if not UserService().user_owns_device(user.id, device_id):
+        return jsonify({"ok": False, "error": "设备不属于当前账号"}), 403
+    payload = get_json(request, silent=True) or {}
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "name 不能为空"}), 400
+    try:
+        profile = update_voice_profile_name(profile_id, name, device_id=device_id)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if profile is None:
+        return jsonify({"ok": False, "error": "声纹档案不存在"}), 404
     return jsonify({"ok": True, "profile": profile})
 
 
@@ -514,10 +604,14 @@ ENDPOINTS = {
     "app.api_select_device": "/app/api/devices/select",
     "app.api_unbind_device": "/app/api/devices/{device_id}",
     "app.api_set_device_quest": "/app/api/devices/{device_id}/quest",
+    "app.api_set_device_llm": "/app/api/devices/{device_id}/llm",
     "app.api_list_scheduled_tasks": "/app/api/scheduled-tasks",
     "app.api_list_face_profiles": "/app/api/face-profiles",
     "app.api_delete_face_profile": "/app/api/face-profiles/{profile_id}",
     "app.api_update_face_profile": "/app/api/face-profiles/{profile_id}",
+    "app.api_list_voice_profiles": "/app/api/voice-profiles",
+    "app.api_delete_voice_profile": "/app/api/voice-profiles/{profile_id}",
+    "app.api_update_voice_profile": "/app/api/voice-profiles/{profile_id}",
     "app.api_list_memories": "/app/api/memories",
     "app.api_create_memory": "/app/api/memories",
     "app.api_get_memory": "/app/api/memories/{entry_id}",

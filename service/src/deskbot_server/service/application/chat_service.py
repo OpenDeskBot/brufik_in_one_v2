@@ -51,6 +51,7 @@ class ChatService:
         extra_messages: list[dict[str, str]] | None = None,
         on_tts_ready: Callable[[str], Awaitable[None]] | None = None,
         on_system_prompt: Callable[[str], None] | None = None,
+        user_message_override: str | None = None,
     ) -> str:
         return await self._llm.complete(
             text,
@@ -60,6 +61,7 @@ class ChatService:
             extra_messages=extra_messages,
             on_tts_ready=on_tts_ready,
             on_system_prompt=on_system_prompt,
+            user_message_override=user_message_override,
         )
 
     async def tts_phoneme_segments(self, text: str, *, device_id: str | None = None) -> tuple[int, list[dict]]:

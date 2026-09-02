@@ -12,7 +12,7 @@ from deskbot_server.dao.face_expr_scenes_store import (
     find_design_scene_by_name,
     load_face_expr_scenes_file,
 )
-from deskbot_server.dao.servo_config_store import clamp_servo_step, load_servo_cfg_file, resolve_move_for_perspective
+from deskbot_server.dao.servo_config_store import VIEWER_LR_SWAP, clamp_servo_step, load_servo_cfg_file
 from deskbot_server.pb.phoneme_anim import phoneme_seq_to_anim_seq
 from deskbot_server.pb.servo_pcm import _silence_phoneme_seg, anim_elements_from_row, make_anim_item
 from deskbot_server.pb.shapes import apply_anim_bg_color_elements
@@ -108,13 +108,54 @@ def anim_default_ms(anim_name: str, *, device_id: str | None = None) -> int:
     return sum(max(1, int(fr.get("ms") or 0)) for fr in frames)
 
 
-def expand_llm_moves(moves: list[dict[str, Any]] | None, *, device_id: str | None = None) -> list[dict[str, int]]:
-    """将 ``[{move, ms}, ...]`` 展开为缩放后的舵机 step 列表。"""
+def _llm_look_id_to_storage(move_id: str) -> str:
+    """LLM 本体视角的 look_* id → 实际存储 preset id。
+
+    ``servo.json`` 预设按「屏幕观众录制语义」命名/存储（调试时面向屏幕定义，
+    实测 look_left 的步骤物理上让机器人转向右边）。LLM 侧是机器人人格
+    （它说 look_left = 自己向左看），故下发前把左右对调后再取预设 steps。
+    """
+    want = str(move_id or "").strip()
+    if want.lower() in VIEWER_LR_SWAP:
+        return VIEWER_LR_SWAP[want.lower()]
+    return want
+
+
+def expand_llm_moves(moves: list[Any] | None, *, device_id: str | None = None) -> list[dict[str, int]]:
+    """moves 展开：字符串 = 预设 id（新协议，按预设默认时长，不缩放）；
+    dict = 兼容旧 ``{move, ms}``（按 ms 缩放）。返回舵机 step 列表。
+
+    look_* 以机器人自身视角理解（人格），内部对调映射到观众录制语义的预设。
+    """
     out: list[dict[str, int]] = []
     for item in moves or []:
+        if isinstance(item, str):
+            move_id = _llm_look_id_to_storage(item)
+            steps = _resolve_servo_preset_steps(move_id, device_id=device_id)
+            if not steps:
+                if move_id:
+                    logger.warning("[pb] LLM move 未找到预设 %r", move_id)
+                continue
+            for step in steps:
+                try:
+                    out.append(
+                        clamp_servo_step(
+                            {
+                                "xm": int(step.get("xm", 1)),
+                                "ym": int(step.get("ym", 1)),
+                                "x": int(step.get("x", 0)),
+                                "y": int(step.get("y", 0)),
+                                "ms": max(1, int(step.get("ms") or 400)),
+                            },
+                            device_id=device_id,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+            continue
         if not isinstance(item, dict):
             continue
-        move_id = resolve_move_for_perspective(str(item.get("move") or "").strip(), device_id=device_id)
+        move_id = _llm_look_id_to_storage(str(item.get("move") or "").strip())
         try:
             target_ms = int(item.get("ms", 0))
         except (TypeError, ValueError):
@@ -163,10 +204,24 @@ def expand_llm_moves(moves: list[dict[str, Any]] | None, *, device_id: str | Non
     return out
 
 
-def expand_llm_anims(anims: list[dict[str, Any]] | None, *, device_id: str | None = None) -> list[dict[str, Any]]:
-    """将 ``[{anim, ms}, ...]`` 展开为缩放后的 ``{ms, elements}`` 帧列表。"""
+def expand_llm_anims(anims: list[Any] | None, *, device_id: str | None = None) -> list[dict[str, Any]]:
+    """anims 展开：字符串 = 场景 name（新协议，按场景默认时长，不缩放）；
+    dict = 兼容旧 ``{anim, ms}``（按 ms 缩放，支持 bg/color）。返回 ``{ms, elements}`` 帧列表。"""
     out: list[dict[str, Any]] = []
     for item in anims or []:
+        if isinstance(item, str):
+            anim_name = item.strip()
+            frames = resolve_anim_scene_frames(anim_name, device_id=device_id)
+            if not frames:
+                logger.warning("[pb] LLM anim 未找到场景 %r（default 亦不可用）", anim_name)
+                continue
+            for fr in frames:
+                try:
+                    elements = _extract_frame_elements(fr if isinstance(fr, dict) else {})
+                except ValueError:
+                    continue
+                out.append({"ms": max(1, int(fr.get("ms") or 500)), "elements": elements})
+            continue
         if not isinstance(item, dict):
             continue
         anim_name = str(item.get("anim") or "").strip()

@@ -12,6 +12,6 @@
   "frontal_angle_threshold_deg": 15.0,
   "face_embedding_enabled": true,
   "identity_similarity_threshold": 0.42,
-  "frame_width": 320,
-  "frame_height": 240
+  "frame_width": 640,
+  "frame_height": 480
 }

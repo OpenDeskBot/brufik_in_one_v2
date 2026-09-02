@@ -13,7 +13,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Request, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from websockets.exceptions import ConnectionClosed
 
 from deskbot_server.constants import FACE_DESIGN_FILE, SERVO_CFG_FILE
@@ -289,6 +289,35 @@ async def api_pipeline_recent(request: Request) -> JSONResponse:
         status_code=200,
         content={"items": items, "device_id": dev, "limit": limit, "max_events": bus.max_events, "t": time.time()},
     )
+
+
+_PIPELINE_MEDIA_TYPES = {"asr": "audio/wav", "tts": "audio/wav", "face": "image/jpeg"}
+
+
+@router.get("/api/pipeline_audio")
+@require_api_auth
+async def api_pipeline_audio(request: Request):
+    """实时对话媒体回放：按 request_id 取内存仓库内容（asr/tts=WAV，face=最近帧 jpeg）。"""
+    from deskbot_server.service.application.convo_audio_store import ConvoAudioStore
+
+    qargs = _request_qargs(request)
+    peer = _request_peer(request)
+    dev = _extract_device_id(qargs)
+    denied = device_access_denied(request.state.user_id, dev)
+    if denied is not None:
+        return denied
+    rid = str(qargs.get("request_id") or "").strip()
+    kind = str(qargs.get("kind") or "").strip().lower()
+    media_type = _PIPELINE_MEDIA_TYPES.get(kind)
+    if media_type is None:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "invalid kind, expected asr|tts|face"})
+    if not dev or not rid:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "device_id and request_id are required"})
+    media = ConvoAudioStore().get(dev, rid, kind)
+    if media is None:
+        logger.info("[HTTP] GET /api/pipeline_audio miss peer=%s device_id=%s req=%s kind=%s", peer, dev, rid, kind)
+        return JSONResponse(status_code=404, content={"ok": False, "error": "media not found or expired"})
+    return Response(content=media, media_type=media_type, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/api/device_servo")

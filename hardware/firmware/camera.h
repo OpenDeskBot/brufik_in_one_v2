@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/** 初始化 OV2640（esp_camera）。失败返回 false，此时勿调用 task_setup_camera。 */
+/** 初始化摄像头（OV3660 模组，esp_camera 上电自动识别）。失败返回 false，此时勿调用 task_setup_camera。 */
 bool setup_camera();
 
 /** 释放相机驱动（幂等）；用于启动诊断后的二次 init。 */

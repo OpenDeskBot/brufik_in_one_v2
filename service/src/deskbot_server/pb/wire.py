@@ -75,8 +75,8 @@ def build_pb_wire_pairs(
     tts_cfg: dict[str, Any],
     *,
     servo_plan: list[dict[str, Any]] | None = None,
-    moves: list[dict[str, Any]] | None = None,
-    anims: list[dict[str, Any]] | None = None,
+    moves: list[Any] | None = None,  # 新协议：预设 id 字符串；兼容旧 {move, ms}
+    anims: list[Any] | None = None,  # 新协议：场景 name 字符串；兼容旧 {anim, ms}
     sample_rate: int,
     request_id: str | None = None,
     random_servo_cfg: dict[str, Any] | None = None,

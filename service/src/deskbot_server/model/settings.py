@@ -107,6 +107,7 @@ class AppSettings:
     llm: LlmSettings
     tts: TtsSettings
     camera_face: dict[str, Any] = field(default_factory=dict)
+    voiceprint: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -208,6 +209,7 @@ class AppSettings:
                 extra=tts_extra,
             ),
             camera_face=dict(config.get("camera_face") or {}),
+            voiceprint=dict(config.get("voiceprint") or {}),
             raw=config,
         )
 

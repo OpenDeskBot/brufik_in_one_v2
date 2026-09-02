@@ -57,6 +57,11 @@ class Device(Base):
     tts_provider: Mapped[str] = mapped_column(String(32), default="moss-tts-nano", server_default="moss-tts-nano", nullable=False)
     # 设备级 TTS 参数（JSON：{"moss": {"demo_id"}, "doubao": {"api_key", ...}}），NULL=未配置
     tts_param: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 设备级 LLM provider：空=未配置（沿用 llm_models.json 注册表 / 系统默认）；
+    # 取值如 llama-local / qwen / ark / openai（供能力热切换展示与回落）
+    llm_provider: Mapped[str] = mapped_column(String(64), default="", server_default="", nullable=False)
+    # 设备级 LLM 参数（JSON：{"context_window": 8192, ...}，上下文窗口影响历史 token 预算），NULL=未配置
+    llm_param: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 设备绑定的剧情剧本名（对应 data/quest/{quest_id}.json）；空/NULL=未绑定
     quest_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -113,6 +118,20 @@ class DeviceProfileFace(Base):
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     descriptor: Mapped[str] = mapped_column(Text, nullable=False)
     descriptor_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="embedding")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class DeviceProfileVoice(Base):
+    """设备已注册声纹档案（WeSpeaker 256 维 embedding，独立于 device_profile_face）。"""
+
+    __tablename__ = "device_profile_voice"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    descriptor: Mapped[str] = mapped_column(Text, nullable=False)
+    descriptor_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="voice")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

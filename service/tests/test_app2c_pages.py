@@ -459,11 +459,29 @@ def test_2c_lab_convo_realtime_markers(temp_db):
     assert "/api/device_turns" not in html
     assert "record_history" not in html
     assert "toggleRecordHistory" not in html
-    # 耗时展示：ASR / LLM / TTS / 总耗时
-    assert "ASR 解析" in html
-    assert "🤔 LLM" in html
+    # 耗时/模型展示：ASR / LLM（逐次调用）/ TTS / 总耗时 + 音频回放
+    assert "🎤 ASR" in html
+    assert "🤖 LLM #" in html
     assert "🔊 TTS" in html
     assert "总耗时" in html
+    assert "/api/pipeline_audio" in html
+    assert "mediaSrc" in html
+    assert "onAudioFail" in html
+    assert "llmCalls" in html or "llm_calls" in html
+    # 用户气泡输入侧调试：system prompt（折叠）+ 人脸画面/图像识别（直接展示）
+    assert "system_prompt" in html
+    assert "face_sight" in html
+    assert "face_img" in html
+    assert "🧑 视觉" in html
+    assert "System Prompt" in html
+    assert "imgFail" in html
+    # 新对话自动滚动到底部（上翻查看历史时暂停跟随）
+    assert "convoFollowBottom" in html
+    assert "scrollHistToBottom" in html
+    assert "onHistScroll" in html
+    # 对话窗口高度延伸到窗口底部（随视口自适应）
+    assert "resizeConvo" in html
+    assert "onWinResize" in html
 
 
 def test_2c_scene_playbook_export_plan_is_available_to_regular_user(temp_db):

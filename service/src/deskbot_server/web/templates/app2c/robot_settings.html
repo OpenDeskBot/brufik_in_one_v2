@@ -226,6 +226,35 @@
       <p class="cap-hint">「无」关闭人脸识别（不检测、不跟踪、不注册档案，推流画面照常）；
       「独立服务」需 insightface-engine 已安装并运行（多 worker 并行）。</p>
     </div>
+
+    <!-- ===== 声纹识别 ===== -->
+    <div class="cap-card">
+      <div class="cap-head">
+        <div class="cap-ico">🎙</div>
+        <div><b>声纹识别</b><small>VOICE RECOGNITION</small></div>
+      </div>
+      <label v-for="c in voiceprint.candidates" :key="c.id" class="cap-opt" :class="{on: selected.voiceprint===c.id}">
+        <input type="radio" name="voiceprint" :value="c.id" v-model="selected.voiceprint">
+        <span class="cap-opt-main">
+          <b>[[ c.name ]]
+            <span v-if="c.requires_service" class="cap-serv" :class="svcOn(c.requires_service)?'on':'off'">
+              ● [[ svcOn(c.requires_service)?'运行中':'未运行' ]]
+            </span>
+          </b>
+          <small>[[ c.description ]]</small>
+        </span>
+      </label>
+      <div v-if="voiceprint.warning" class="cap-warn">⚠ [[ voiceprint.warning ]]</div>
+      <div class="cap-foot">
+        <span class="cap-cur">当前：<b>[[ curName(voiceprint) ]]</b></span>
+        <button type="button" class="btn cap-apply" :disabled="selected.voiceprint===null || selected.voiceprint===voiceprint.current"
+                @click="applyVoiceprint">
+          [[ voiceprintBusy ? '保存中…' : '应用' ]]
+        </button>
+      </div>
+      <p class="cap-hint">开启后每次识别到一句语音（VAD 出句）即做说话人识别，供对话称呼与「记住我的声音」注册；
+      「独立服务」需 wespeaker-resnet34 已安装并运行。</p>
+    </div>
   </div>
 
   <p class="cap-hint" style="margin-top:14px">
@@ -480,11 +509,12 @@ createApp({
   data(){
     return {
       status: null,
-      selected: { asr: null, llm: null, tts: null, face: null },
+      selected: { asr: null, llm: null, tts: null, face: null, voiceprint: null },
       busyLlm: false,
       err: '',
       msg: '',
       faceBusy: false,      // 应用人脸识别中
+      voiceprintBusy: false, // 应用声纹识别中
       ttsBusy: false,       // 应用 TTS 中
       llmCfg: null,         // LLM 配置/试聊对话框状态（null=关闭）
       llmTestResult: null,  // 最近一次试聊结果（{ok, reply, elapsed_ms, model, error}）
@@ -499,6 +529,7 @@ createApp({
     llm(){ return (this.status && this.status.capabilities.llm) || { candidates: [], current: null, warning: null, device_override: { active: false } }; },
     tts(){ return (this.status && this.status.capabilities.tts) || { candidates: [], current: null, warning: null, device_params: { configured: false } }; },
     face(){ return (this.status && this.status.capabilities.face) || { candidates: [], current: null, warning: null }; },
+    voiceprint(){ return (this.status && this.status.capabilities.voiceprint) || { candidates: [], current: null, warning: null }; },
     noDevice(){ return !(this.status && this.status.device_id); },
     envNotice(){
       if(!this.status) return '';
@@ -535,6 +566,7 @@ createApp({
         if(this.selected.llm === null && this.llm.current !== 'device') this.selected.llm = this.llm.current;
         if(this.selected.tts === null) this.selected.tts = this.tts.current;
         if(this.selected.face === null) this.selected.face = this.face.current;
+        if(this.selected.voiceprint === null) this.selected.voiceprint = this.voiceprint.current;
       }catch(e){ this.err = '加载失败：' + e.message; }
     },
     async applyAsr(){
@@ -613,6 +645,23 @@ createApp({
         this.err = '切换失败：' + e.message;
         await this.load();
       }finally{ this.faceBusy = false; }
+    },
+    async applyVoiceprint(){
+      if(this.selected.voiceprint === null || this.voiceprintBusy) return;
+      this.err = ''; this.msg = '';
+      this.voiceprintBusy = true;
+      try{
+        const d = await this.api('/api/robot-settings/voiceprint', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: this.selected.voiceprint }),
+        });
+        this.status = d;
+        this.msg = '声纹识别已设为「' + this.curName(this.voiceprint) + '」并生效';
+        if(d.capabilities && d.capabilities.voiceprint.warning) this.err = d.capabilities.voiceprint.warning;
+      }catch(e){
+        this.err = '切换失败：' + e.message;
+        await this.load();
+      }finally{ this.voiceprintBusy = false; }
     },
     async openLlmCfg(provider){
       // 打开配置对话框：ark 表单回填（config-info，api_key 掩码）；本地只读端点；支持试聊

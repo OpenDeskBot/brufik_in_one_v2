@@ -17,7 +17,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-/* Deskbot v2 板摄像头引脚（OV2640，8-bit 并口 + SCCB；来源同 deskbot_config.h） */
+/* Deskbot v2 板摄像头引脚（OV3660 模组，8-bit 并口 + SCCB；esp_camera 上电自动识别，引脚 OV2640/OV3660 通用） */
 #define PWDN_GPIO_NUM  -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM  14
@@ -36,9 +36,25 @@
 #define PCLK_GPIO_NUM  48
 
 static constexpr bool kCameraCaptureEnabled = true;
-static constexpr size_t kMaxJpegBin = 32 * 1024;
+/* 假说复测：XGA 1024×768 恰为 QXGA 的 1/2（整数倍，2×2 binning 理论上是干净降采样，
+ * 且帧体 ~½、发送快一半）。注：XGA+质量 5 此前实测过一次"字不清晰"，
+ * 本版复测验证整数倍 binning 假说——仍糊则坐实 XGA 有损，回 QXGA。 */
+static constexpr size_t kMaxJpegBin = 2 * 1024 * 1024;
 static constexpr uint32_t kFbNullLogIntervalMs = 30000u;
-static constexpr uint8_t kJpegQuality = 18;
+static constexpr uint8_t kJpegQuality = 5;
+static constexpr framesize_t kFrameSize = FRAMESIZE_XGA;
+static constexpr const char* kFrameSizeName = "XGA";
+/* 传感器级边缘增强（OV3660 驱动实现，范围 -3..3，0=默认）。denoise 保持关（抹细节）。
+ * 对比度 +1：+2 实测浅字略清但高光过曝裁切；+1 折中。 */
+static constexpr int8_t kSensorSharpness = 3;
+static constexpr int8_t kSensorDenoise = 0;
+static constexpr int8_t kSensorContrast = 1;
+/* 画面方向：实测当前装配在 hmirror=1+vflip=1 下呈"仅左右镜像"（文字头朝上），
+ * 推出正确组合为 hmirror=0 + vflip=1（传感器原生输出上下颠倒）。 */
+static constexpr int8_t kSensorHmirror = 0;
+static constexpr int8_t kSensorVflip = 1;
+/* QXGA 帧可达数 MB，评估 ROM 用单缓冲省 PSRAM（1fps 节奏下无碍）。 */
+static constexpr uint8_t kFbCount = 1;
 
 static bool s_camera_ok = false;
 static bool s_hw_inited = false;
@@ -74,13 +90,13 @@ static void camera_fill_pins(camera_config_t& config) {
   config.pin_sscb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
-  /* OV2640 在 XIAO ESP32S3 Sense 上 XCLK 用 10MHz；20MHz 会导致 DMA 数据损坏（绿屏）。 */
+  /* ESP32-S3 上 XCLK 用 10MHz；20MHz 会导致 DMA 数据损坏（绿屏）。 */
   config.xclk_freq_hz = 10000000;
-  config.frame_size = FRAMESIZE_QVGA;
+  config.frame_size = kFrameSize;
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.jpeg_quality = kJpegQuality;
-  config.fb_count = 2;
+  config.fb_count = kFbCount;
 }
 
 static void camera_tune_sensor(void) {
@@ -91,12 +107,18 @@ static void camera_tune_sensor(void) {
   if (s->set_special_effect) {
     s->set_special_effect(s, 0);
   }
-  /* v2 板摄像头模块在机壳内旋转 180° 安装，需镜像+翻转修正方向。 */
+  if (s->set_sharpness) {
+    s->set_sharpness(s, kSensorSharpness);
+  }
+  if (s->set_denoise) {
+    s->set_denoise(s, kSensorDenoise);
+  }
+  /* 画面方向修正（实测校正，见 kSensorHmirror/kSensorVflip 注释）。 */
   if (s->set_hmirror) {
-    s->set_hmirror(s, 1);
+    s->set_hmirror(s, kSensorHmirror);
   }
   if (s->set_vflip) {
-    s->set_vflip(s, 1);
+    s->set_vflip(s, kSensorVflip);
   }
   /* 荧光灯：AWB+Auto；关 awb_gain 会整幅偏绿，固定 Home/Office 也不稳。 */
   if (s->set_whitebal) {
@@ -115,7 +137,7 @@ static void camera_tune_sensor(void) {
     s->set_brightness(s, 0);
   }
   if (s->set_contrast) {
-    s->set_contrast(s, 0);
+    s->set_contrast(s, kSensorContrast);
   }
   if (s->set_lenc) {
     s->set_lenc(s, 1);
@@ -129,9 +151,11 @@ static void camera_tune_sensor(void) {
   if (s->set_raw_gma) {
     s->set_raw_gma(s, 1);
   }
+  log_info("[CAMERA] sensor tune sharpness=%d denoise=%d", (int)kSensorSharpness,
+           (int)kSensorDenoise);
 }
 
-/** OV2640 硬件 JPEG 初始化。 */
+/** OV3660 模组 JPEG 初始化。 */
 static bool camera_init_hw(void) {
   if (s_hw_inited) {
     esp_camera_deinit();
@@ -142,8 +166,8 @@ static bool camera_init_hw(void) {
   camera_config_t config = {};
   camera_fill_pins(config);
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_QVGA;
-  config.fb_count = 2;
+  config.frame_size = kFrameSize;
+  config.fb_count = kFbCount;
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   const esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
@@ -158,7 +182,9 @@ static bool camera_init_hw(void) {
     return false;
   }
   log_info("[CAMERA] sensor PID=0x%x%s mode=JPEG", (unsigned)s->id.PID,
-           s->id.PID == OV2640_PID ? " OV2640" : "");
+           s->id.PID == OV2640_PID   ? " OV2640"
+           : s->id.PID == OV3660_PID ? " OV3660"
+                                     : "");
   camera_tune_sensor();
 
   /* JPEG 冷启动常连续 null，多等一会再抓。 */
@@ -196,7 +222,7 @@ static bool camera_init_hw(void) {
            (unsigned)probe->len, (unsigned)probe->width, (unsigned)probe->height,
            (unsigned)got_ms);
 
-  if (got_ms > 2500u) {
+  if (got_ms > 8000u) {
     log_warn("[CAMERA] probe fb_get too slow (%u ms)", (unsigned)got_ms);
     esp_camera_fb_return(probe);
     return false;
@@ -251,7 +277,8 @@ bool setup_camera() {
 
   s_camera_ok = true;
   s_fb_null_count = 0;
-  log_info("[CAMERA] setup_camera ok framesize=QVGA");
+  log_info("[CAMERA] setup_camera ok framesize=%s quality=%u", kFrameSizeName,
+           (unsigned)kJpegQuality);
   return true;
 }
 
@@ -333,7 +360,8 @@ bool camera_try_capture_packed(uint8_t** packed, size_t* packed_len) {
   const uint32_t jpg_t0 = millis();
   if (fb->format == PIXFORMAT_JPEG) {
     if (fb->len > 0 && fb->len <= kMaxJpegBin) {
-      jpg = (uint8_t*)malloc(fb->len);
+      /* 帧拷贝走 PSRAM：VGA 帧可达上百 KB，普通 malloc 走内部 RAM 会压垮堆。 */
+      jpg = (uint8_t*)heap_caps_malloc(fb->len, MALLOC_CAP_SPIRAM);
       if (jpg) {
         memcpy(jpg, fb->buf, fb->len);
         jpg_len = fb->len;

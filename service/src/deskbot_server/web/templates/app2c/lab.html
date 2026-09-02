@@ -57,6 +57,16 @@
   .hist-text{margin:0 0 6px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
   .hist-tools{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
   .tool-chip{font-size:11px;font-family:var(--mono);background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);padding:2px 8px;cursor:help}
+  .convo-call{display:grid;gap:5px;margin:6px 0;padding:6px 8px;border:var(--bw) solid var(--line);border-radius:var(--r);background:var(--panel)}
+  .convo-call-head{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .convo-chip{display:inline-flex;align-items:center;font-size:11px;font-family:var(--mono);background:var(--panel2);border:var(--bw) solid var(--line);border-radius:var(--r);padding:2px 8px;white-space:nowrap}
+  .convo-chip.dim{color:var(--dim)}
+  .convo-call-text{margin:0}
+  .convo-details{margin-top:2px}
+  .convo-details summary{cursor:pointer;font-size:11px;font-family:var(--mono);color:var(--accent)}
+  .convo-details p{max-height:260px;overflow:auto}
+  .convo-audio{display:block;width:100%;height:34px;margin:2px 0 4px;border:var(--bw) solid var(--line);border-radius:6px;background:var(--panel2)}
+  .convo-face{display:block;max-width:220px;max-height:170px;border:var(--bw) solid var(--line);border-radius:6px;background:#111;margin:2px 0 4px}
   .hist-turn.live{opacity:.92}
   .hist-turn.live .hist-bubble{border-style:dashed}
   .live-dot{color:var(--accent);animation:live-pulse 1.2s ease-in-out infinite}
@@ -355,37 +365,85 @@
         <div>
           <b>实时对话</b>
           <small>由流水日志驱动：WS 实时订阅 + /api/pipeline_recent 初始加载（窗口 100 条）。只显示对话轮次，自动下发事件见「流水日志」tab。</small>
+          <small>每条消息展示 ASR / LLM / TTS 的模型与耗时；LLM 多次调用逐条列出（调用输出过长可展开）。用户气泡内含本轮 System Prompt 与机器人看到的画面/图像识别（均可折叠）；ASR 原声与 TTS 合成音可回放（媒体仅会话内存保留，过期后自动隐藏）。</small>
         </div>
       </div>
-      <small class="lab-note">接口：/api/pipeline_recent · /device_pipeline（role=subscriber）</small>
+      <small class="lab-note">接口：/api/pipeline_recent · /api/pipeline_audio · /device_pipeline（role=subscriber）</small>
     </div>
 
     <div class="lab-panel wide">
       <div class="lab-head"><div><b>对话记录</b><small>按时间升序 · 实时刷新 · 仅本会话内存保留。机器人左对齐 · 用户右对齐。</small></div></div>
-      <div class="hist-chat" ref="histChat">
+      <div class="hist-chat" ref="histChat" @scroll="onHistScroll">
         <template v-if="convoTurns.length">
           <div v-for="t in convoTurns" :key="'row_'+t.request_id" class="hist-turn" :class="{live: !t.final}">
             <div class="hist-bubble user">
-              <p v-if="t.asr_text" class="hist-text">[[ t.asr_text ]]</p>
-              <div class="hist-meta" v-if="t.asr_ms !== null && t.asr_ms !== undefined">
-                <span>ASR 解析 [[ fmtMs(t.asr_ms) ]]</span>
+              <div class="hist-meta" v-if="t.asr_model || (t.asr_ms !== null && t.asr_ms !== undefined) || t.audio_asr">
+                <span class="convo-chip">🎤 ASR</span>
+                <span v-if="t.asr_model" class="convo-chip dim">[[ t.asr_model ]]</span>
+                <span v-if="t.asr_ms !== null && t.asr_ms !== undefined" class="convo-chip dim">[[ fmtMs(t.asr_ms) ]]</span>
                 <span v-if="t.received_ts" class="dim">· [[ tsText(t.received_ts) ]]</span>
               </div>
+              <p v-if="t.asr_text" class="hist-text">[[ t.asr_text ]]</p>
+              <audio v-if="t.audio_asr" v-show="!t.asrAudioFail" class="convo-audio" controls preload="none" :src="mediaSrc(t,'asr')" @error="onAudioFail(t,'asr')"></audio>
+              <div v-if="t.face_img || t.face_sight" class="convo-call">
+                <div class="convo-call-head">
+                  <span class="convo-chip">🧑 视觉</span>
+                  <span v-if="t.face_sight" class="convo-chip dim">图像识别</span>
+                  <span v-if="t.face_img" class="convo-chip dim">最近一帧</span>
+                </div>
+                <img v-if="t.face_img" v-show="!t.imgFail" class="convo-face" :src="mediaSrc(t,'face')" @error="onAudioFail(t,'face')" alt="该轮人脸画面">
+                <p v-if="t.face_sight" class="hist-text convo-call-text">[[ t.face_sight ]]</p>
+              </div>
+              <div v-if="t.voice_sight" class="convo-call">
+                <div class="convo-call-head">
+                  <span class="convo-chip">🎙 声音</span>
+                  <span class="convo-chip dim">声纹识别</span>
+                </div>
+                <p class="hist-text convo-call-text">[[ t.voice_sight ]]</p>
+              </div>
+              <details v-if="t.system_prompt" class="convo-call convo-details">
+                <summary>📝 System Prompt（系统提示词 · 本轮输入）</summary>
+                <p class="hist-text convo-call-text">[[ t.system_prompt ]]</p>
+              </details>
             </div>
             <div class="hist-bubble bot">
               <div class="hist-meta">
-                <span v-if="t.llm_ms !== null && t.llm_ms !== undefined">🤔 LLM [[ fmtMs(t.llm_ms) ]]</span>
-                <span v-if="t.tts_ms !== null && t.tts_ms !== undefined">🔊 TTS [[ fmtMs(t.tts_ms) ]]</span>
-                <span v-if="t.e2e_ms !== null && t.e2e_ms !== undefined" class="dim">· 总耗时 [[ fmtMs(t.e2e_ms) ]]</span>
+                <span v-if="t.e2e_ms !== null && t.e2e_ms !== undefined" class="dim">⏱ 总耗时 [[ fmtMs(t.e2e_ms) ]]</span>
+                <span v-if="t.llm_ms !== null && t.llm_ms !== undefined && !(t.llm_calls && t.llm_calls.length)">🤖 LLM 整轮 [[ fmtMs(t.llm_ms) ]]</span>
                 <span v-if="t.source">· [[ sourceLabel(t.source) ]]</span>
+                <span v-if="t.received_ts" class="dim">· [[ tsText(t.received_ts) ]]</span>
                 <span v-if="t.note">[[ t.note ]]</span>
                 <span v-if="!t.final" class="live-dot">进行中…</span>
+              </div>
+              <div v-if="t.llm_calls && t.llm_calls.length" class="convo-calls">
+                <div v-for="(call, i) in t.llm_calls" :key="'llm_'+i" class="convo-call">
+                  <div class="convo-call-head">
+                    <span class="convo-chip">🤖 LLM #[[ call.n ]]</span>
+                    <span v-if="call.model" class="convo-chip dim">[[ call.model ]]</span>
+                    <span class="convo-chip dim">[[ fmtMs(call.ms) ]]</span>
+                  </div>
+                  <template v-if="call.text">
+                    <p class="hist-text dim convo-call-text">[[ llmCallPreview(call) ]]<template v-if="call.text.length > 180">…</template></p>
+                    <details v-if="call.text.length > 180" class="convo-details">
+                      <summary>展开完整调用输出（[[ call.text.length ]] 字）</summary>
+                      <p class="hist-text">[[ call.text ]]</p>
+                    </details>
+                  </template>
+                </div>
               </div>
               <div v-if="t.tools && t.tools.length" class="hist-tools">
                 <span v-for="(tool, i) in t.tools" :key="i" class="tool-chip" :title="json(tool.args)">🔧 [[ toolName(tool) ]]</span>
               </div>
               <p v-if="t.llm_text" class="hist-text">[[ t.llm_text ]]</p>
               <p v-if="t.tts_text && t.tts_text !== t.llm_text" class="hist-text dim">🗣 [[ t.tts_text ]]</p>
+              <div v-if="t.tts_ms !== null && t.tts_ms !== undefined || t.tts_text" class="convo-call">
+                <div class="convo-call-head">
+                  <span class="convo-chip">🔊 TTS</span>
+                  <span v-if="t.tts_model" class="convo-chip dim">[[ t.tts_model ]]</span>
+                  <span class="convo-chip dim">[[ fmtMs(t.tts_ms) ]]</span>
+                </div>
+                <audio v-if="t.audio_tts" v-show="!t.ttsAudioFail" class="convo-audio" controls preload="none" :src="mediaSrc(t,'tts')" @error="onAudioFail(t,'tts')"></audio>
+              </div>
               <p v-if="t.error" class="hist-text hist-error">⚠ [[ t.error ]]</p>
             </div>
           </div>
@@ -443,6 +501,8 @@ createApp({
     },
     pipeline:{ws:null,status:'',events:[],retry:0,retryTimer:null},
     convo:{rows:{}},
+    // 实时对话：新消息到达是否自动滚到底部（用户上翻查看历史时暂停跟随）
+    convoFollowBottom:true,
   }; },
   computed:{
     robotServoXLabel(){
@@ -472,6 +532,7 @@ createApp({
     },
   },
   watch:{
+    'convo.rows':{deep:true,handler(){ if(this.convoFollowBottom) this.$nextTick(this.scrollHistToBottom); }},
     simServo:{deep:true,handler(){ this._robotSyncServoAngles(); }},
     'servo.config.x_reverse'(){ this._robotSyncServoAngles(); },
     'servo.config.y_reverse'(){ this._robotSyncServoAngles(); },
@@ -507,7 +568,7 @@ createApp({
       if(tab==='servo') this.$nextTick(()=>{ if(!this._robot3d) void this.robotInit3d(); });
       if(tab==='camera') this.loadCameraMode({silent:true});
       if(tab==='logs') this.loadRuntimeToggles({silent:true});
-      if(tab==='convo'){ this.ensurePipelineWs(); this.loadConvoRecent(); }
+      if(tab==='convo'){ this.ensurePipelineWs(); this.loadConvoRecent(); this.$nextTick(this.resizeConvo); }
     },
     async loadDevices(){
       const d=await this.api('/app/api/devices');
@@ -598,9 +659,19 @@ createApp({
       if(evt.voice_auto_reply_off){ row.final=true; row.note='自动应答已关闭'; }
       if(evt.asr_text!==undefined) row.asr_text=evt.asr_text;
       if(evt.asr_ms!==undefined) row.asr_ms=evt.asr_ms;
+      if(evt.asr_model!==undefined) row.asr_model=evt.asr_model;
       if(evt.llm_text!==undefined) row.llm_text=evt.llm_text;
       if(evt.llm_ms!==undefined) row.llm_ms=evt.llm_ms;
+      if(evt.llm_calls!==undefined) row.llm_calls=evt.llm_calls;
       if(evt.tts_text!==undefined) row.tts_text=evt.tts_text;
+      if(evt.tts_ms!==undefined) row.tts_ms=evt.tts_ms;
+      if(evt.tts_model!==undefined) row.tts_model=evt.tts_model;
+      if(evt.audio_asr!==undefined) row.audio_asr=evt.audio_asr;
+      if(evt.audio_tts!==undefined) row.audio_tts=evt.audio_tts;
+      if(evt.face_img!==undefined) row.face_img=evt.face_img;
+      if(evt.face_sight!==undefined) row.face_sight=evt.face_sight;
+      if(evt.voice_sight!==undefined) row.voice_sight=evt.voice_sight;
+      if(evt.system_prompt!==undefined) row.system_prompt=evt.system_prompt;
       if(evt.source!==undefined) row.source=evt.source;
       this.convo.rows[rid]=row;
     },
@@ -617,10 +688,19 @@ createApp({
         if(evt.tools!==undefined) row.tools=evt.tools;
         if(evt.asr_text!==undefined) row.asr_text=evt.asr_text;
         if(evt.asr_ms!==undefined) row.asr_ms=evt.asr_ms;
+        if(evt.asr_model!==undefined) row.asr_model=evt.asr_model;
         if(evt.llm_text!==undefined) row.llm_text=evt.llm_text;
         if(evt.llm_ms!==undefined) row.llm_ms=evt.llm_ms;
+        if(evt.llm_calls!==undefined) row.llm_calls=evt.llm_calls;
         if(evt.tts_text!==undefined) row.tts_text=evt.tts_text;
         if(evt.tts_ms!==undefined) row.tts_ms=evt.tts_ms;
+        if(evt.tts_model!==undefined) row.tts_model=evt.tts_model;
+        if(evt.audio_asr!==undefined) row.audio_asr=evt.audio_asr;
+        if(evt.audio_tts!==undefined) row.audio_tts=evt.audio_tts;
+        if(evt.face_img!==undefined) row.face_img=evt.face_img;
+        if(evt.face_sight!==undefined) row.face_sight=evt.face_sight;
+        if(evt.voice_sight!==undefined) row.voice_sight=evt.voice_sight;
+        if(evt.system_prompt!==undefined) row.system_prompt=evt.system_prompt;
         if(evt.source!==undefined) row.source=evt.source;
         if(evt.received_ts) row.received_ts=evt.received_ts;
         if(evt.voice_auto_reply_off) row.note='自动应答已关闭';
@@ -642,6 +722,42 @@ createApp({
     },
     toolName(t){ return (t && (t.tool || t.name)) || '工具'; },
     sourceLabel(s){ return ({asr:'语音', text:'文本', device_tts:'设备 TTS', scheduled_task:'定时任务'})[s] || s || ''; },
+    llmCallPreview(call){
+      const txt=(call && call.text) || '';
+      return txt.length>180 ? txt.slice(0,180) : txt;
+    },
+    mediaSrc(t, kind){
+      return this.proxyPath('/api/pipeline_audio', {request_id: t && t.request_id, kind});
+    },
+    onAudioFail(t, kind){
+      if(!t) return;
+      if(kind==='asr') t.asrAudioFail=1;
+      else if(kind==='tts') t.ttsAudioFail=1;
+      else if(kind==='face') t.imgFail=1;
+    },
+    onHistScroll(e){
+      const el=(e && e.target) || this.$refs.histChat;
+      if(!el) return;
+      // 距底部 60px 内视为跟随模式；上翻查看历史时暂停自动滚动
+      this.convoFollowBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 60;
+    },
+    scrollHistToBottom(){
+      const el=this.$refs.histChat;
+      if(el) el.scrollTop=el.scrollHeight;
+    },
+    // 对话区高度延伸到窗口底部（不超界），最大化聊天可视范围
+    resizeConvo(){
+      if(this.active!=='convo') return;
+      const el=this.$refs.histChat;
+      if(!el) return;
+      const gap=16; // 距窗口底部留白
+      const h=Math.max(180, window.innerHeight - el.getBoundingClientRect().top - gap);
+      el.style.height=h+'px';
+      el.style.maxHeight=h+'px';
+    },
+    onWinResize(){
+      if(this.active==='convo') this.resizeConvo();
+    },
     fmtMs(v){ if(v===null || v===undefined) return '-'; v=Number(v); if(v>=1000) return (v/1000).toFixed(3)+'s'; return v+'ms'; },
     tsText(ts){ if(!ts) return ''; const d=new Date(ts*1000); const p=n=>String(n).padStart(2,'0'); return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); },
     normalizeServoConfig(cfg){
@@ -1007,8 +1123,11 @@ createApp({
   async mounted(){
     await this.loadAll();
     this.$nextTick(()=>{ this.ensurePipelineWs(); void this.robotInit3d(); });
+    window.addEventListener('resize', this.onWinResize);
+    if(this.active==='convo') this.$nextTick(this.resizeConvo);
   },
   beforeUnmount(){
+    window.removeEventListener('resize', this.onWinResize);
     this._pipelineClosed=true;
     this.closeCamera();
     this.closePipeline();

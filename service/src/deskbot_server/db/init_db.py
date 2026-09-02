@@ -54,6 +54,10 @@ def _migrate_devices_schema(engine) -> None:
             conn.execute(text("ALTER TABLE devices ADD COLUMN tts_provider VARCHAR(32) NOT NULL DEFAULT 'moss-tts-nano'"))
         if "tts_param" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN tts_param TEXT"))
+        if "llm_provider" not in cols:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN llm_provider VARCHAR(64) NOT NULL DEFAULT ''"))
+        if "llm_param" not in cols:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN llm_param TEXT"))
         if "quest_id" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN quest_id VARCHAR(64)"))
 

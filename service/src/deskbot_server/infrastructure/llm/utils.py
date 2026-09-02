@@ -44,6 +44,14 @@ def _face_expr_scene_entries(*, device_id: str | None = None) -> list[dict[str, 
     return out
 
 
+def estimate_text_tokens(text: str) -> int:
+    """本地引擎无 tokenizer 时的粗略 token 估算（宁多勿少）：CJK 约 1.1 token/字，其余按 3.2 字符/token。"""
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if "一" <= ch <= "鿿" or "　" <= ch <= "〿" or "＀" <= ch <= "￯")
+    return int(cjk * 1.1) + int((len(text) - cjk) / 3.2) + 1
+
+
 def _cached_appendix(cache_key: str, mtime_path: str, build_fn) -> str:
     global _LLM_APPENDIX_CACHE
     try:
@@ -59,7 +67,7 @@ def _cached_appendix(cache_key: str, mtime_path: str, build_fn) -> str:
 
 
 def llm_pb_moves_prompt_appendix(*, device_id: str | None = None) -> str:
-    """供 system prompt 追加：合法 ``moves`` 预设 id、label 与默认时长。"""
+    """供 system prompt 追加：合法 ``gesture`` 动作 id 白名单（LLM 侧字段名 gesture）。"""
 
     def _build() -> str:
         try:
@@ -68,27 +76,21 @@ def llm_pb_moves_prompt_appendix(*, device_id: str | None = None) -> str:
             return ""
         if not cfg:
             return ""
-        lines: list[str] = []
+        ids: list[str] = []
         for preset in cfg.get("presets") or []:
             if not isinstance(preset, dict):
                 continue
             pid = str(preset.get("id") or "").strip()
-            label = str(preset.get("label") or "").strip()
-            if not pid:
-                continue
-            default_ms = sum(max(1, int(s.get("ms") or 0)) for s in (preset.get("steps") or []))
-            lines.append(f"      - {pid}: {label or pid}（默认 {default_ms} ms）")
-        if not lines:
+            if pid and pid not in ids:
+                ids.append(pid)
+        if not ids:
             return ""
-        body = "\n".join(lines)
+        body = ", ".join(ids)
         return (
-            '  - moves: 数组。每项 ``{"move": "预设动作id", "ms": 执行时长}``。'
-            "``move`` 须从下列预设中选取；``ms`` 为该动作整体期望时长（毫秒），"
-            "服务端会按预设各 step 默认时长比例缩放，**ms 越大越慢、越小越快**。\n"
-            "    **left/right 类动作默认按观众视角**（机器人对面的人看到的左/右），"
-            "不是机器人自己身体的左右。\n"
-            f"    可用预设动作：\n{body}\n"
-            "    不需要动作时写 []。\n"
+            '  - gesture: 数组，元素从可用动作中选 id，如 ["nod_head", "center"]；'
+            "按默认时长执行，不需要时写 []。\n"
+            "    look_* 类以机器人自身视角理解：look_left 是机器人自己向左看，像你转头一样。\n"
+            f"    可用动作：{body}\n"
         )
 
     mtime_path = resolve_json_path(SERVO_CFG_FILE, device_id)
@@ -97,30 +99,24 @@ def llm_pb_moves_prompt_appendix(*, device_id: str | None = None) -> str:
 
 
 def llm_pb_anims_prompt_appendix(*, device_id: str | None = None) -> str:
-    """供 system prompt 追加：合法 ``anims`` 场景 name、title 与默认时长。"""
+    """供 system prompt 追加：合法 ``expression`` 表情名白名单（LLM 侧字段名 expression）。"""
 
     def _build() -> str:
         rows = _face_expr_scene_entries(device_id=device_id)
         if not rows:
             return ""
-        lines: list[str] = []
+        names: list[str] = []
         for row in rows:
             name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-            title = str(row.get("title") or name).strip()
-            default_ms = sum(max(1, int(fr.get("ms") or 0)) for fr in (row.get("frames") or []))
-            lines.append(f"      - {name}: {title}（默认 {default_ms} ms）")
-        body = "\n".join(lines)
+            if name and name not in names:
+                names.append(name)
+        if not names:
+            return ""
+        body = ", ".join(names)
         return (
-            '  - anims: 数组。每项 ``{"anim": "场景name", "ms": 执行时长, "bg"?, "color"?}``。'
-            "``anim`` 须与 ``data/deskbot-face.json`` 的 ``emotions[].name``（或 ``alias``）一致；"
-            "``ms`` 为该段表情动画整体期望时长，服务端按各帧默认时长比例缩放，"
-            "**ms 越大越慢、越小越快**。未知名会回退 ``default`` / ``idle``，仍无则跳过。\n"
-            "    可选 ``bg``：全屏背景色字符串（``#RGB`` / ``#RRGGBB`` / 命名色）；"
-            "可选 ``color``：该段默认前景色（未单独设色的 text 图元会继承）。\n"
-            f"    可用表情动画：\n{body}\n"
-            "    不需要时写 []。有 TTS 音素时分片口型仍由音素驱动，其它图层用所选 anim。\n"
+            '  - expression: 数组，元素从可用表情中选，如 ["happy", "idle"]；'
+            "按默认时长执行，不需要时写 []。\n"
+            f"    未知名会回退 default / idle，仍无则跳过。可用表情：{body}\n"
         )
 
     def _face_anim_mtime_path() -> str:
@@ -158,25 +154,6 @@ def llm_memory_prompt_appendix(device_id: str | None = None) -> str:
     return "长期记忆（可用 memory_delete 删除，id 见方括号）：\n" + "\n".join(lines)
 
 
-def llm_device_screen_appendix(device_id: str | None = None) -> str:
-    """屏幕分辨率与当前音量，注入 system prompt。"""
-    from deskbot_server.dao import device_mapper
-    from deskbot_server.pb.display import FACE_LCD_HEIGHT, FACE_LCD_WIDTH
-
-    vol = 80
-    if device_id:
-        dev = device_mapper.get_by_device_id(device_id)
-        if dev is not None:
-            vol = int(dev.volume or 80)
-    return (
-        "设备屏幕与音量：\n"
-        f"  - 逻辑分辨率：**{FACE_LCD_WIDTH}×{FACE_LCD_HEIGHT}** 像素，原点左上角 (0,0)。\n"
-        f"  - 当前播放音量：**{vol}**（0–100）。JSON 中写 ``volume`` 会下发到 ESP32 并**持久保存**；"
-        "省略则保持当前音量。\n"
-        "  - 屏幕通过表情/图元（``anims`` / 场景）展示，**不要**使用 ``images`` / ``screen_text`` 字段。\n"
-    )
-
-
 def llm_tools_prompt_appendix() -> str:
     """LLM 可返回的 tools 数组说明。"""
     return (
@@ -187,6 +164,8 @@ def llm_tools_prompt_appendix() -> str:
         "mode: follow（跟随人脸）/ follow_frontal（跟随正脸）/ 省略（关闭）。说话前画面有人时必须调用。\n"
         '  - register_face: {"tool":"register_face","name":"姓名","face_id":1} 把当前画面 face_id 的人脸注册/更新到档案。'
         "face_id 见每轮 user 消息「图像识别」；仅一张脸时可省略；多人须指定 face_id 或先向用户澄清。\n"
+        '  - register_voiceprint: {"tool":"register_voiceprint","name":"姓名"} 记住刚说话的人的声音（注册样本来自最近一次对话语音）。'
+        "用户说「记住我的声音/我叫xx」时必须调用；若返回样本不足的提示，请引导用户先对机器人说一句完整的话再重新注册。\n"
         '  - capture_camera: {"tool":"capture_camera"} 获取 ESP32 最近一帧相机 JPEG（返回 jpeg_base64 与尺寸），'
         "用于结合画面判断；无帧则提示主人确认相机上行已开启。\n"
         '  - memory_add: {"tool":"memory_add","text":"要记住的内容"} 新增长期记忆；'
@@ -206,21 +185,7 @@ def llm_tools_prompt_appendix() -> str:
         "读写本设备 tmp 目录（路径仅限 data/device/{device_id}/tmp/，禁止 .. 与绝对路径）。\n"
         "  - session: 查询当前与最近对话 session（10 分钟无对话自动开新 session）\n"
         '    当前：{"action":"current"}；列表：{"action":"list","limit":10}；详情：{"action":"get","session_id":"…"}（省略 id 读当前）\n'
-        "  - miot: 米家智能家居查看/控制（需已绑定）。**用户要求开关灯/空调/场景时必须调用，禁止仅口头答应。**\n"
-        "    设备见上方「米家智能家居」摘要；优先 name，重名加 room，或用 did。\n"
-        '    列表：{"action":"list","online":true}｜读属性：{"action":"props","name":"台灯","keys":["on","brightness"]}｜'
-        '写属性：{"action":"set","name":"台灯","key":"on","value":true}｜查能力：{"action":"spec","name":"台灯"}｜'
-        '调动作：{"action":"action","name":"音箱","key":"play-text","args":["你好"]}｜跑场景：{"action":"run_scene","scene_name":"回家模式"}｜'
-        '刷新缓存：{"action":"sync"}；授权状态：{"action":"status"}\n'
-        "    失败时结果含 error/hint/solution，用口语向用户说明原因与解决办法。\n"
     )
-
-
-def llm_miot_prompt_appendix(device_id: str | None = None) -> str:
-    """米家家庭/设备摘要，注入 system prompt。"""
-    from deskbot_server.service.miot_service import llm_miot_prompt_appendix as _miot_ax
-
-    return _miot_ax(device_id)
 
 
 def llm_quest_tasks_prompt_appendix(*, device_id: str | None = None) -> str:
@@ -267,8 +232,8 @@ def llm_quest_tools_prompt_appendix(*, device_id: str | None = None) -> str:
 
 
 def llm_static_context_prompt_appendix(device_id: str | None = None) -> str:
-    """长期记忆 + 米家摘要 + 工具说明（传感器/人脸见每轮 user 消息）。"""
-    parts = [llm_memory_prompt_appendix(device_id), llm_miot_prompt_appendix(device_id), llm_tools_prompt_appendix()]
+    """长期记忆 + 工具说明（传感器/人脸见每轮 user 消息）。"""
+    parts = [llm_memory_prompt_appendix(device_id), llm_tools_prompt_appendix()]
     return "\n\n".join(p for p in parts if p)
 
 
@@ -359,8 +324,46 @@ def _follow_mode_label(mode: str) -> str:
     return labels.get(mode, mode or "关闭")
 
 
+def _format_voice_line(name: str, score: float | None) -> str:
+    parts: list[str] = [f"name={name}"]
+    if score is not None:
+        try:
+            parts.append(f"说话人识别置信度={float(score):.2f}")
+        except (TypeError, ValueError):
+            pass
+    return ", ".join(parts)
+
+
+def format_sight_voice_text(device_id: str | None) -> str | None:
+    """当前设备「最近一次 VAD」声纹判定的调试文本（与喂给 LLM 的识别行一致）。
+
+    found → ``声音识别:\\n  name=…, 说话人识别置信度=…``；unknown →
+    ``声音识别:\\n  (未识别出已知说话人)``；识别中/引擎降级/未开启/无设备 → None。
+    供实验台用户气泡展示本轮「听到谁在说话」的识别结果。
+    """
+    dev = str(device_id or "").strip()
+    if not dev:
+        return None
+    from deskbot_server.service.application.voice_snapshot_cache import (
+        STATE_FOUND,
+        STATE_UNKNOWN,
+        get_voice_snapshot,
+    )
+
+    snap = get_voice_snapshot(dev)
+    if not snap:
+        return None
+    state = snap.get("state")
+    if state == STATE_FOUND:
+        name = str(snap.get("name") or "").strip() or "未知"
+        return "声音识别:\n  " + _format_voice_line(name, snap.get("score"))
+    if state == STATE_UNKNOWN:
+        return "声音识别:\n  (未识别出已知说话人)"
+    return None  # identifying / degraded：本轮不给结论
+
+
 def build_llm_user_message(user_text: str, *, device_id: str | None = None, device_context: str | None = None) -> str:
-    """按约定格式组装 LLM ``user`` 消息正文（传感器 + 图像识别 + 用户正文）。"""
+    """按约定格式组装 LLM ``user`` 消息正文（传感器 + 图像识别 + 声音识别 + 用户正文）。"""
     from deskbot_server.dao.device_mapper import get_camera_servo_auto_mode
 
     sx, sy = parse_servo_angles_from_pb_ack(device_context)
@@ -381,6 +384,12 @@ def build_llm_user_message(user_text: str, *, device_id: str | None = None, devi
             lines.append("   (未检测到人脸)")
     else:
         lines.append("   (无设备)")
+    voice_text = format_sight_voice_text(dev) if dev else None
+    if voice_text:
+        head, _, rest = voice_text.partition("\n")
+        lines.append(head)
+        if rest:
+            lines.append("   " + rest.lstrip())
     lines.append("]")
     body = (user_text or "").strip()
     if not body:
@@ -406,9 +415,8 @@ def beijing_time_str() -> str:
 
 
 def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None) -> str:
-    """组装最终 system prompt：基础人设 + 时间 + 屏幕音量 + 动作/表情清单 + 记忆/米家/工具 + 剧情任务。"""
+    """组装最终 system prompt：基础人设 + 时间 + 动作/表情清单 + 记忆/工具 + 剧情任务。"""
     base = f"{base_prompt}\n当前时间是: {beijing_time_str()}（北京时间，东八区）"
-    base += "\n" + llm_device_screen_appendix(device_id)
     px = llm_pb_scenes_prompt_appendix(device_id=device_id)
     if px:
         base += "\n" + px
@@ -513,43 +521,63 @@ def coerce_pb_v2_downlink_payload(payload: Any) -> dict[str, Any]:
     return out
 
 
-def _parse_llm_move_items(raw: Any) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
+def _parse_llm_move_items(raw: Any) -> list[Any]:
+    """moves 条目规范化：字符串 = 预设 id（新协议，默认时长）；
+    dict = 兼容旧 ``{move, ms}``（有合法 ms 保留对象，无 ms 按新协议转字符串）。"""
+    out: list[Any] = []
     if isinstance(raw, dict):
         raw = [raw]
     if not isinstance(raw, (list, tuple)):
         return out
     for item in raw:
+        if isinstance(item, str):
+            move_id = item.strip()
+            if move_id:
+                out.append(move_id)
+            continue
         if not isinstance(item, dict):
             continue
         move_id = str(item.get("move") or "").strip()
         try:
             ms = int(item.get("ms", 0))
         except (TypeError, ValueError):
+            ms = 0
+        if not move_id:
             continue
-        if not move_id or ms <= 0:
-            continue
-        out.append({"move": move_id, "ms": ms})
+        if ms > 0:
+            out.append({"move": move_id, "ms": ms})
+        else:
+            out.append(move_id)
     return out
 
 
-def _parse_llm_anim_items(raw: Any) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
+def _parse_llm_anim_items(raw: Any) -> list[Any]:
+    """anims 条目规范化：字符串 = 场景 name（新协议，默认时长）；
+    dict = 兼容旧 ``{anim, ms}``（有合法 ms 保留对象，无 ms 按新协议转字符串）。"""
+    out: list[Any] = []
     if isinstance(raw, dict):
         raw = [raw]
     if not isinstance(raw, (list, tuple)):
         return out
     for item in raw:
+        if isinstance(item, str):
+            anim_name = item.strip()
+            if anim_name:
+                out.append(anim_name)
+            continue
         if not isinstance(item, dict):
             continue
         anim_name = str(item.get("anim") or "").strip()
         try:
             ms = int(item.get("ms", 0))
         except (TypeError, ValueError):
+            ms = 0
+        if not anim_name:
             continue
-        if not anim_name or ms <= 0:
-            continue
-        out.append({"anim": anim_name, "ms": ms})
+        if ms > 0:
+            out.append({"anim": anim_name, "ms": ms})
+        else:
+            out.append(anim_name)
     return out
 
 
@@ -584,7 +612,19 @@ def _coerce_llm_reply_object(obj: Any) -> dict[str, Any] | None:
         tools = _parse_llm_tool_items([obj])
         if tools:
             out: dict[str, Any] = {"tools": tools}
-            for key in ("need_reply", "tts", "reply", "moves", "anims", "volume", "cam_fps", "scenes", "servo"):
+            for key in (
+                "need_reply",
+                "tts",
+                "reply",
+                "moves",
+                "anims",
+                "gesture",
+                "expression",
+                "volume",
+                "cam_fps",
+                "scenes",
+                "servo",
+            ):
                 if key in obj:
                     out[key] = obj[key]
             out.setdefault("tts", "")
@@ -595,8 +635,9 @@ def _coerce_llm_reply_object(obj: Any) -> dict[str, Any] | None:
 def parse_llm_reply(raw: str) -> dict:
     """把 LLM 输出尝试解析为约定 JSON。
 
-    格式 ``{"need_reply", "tts", "volume?", "moves", "anims", "tools": [...]}``；
-    仍兼容旧版 ``servo`` / ``scenes`` 与 ``reply`` 字段。
+    格式 ``{"need_reply", "tts", "volume?", "gesture", "expression", "tools": [...]}``；
+    兼容旧名 ``moves`` / ``anims`` 与旧版 ``servo`` / ``scenes`` / ``reply`` 字段
+    （新名存在时优先）。解析结果统一归一为内部键 ``moves`` / ``anims``。
 
     失败时把整段文本当作 ``reply`` 返回，**不抛异常**。
     """
@@ -647,8 +688,9 @@ def parse_llm_reply(raw: str) -> dict:
                 ent = parse_servo_plan_item(item)
                 if ent:
                     servo_out.append(ent)
-        moves_out = _parse_llm_move_items(parsed.get("moves"))
-        anims_out = _parse_llm_anim_items(parsed.get("anims"))
+        # LLM 侧字段名：gesture / expression；兼容旧名 moves / anims（同时出现时旧名忽略）
+        moves_out = _parse_llm_move_items(parsed.get("gesture", parsed.get("moves")))
+        anims_out = _parse_llm_anim_items(parsed.get("expression", parsed.get("anims")))
         tools_out = _parse_llm_tool_items(parsed.get("tools"))
         reply_tts = parsed.get("tts")
         reply_legacy = parsed.get("reply")
@@ -704,8 +746,8 @@ def parse_llm_reply(raw: str) -> dict:
 __all__ = [
     "beijing_time_str",
     "build_llm_system_prompt",
+    "estimate_text_tokens",
     "build_llm_user_message",
-    "llm_device_screen_appendix",
     "llm_face_context_prompt_appendix",
     "llm_memory_prompt_appendix",
     "llm_pb_anims_prompt_appendix",

@@ -9,6 +9,7 @@ from deskbot_server.pb.llm_plan import (
     interleave_tts_segs_with_llm_plan,
     map_anim_frames_to_tts_segs,
     merge_llm_plan_anim_rows,
+    preset_default_ms,
 )
 
 
@@ -37,6 +38,65 @@ def test_expand_llm_moves_scales_preset_steps():
     steps = expand_llm_moves([{"move": "nod_head", "ms": 1080}])
     assert len(steps) == 3
     assert sum(s["ms"] for s in steps) == 1080
+
+
+def test_parse_llm_reply_moves_anims_string_ids():
+    """兼容旧名 moves/anims：直接是预设 id / 场景 name 字符串数组。"""
+    raw = '{"need_reply": true, "tts": "你好", "moves": ["nod_head", "center"], "anims": ["happy", "idle"]}'
+    parsed = parse_llm_reply(raw)
+    assert parsed["json_ok"] is True
+    assert parsed["moves"] == ["nod_head", "center"]
+    assert parsed["anims"] == ["happy", "idle"]
+    # 兼容：dict 项带 ms 仍是对象；不带 ms 归一化为字符串
+    mixed = parse_llm_reply(
+        '{"moves": ["nod_head", {"move": "shake_head", "ms": 500}, {"move": "look_left"}],'
+        ' "anims": [{"anim": "angry", "ms": 600}, "sleep"]}'
+    )
+    assert mixed["moves"] == ["nod_head", {"move": "shake_head", "ms": 500}, "look_left"]
+    assert mixed["anims"] == [{"anim": "angry", "ms": 600}, "sleep"]
+
+
+def test_parse_llm_reply_gesture_expression_ids():
+    """新协议字段名 gesture/expression，解析归一为内部 moves/anims。"""
+    raw = '{"need_reply": true, "tts": "好呀", "gesture": ["nod_head", "center"], "expression": ["happy", "idle"]}'
+    parsed = parse_llm_reply(raw)
+    assert parsed["json_ok"] is True
+    assert parsed["moves"] == ["nod_head", "center"]
+    assert parsed["anims"] == ["happy", "idle"]
+    # 新旧名同时出现：新名优先
+    both = parse_llm_reply('{"gesture": [], "moves": ["look_left"], "expression": [], "anims": ["angry"]}')
+    assert both["moves"] == []
+    assert both["anims"] == []
+
+
+def test_expand_llm_moves_string_uses_preset_default_ms():
+    steps = expand_llm_moves(["nod_head"])
+    assert len(steps) == 3  # nod_head 预设共 3 步
+    assert sum(s["ms"] for s in steps) == preset_default_ms("nod_head")  # 不缩放，用预设默认时长
+    unknown = expand_llm_moves(["__no_such_move__"])
+    assert unknown == []
+
+
+def test_expand_llm_moves_look_is_robot_body_frame():
+    """look_* 按机器人自身视角执行（人格）：
+    servo.json 预设按屏幕观众录制语义存储，模型侧 look_left 必须对调执行存储的 look_right 预设。"""
+    from deskbot_server.pb.llm_plan import _resolve_servo_preset_steps
+
+    left = expand_llm_moves(["look_left"])
+    right = expand_llm_moves(["look_right"])
+    assert left and right
+    # 本体视角：模型 look_left == 存储的 look_right 步骤（swap 在生效）；左右物理不同
+    assert left == _resolve_servo_preset_steps("look_right")
+    assert right == _resolve_servo_preset_steps("look_left")
+    assert left != right
+    # 若去掉 swap（不映射），look_left 会错误执行存储的 look_left（反向）——以上断言即回归防线
+
+
+def test_expand_llm_anims_string_uses_scene_default_ms():
+    frames = expand_llm_anims(["default"])
+    assert frames
+    assert all(f["ms"] >= 40 for f in frames)
+    assert isinstance(frames[0].get("elements"), dict)
 
 
 def test_expand_llm_anims_bg_color():

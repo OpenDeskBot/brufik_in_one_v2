@@ -25,8 +25,10 @@ if TYPE_CHECKING:
 
 _SERVO_CENTER_X = 90
 _SERVO_CENTER_Y = 90
-# 摄像头画面坐标相对舵机逻辑坐标需要反向；clamp_servo_step 再应用设备的 xReverse 校准。
-_MAP_YAW_SIGN = -1
+# 轴约定（实测）：舵机逻辑 x 增大 = 机器人向右转（servo.json 预设按观众录制语义命名，
+# 存储 look_left 的 x=150 实际让机器人向右）。摄像头画面与机器人同向（画面右 = 机器人物理右），
+# 因此人脸偏右（yaw>0）时目标 x 增大 = 向右转。clamp_servo_step 再应用设备 xReverse 校准。
+_MAP_YAW_SIGN = 1
 _MAP_PITCH_SIGN = 1
 _FOLLOW_PITCH_OFFSET = -15
 _GAZE_PITCH_OFFSET = -15

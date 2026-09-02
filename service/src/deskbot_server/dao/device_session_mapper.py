@@ -168,11 +168,11 @@ def count_messages(session_id: str) -> int:
 @execute(
     """
     INSERT INTO device_session_message (session_id, role, content, created_at)
-    VALUES (:session_id, :role, :content, datetime('now'))
+    VALUES (:session_id, :role, :content, COALESCE(:created_at, datetime('now')))
     """
 )
-def insert_message(session_id: str, role: str, content: str) -> int:
-    """插入一条消息。"""
+def insert_message(session_id: str, role: str, content: str, created_at: str | None = None) -> int:
+    """插入一条消息（created_at 为 ISO 时间字符串，缺省用数据库当前时间）。"""
 
 
 @execute("DELETE FROM device_session_message WHERE session_id = :session_id")
@@ -239,6 +239,42 @@ def session_history_for_llm(
     return out
 
 
+def session_context_window(
+    device_id: str, session_id: str, *, max_gap_seconds: float, max_history_turns: int = _MAX_HISTORY_TURNS
+) -> list[dict[str, Any]]:
+    """自最近一条消息向上追溯，返回时间上连续的上下文段。
+
+    - 相邻两条消息时间间隔超过 ``max_gap_seconds`` 即截断（丢弃更旧的段）；
+    - 时间未知（ts=0）的消息不参与断点判断；
+    - 最多取 ``max_history_turns`` 轮。
+
+    返回按时间正序的 ``[{role, content, ts}]``；token 预算由调用方另行裁剪。
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return []
+    messages = list_messages(sid)
+    cap = max(0, int(max_history_turns)) * 2
+    if cap > 0 and len(messages) > cap:
+        messages = messages[-cap:]
+    rows: list[dict[str, Any]] = []
+    for m in messages:
+        content = (m.content or "").strip()
+        if m.role not in ("user", "assistant") or not content:
+            continue
+        rows.append({"role": m.role, "content": content, "ts": _dt_to_ts(m.created_at)})
+    if not rows:
+        return []
+    keep_from = 0
+    for i in range(len(rows) - 1, 0, -1):
+        t_new = rows[i]["ts"]
+        t_old = rows[i - 1]["ts"]
+        if t_new > 0 and t_old > 0 and (t_new - t_old) > float(max_gap_seconds):
+            keep_from = i
+            break
+    return rows[keep_from:]
+
+
 def append_turn(
     device_id: str, session_id: str, user_text: str, assistant_text: str, *, now: float | None = None
 ) -> dict[str, Any]:
@@ -256,9 +292,9 @@ def append_turn(
     user_msg = str(user_text or "").strip()
     assistant_msg = str(assistant_text or "").strip()
     if user_msg:
-        insert_message(sid, "user", user_msg)
+        insert_message(sid, "user", user_msg, created_at=ts_str)
     if assistant_msg:
-        insert_message(sid, "assistant", assistant_msg)
+        insert_message(sid, "assistant", assistant_msg, created_at=ts_str)
     touch_session(sid, updated_at=ts_str)
 
     msg_count = count_messages(sid)
