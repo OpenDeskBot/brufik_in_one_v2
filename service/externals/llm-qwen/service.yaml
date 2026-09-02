@@ -18,6 +18,8 @@ start:
   # llama-server 相对 workdir（externals/llm-qwen）执行；
   # -ngl 99 全部层卸载到 Metal GPU；--jinja 启用 Qwen3.8 聊天模板；--alias 暴露模型名；
   # -rea off 关 think（同 minicpm 经验：content 不被思考吃掉，提速）
+  # -c 8192 = 模型 n_ctx_train 上限（再大被 llama.cpp clamp，需 rope-scaling 才能超）；
+  #   上下文超限由主服务侧按预估裁剪历史并 400 重试兜底，不要单独调大
   command:
     - bin/llama-server
     - -m

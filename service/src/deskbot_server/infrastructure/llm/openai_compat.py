@@ -17,6 +17,51 @@ logger = logging.getLogger("deskbot-server")
 
 _DEVICE_LLM_LOCKS: dict[str, asyncio.Lock] = {}
 
+# 本地 llama-server 的 n_ctx 被模型 n_ctx_train 钉死在 8192（-c 再大也会被 clamp，只有 rope-scaling 能超过），
+# 请求超出即 400 exceed_context_size_error。预算预留输出与 JSON 重试轮的 token 空间，超出按估算裁剪历史。
+_LOCAL_CTX_BUDGET_TOKENS = 7000
+_MAX_EXCEED_RETRY = 3
+_EXCEED_CTX_MARKERS = ("exceeds the available context size", "exceed_context_size_error")
+
+
+def _is_exceed_ctx_error(exc: BaseException) -> bool:
+    """识别 llama-server 的上下文超限 400 错误。"""
+    text = str(exc)
+    return any(marker in text for marker in _EXCEED_CTX_MARKERS)
+
+
+def _estimate_tokens(text: str) -> int:
+    """本地引擎无 tokenizer，粗略估算（宁多勿少）：CJK 约 1.1 token/字，其余按 3.2 字符/token。"""
+    if not text:
+        return 0
+    cjk = sum(
+        1
+        for ch in text
+        if "一" <= ch <= "鿿" or "　" <= ch <= "〿" or "＀" <= ch <= "￯"
+    )
+    return int(cjk * 1.1) + int((len(text) - cjk) / 3.2) + 1
+
+
+def _trim_history_for_budget(
+    history: list[dict[str, str]], *, system_content: str, user_content: str, extra: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    """本地引擎：按预估 token 预算从最旧开始裁剪历史，至少保留最近一条。"""
+    if not history:
+        return history
+    fixed = _estimate_tokens(system_content) + _estimate_tokens(user_content) + 8
+    fixed += sum(_estimate_tokens(str(m.get("content") or "")) + 4 for m in extra)
+    budget = _LOCAL_CTX_BUDGET_TOKENS - fixed
+    keep: list[dict[str, str]] = []
+    total = 0
+    for msg in reversed(history):
+        cost = _estimate_tokens(str(msg.get("content") or "")) + 4
+        if keep and total + cost > budget:
+            break
+        keep.append(msg)
+        total += cost
+    keep.reverse()
+    return keep
+
 
 def _device_llm_lock(device_id: str | None) -> asyncio.Lock:
     key = str(device_id or "__system__")
@@ -89,11 +134,10 @@ class OpenAiLlmAdapter:
         on_system_prompt: Callable[[str], None] | None = None,
     ) -> str:
         llm_cfg = resolve_llm_config(device_id)
+        local_engine = is_local_llm_url(llm_cfg.api_base)
         # 火山 ark_responses 流式在工具/联网阶段常长时间无 text delta，语音对话改非流式更稳。
         # 本地引擎（llm-minicpm / llm-qwen 等）不支持 stream，同样强制非流式（TTS 走完整响应后预取）。
-        use_stream_tts = (
-            bool(on_tts_ready) and llm_cfg.protocol != "ark_responses" and not is_local_llm_url(llm_cfg.api_base)
-        )
+        use_stream_tts = bool(on_tts_ready) and llm_cfg.protocol != "ark_responses" and not local_engine
 
         system_content = self._build_system_prompt(device_id=device_id)
         if on_system_prompt is not None:
@@ -102,12 +146,31 @@ class OpenAiLlmAdapter:
             except Exception:
                 logger.debug("[LLM] on_system_prompt 回调异常（忽略）", exc_info=True)
         user_content = build_llm_user_message(user_text, device_id=device_id, device_context=device_context)
-        messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
-        if history_messages:
-            messages.extend(history_messages)
-        messages.append({"role": "user", "content": user_content})
-        if extra_messages:
-            messages.extend(extra_messages)
+        history = list(history_messages or [])
+        extra = list(extra_messages or [])
+        if local_engine and history:
+            trimmed = _trim_history_for_budget(
+                history, system_content=system_content, user_content=user_content, extra=extra
+            )
+            if len(trimmed) < len(history):
+                logger.info(
+                    "[LLM] 本地引擎上下文预算裁剪 device_id=%s history=%d→%d 条",
+                    device_id,
+                    len(history),
+                    len(trimmed),
+                )
+            history = trimmed
+
+        def _assemble(hist: list[dict[str, str]]) -> list[dict[str, str]]:
+            msgs: list[dict[str, str]] = [{"role": "system", "content": system_content}]
+            if hist:
+                msgs.extend(hist)
+            msgs.append({"role": "user", "content": user_content})
+            if extra:
+                msgs.extend(extra)
+            return msgs
+
+        messages = _assemble(history)
 
         async def _chat(
             msgs: list[dict[str, str]],
@@ -115,17 +178,45 @@ class OpenAiLlmAdapter:
             json_mode: bool = True,
             stream_tts: bool = False,
             first_token_timeout: float | None = None,
+            tail: list[dict[str, str]] | None = None,
         ) -> str:
-            content, _meta = await chat_acompletion(
-                msgs,
-                device_id=device_id,
-                temperature=0.7,
-                json_mode=json_mode,
-                stream=stream_tts,
-                on_tts_ready=on_tts_ready if stream_tts else None,
-                first_token_timeout=first_token_timeout,
-            )
-            return content
+            # 本地引擎：400 上下文超限时裁掉最旧一半历史重建请求重试（tail 为追加在消息尾部的固定内容）
+            cur_history = list(history)
+            attempts = 0
+            while True:
+                try:
+                    content, _meta = await chat_acompletion(
+                        msgs,
+                        device_id=device_id,
+                        temperature=0.7,
+                        json_mode=json_mode,
+                        stream=stream_tts,
+                        on_tts_ready=on_tts_ready if stream_tts else None,
+                        first_token_timeout=first_token_timeout,
+                    )
+                    return content
+                except RuntimeError as exc:
+                    if (
+                        not local_engine
+                        or not cur_history
+                        or attempts >= _MAX_EXCEED_RETRY
+                        or not _is_exceed_ctx_error(exc)
+                    ):
+                        raise
+                    attempts += 1
+                    prev_len = len(cur_history)
+                    cur_history = cur_history[prev_len // 2 :]
+                    rebuilt = _assemble(cur_history)
+                    if tail:
+                        rebuilt.extend(tail)
+                    logger.info(
+                        "[LLM] 本地引擎上下文超限，裁剪历史重试 device_id=%s history=%d→%d attempt=%d",
+                        device_id,
+                        prev_len,
+                        len(cur_history),
+                        attempts,
+                    )
+                    msgs = rebuilt
 
         async def _prefetch_tts(parsed: dict) -> None:
             if not on_tts_ready:
@@ -146,18 +237,19 @@ class OpenAiLlmAdapter:
                 parsed = parse_llm_reply(answer)
             else:
                 logger.warning("[LLM] 首轮输出非 JSON，重试 device_id=%s preview=%r", device_id, (answer or "")[:120])
-                retry_messages = list(messages)
-                retry_messages.append({"role": "assistant", "content": answer})
-                retry_messages.append(
+                retry_tail = [
+                    {"role": "assistant", "content": answer},
                     {
                         "role": "user",
                         "content": (
                             "上轮输出不是合法 JSON。请仅输出一个 JSON 对象（不要 markdown 代码围栏、不要解释），"
                             "格式含 need_reply、tts、moves、anims、tools 等字段。"
                         ),
-                    }
+                    },
+                ]
+                answer = await _chat(
+                    list(messages) + list(retry_tail), stream_tts=False, first_token_timeout=0, tail=retry_tail
                 )
-                answer = await _chat(retry_messages, stream_tts=False, first_token_timeout=0)
                 parsed = parse_llm_reply(answer)
         elif parsed.get("tools") and not (parsed.get("reply") or "").strip():
             logger.info("[LLM] tools 轮无 tts，跳过过渡语重试 device_id=%s tools=%s", device_id, parsed.get("tools"))

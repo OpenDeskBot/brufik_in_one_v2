@@ -17,6 +17,8 @@ start:
   # llama-server 相对 workdir（externals/llm-minicpm）执行；
   # -ngl 99 全部层卸载到 Metal GPU；--jinja 启用 MiniCPM 聊天模板；--alias 暴露模型名；
   # -rea off 关闭 think（实测提速 ~2.4x：0.56s→0.23s，且 content 不再被思考吃掉）
+  # -c 8192 = 模型 n_ctx_train 上限（再大被 llama.cpp clamp，需 rope-scaling 才能超）；
+  #   上下文超限由主服务侧按预估裁剪历史并 400 重试兜底，不要单独调大
   command:
     - bin/llama-server
     - -m
