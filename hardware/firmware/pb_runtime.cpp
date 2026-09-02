@@ -180,11 +180,14 @@ static void task_loop_pb_runtime(void* /*arg*/) {
       incoming.servo_count = 0;
     }
     if (incoming.audio && incoming.audio->bin && incoming.audio->next_bin_len > 0) {
+      /* speaker_submit_pb_audio_owned 为 owned 语义：成功入队或入队失败均会
+       * 释放 audio（失败时在函数内 free 后返回 false）。因此无论成败都必须
+       * 置空 incoming.audio，否则下方 pb_model_free 会二次释放 → 堆损坏。 */
       if (!speaker_submit_pb_audio_owned(incoming.audio)) {
-        log_warn("[PB] audio dispatch failed req=%s idx=%d", incoming.req, incoming.idx);
-      } else {
-        incoming.audio = nullptr;
+        log_warn("[PB] audio dispatch failed req=%s idx=%d (dropped)", incoming.req,
+                 incoming.idx);
       }
+      incoming.audio = nullptr;
     }
 
     s_ack_req = incoming.req;
