@@ -309,10 +309,12 @@ void task_loop_mic(void* /*arg*/) {
      * 处理帧供后续门控/编码；AFE 未就绪或输出未就绪时退回原始帧（raw fallback）。 */
     int16_t afe_frame[kMicFrameSamples];
     int16_t* up_pcm = frame.pcm;
+    bool afe_processed = false;
     if (audio_frontend_ready()) {
       if (audio_frontend_submit_mic(frame.pcm, kMicFrameSamples) &&
           audio_frontend_take_output_frame(afe_frame, pdMS_TO_TICKS(20))) {
         up_pcm = afe_frame;
+        afe_processed = true;
       }
     }
 
@@ -338,7 +340,12 @@ void task_loop_mic(void* /*arg*/) {
       log_warn("[MIC] uplink open (ws_ok)");
     }
 
-    enhance_voice(up_pcm, kMicFrameSamples);
+    /* 5x+HPF 仅 raw 兜底路径保留（v1 时代为 LMD2718T 低电平设的增益）。
+     * AFE 输出已含 afe_linear_gain(5x)，若再套 enhance_voice 就是 25x，
+     * 会把 AEC 残留在内的一切抬高 14dB——回声漏音更容易被服务器切句。 */
+    if (!afe_processed) {
+      enhance_voice(up_pcm, kMicFrameSamples);
+    }
     (void)send_to_ws(up_pcm, /*flush=*/false);
 
     if (s_segment_start_ms != 0 && (millis() - s_segment_start_ms) >= kSegmentFlushMs) {
