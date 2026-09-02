@@ -9,7 +9,7 @@
 
 | 项目 | 规格 |
 |------|------|
-| 开发板 | **Seeed XIAO ESP32S3 Sense** → 自研 **Deskbot v2 主控板（PCB V2.0 Base，ESP32-S3-WROOM-1U-N16R8）**（引脚以 [`firmware/deskbot_config.h`](../hardware/firmware/deskbot_config.h) 为准；本文档引脚表仍按 XIAO 参考设计，v2 实际接线见 [`hardware/README_zh.md`](../hardware/README_zh.md)「接线」） |
+| 开发板 | **Seeed XIAO ESP32S3 Sense** → 自研 **Deskbot v2 主控板（PCB V2.0 Base，ESP32-S3-WROOM-1U-N16R8）**（引脚以 [`firmware/deskbot_config.h`](../hardware/firmware/deskbot_config.h) 为准；以下引脚均为 **PCB V2.0（Base）** 实际 GPIO，丝印即 GPIO 号，早期 XIAO 参考设计已废弃） |
 | MCU | ESP32-S3（Xtensa 双核 LX7） |
 | 框架 | Arduino-ESP32 3.3.9 + ESP-IDF 5.5.4 |
 | PlatformIO 平台 | pioarduino 55.03.9 |
@@ -51,12 +51,12 @@
 
 ### SPI 引脚分配
 
-| 信号 | GPIO | XIAO Pad |
-|------|------|----------|
-| MOSI | 9 | D10 |
-| SCK | 7 | D8 |
-| CS | 2 | D1 |
-| DC | 3 | D2 |
+| 信号 | GPIO（v2 板） | 备注 |
+|------|--------------|------|
+| MOSI | 5 | — |
+| SCK | 4 | — |
+| CS | 6 | — |
+| DC | 7 | — |
 | RST | -- | 硬接 3.3V |
 | BL | -- | 硬接 3.3V |
 
@@ -124,7 +124,7 @@
 | 项目 | X 轴（水平/左右） | Y 轴（垂直/上下） |
 |------|-------------------|-------------------|
 | 类型 | 3.7g 微型舵机（5V，20.2×8.5mm，JR2.54） | SG90 / 9g 舵机（JR2.54） |
-| GPIO | 8（D9） | 4（D3） |
+| GPIO | 16 | 15 |
 | 角度范围 | 0° - 180° | 70° - 110°（限位行程） |
 | 中心位置 | 90° | 90° |
 | 脉冲范围 | 1000μs - 2000μs | 1000μs - 2000μs |
@@ -159,10 +159,10 @@
 | 功放芯片 | **NS4168**（I2S 输入 D 类功放，v2 主控板板载，替代原 MAX98357A） |
 | 扬声器 | 2011 型，8Ω 1W 腔体喇叭（1.25 插头） |
 | I2S 总线 | I2S_NUM_1，STD 模式 |
-| 采样率 | 16000Hz（默认）/ 24000Hz（TTS 输出） |
+| 采样率 | **16000Hz 统一下发**（moss 引擎 48k 由服务端降采样；豆包直连 16k；设备端"整块解码→播放"结构下 24k/48k 会进入解码预算边缘带） |
 | 位深 | 16-bit |
 | 声道 | 单声道（支持 WAV 立体声回放） |
-| DMA 缓冲 | 8 × 1024 样本 |
+| DMA 缓冲 | 6 × 240 帧（ESP_I2S 驱动固定，≈5.8KB；解码突发需小于其覆盖时长） |
 | 默认音量 | 85%（范围 0-100） |
 | 编解码 | PCM S16LE、Opus（下行解码） |
 | 可听阈值 | mean_abs × volume ≥ 16 |
@@ -218,7 +218,9 @@
 
 ---
 
-## 6. XIAO ESP32S3 Pad-GPIO 映射
+## 6. XIAO ESP32S3 Pad-GPIO 映射（仅历史参考）
+
+> 旧 XIAO 转接板方案使用，**已废弃**；v2 主控板丝印直接标 GPIO 号。
 
 ```
 D0  = GPIO1    D1  = GPIO2    D2  = GPIO3    D3  = GPIO4
@@ -232,9 +234,9 @@ D8  = GPIO7    D9  = GPIO8    D10 = GPIO9
 
 | 模块 | 电压 | 备注 |
 |------|------|------|
-| MCU + 显示屏 + 摄像头 | 3.3V | XIAO 板载稳压，USB 供电 |
+| MCU + 显示屏 + 摄像头 | 3.3V | v2 主控板板载稳压，TYPE-C 5V 供电 |
 | 舵机 | **5V ≥ 1A** | 独立供电，与逻辑共地 |
-| MAX98357A 功放 | 3.3V | XIAO 板载供电 |
+| NS4168 功放 | 5V（TYPE-C VBUS） | v2 主控板板载（D 类功放，替代原 MAX98357A） |
 | USB-C 接口 | 5V | 主控 PCB V2.0（Base）上的 TYPE-C 16P（LCSC C2765186），CC1/CC2 5.1k 下拉电阻 |
 
 **建议总供电：5V ≥ 1A**（舵机为主要电流消耗）
