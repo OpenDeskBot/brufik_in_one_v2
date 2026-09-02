@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 import os
 import sys
 import time
@@ -32,7 +33,13 @@ def setup_logging(log_file: str | None = None) -> None:
 
     resolved = (os.environ.get("DESKBOT_SERVER_LOG_FILE") or log_file or "").strip()
     if resolved:
-        fh = logging.FileHandler(resolved, encoding="utf-8")
+        # 轮转：默认单文件 100MB × 3 份备份（总 ≤400MB），防 app.log 无限膨胀
+        # （实测 pb 帧序等高频 INFO 日志一天可达 GB 级）
+        max_bytes = max(1 << 20, int(os.environ.get("DESKBOT_LOG_MAX_BYTES", str(100 * 1024 * 1024))))
+        backups = max(0, int(os.environ.get("DESKBOT_LOG_BACKUP_COUNT", "3")))
+        fh = logging.handlers.RotatingFileHandler(
+            resolved, maxBytes=max_bytes, backupCount=backups, encoding="utf-8"
+        )
         fh.setFormatter(fmt)
         root.addHandler(fh)
 

@@ -231,7 +231,7 @@ class LiveService(metaclass=SingletonMeta):
             logger.exception("[live] send failed device_id=%s source=%s", device_id, source)
             return 0
         if n > 0:
-            logger.info(
+            logger.debug(
                 "[live] %s device_id=%s req=%s delivered=%d blocks=%d servo_steps=%d ms=%d summary=%s scene=%s",
                 source,
                 device_id,

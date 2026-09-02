@@ -170,37 +170,37 @@ class AsyncDeviceMessageQueue:
             cmp = new_seq.compare(old)
             if cmp == 1:
                 q.pop()  # new_seq 优先级更高，踢掉队尾
-                logger.info("[_enqueue] %s evict queued req=%s level=%d action=%s", dev, old.req, old.level, old.action.wire)
+                logger.debug("[_enqueue] %s evict queued req=%s level=%d action=%s", dev, old.req, old.level, old.action.wire)
             elif cmp == -1:
-                logger.info("[_enqueue] %s drop (lower priority) %s", dev, new_info)
+                logger.debug("[_enqueue] %s drop (lower priority) %s", dev, new_info)
                 return 0  # new_seq 优先级更低，丢弃
             else:
                 # cmp == 0，并存，追加到队尾
                 q.append(new_seq)
-                logger.info("[_enqueue] %s coexist %s", dev, new_info)
+                logger.debug("[_enqueue] %s coexist %s", dev, new_info)
                 return 1
 
         # 2. 队列已空，与正在发送的 PbSeq 比较
         sending = ctx.sending_seq
         if sending is None:
             q.append(new_seq)
-            logger.info("[_enqueue] %s enqueue (idle) %s", dev, new_info)
+            logger.debug("[_enqueue] %s enqueue (idle) %s", dev, new_info)
             return 1
 
         cmp = new_seq.compare(sending)
         if cmp == -1:
-            logger.info("[_enqueue] %s drop (lower than running req=%s level=%d action=%s) %s",
+            logger.debug("[_enqueue] %s drop (lower than running req=%s level=%d action=%s) %s",
                         dev, sending.req, sending.level, sending.action.wire, new_info)
             return 0  # 丢弃
         if cmp == 1:
             q.append(new_seq)
             ctx.ack_queue.put_nowait({"type": "pb_cancel"})
-            logger.info("[_enqueue] %s preempt running req=%s level=%d action=%s -> pb_cancel, %s",
+            logger.debug("[_enqueue] %s preempt running req=%s level=%d action=%s -> pb_cancel, %s",
                         dev, sending.req, sending.level, sending.action.wire, new_info)
             return 1
         # cmp == 0，入队等待
         q.append(new_seq)
-        logger.info("[_enqueue] %s enqueue (after running) %s", dev, new_info)
+        logger.debug("[_enqueue] %s enqueue (after running) %s", dev, new_info)
         return 1
 
     # -- 设备协程 --------------------------------------------------------------

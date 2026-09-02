@@ -354,32 +354,32 @@ class DeviceWsService(metaclass=SingletonMeta):
             cmp = new_seq.compare(old)
             if cmp == 1:
                 q.pop()
-                logger.info("[_enqueue] %s evict queued req=%s level=%d action=%s", dev, old.req, old.level, old.action.wire)
+                logger.debug("[_enqueue] %s evict queued req=%s level=%d action=%s", dev, old.req, old.level, old.action.wire)
             elif cmp == -1:
-                logger.info("[_enqueue] %s drop (lower priority) %s", dev, new_info)
+                logger.debug("[_enqueue] %s drop (lower priority) %s", dev, new_info)
                 return 0
             else:
                 q.append(new_seq)
-                logger.info("[_enqueue] %s coexist %s", dev, new_info)
+                logger.debug("[_enqueue] %s coexist %s", dev, new_info)
                 return 1
 
         sending = entry.sending_seq
         if sending is None:
             q.append(new_seq)
-            logger.info("[_enqueue] %s enqueue (idle) %s", dev, new_info)
+            logger.debug("[_enqueue] %s enqueue (idle) %s", dev, new_info)
             return 1
 
         cmp = new_seq.compare(sending)
         if cmp == -1:
-            logger.info("[_enqueue] %s drop (lower than running) %s", dev, new_info)
+            logger.debug("[_enqueue] %s drop (lower than running) %s", dev, new_info)
             return 0
         if cmp == 1:
             q.append(new_seq)
             entry.ack_queue.put_nowait({"type": "pb_cancel"})
-            logger.info("[_enqueue] %s preempt running -> pb_cancel, %s", dev, new_info)
+            logger.debug("[_enqueue] %s preempt running -> pb_cancel, %s", dev, new_info)
             return 1
         q.append(new_seq)
-        logger.info("[_enqueue] %s enqueue (after running) %s", dev, new_info)
+        logger.debug("[_enqueue] %s enqueue (after running) %s", dev, new_info)
         return 1
 
     async def _device_loop(self, device_id: str):

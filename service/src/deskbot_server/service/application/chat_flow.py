@@ -934,7 +934,7 @@ async def _run_pb_playback(
             n_pb,
             sr_pb,
         )
-        logger.info("[pb TX] 帧序一览 %s", json.dumps(frame_overview, ensure_ascii=False))
+        logger.debug("[pb TX] 帧序一览 %s", json.dumps(frame_overview, ensure_ascii=False))
 
         pb_aborted = await _send_pb_pairs(
             pairs=pairs, pb_req=pb_req, device_ws=device_ws, device_id=device_id, n_pb=n_pb, task_level=task_level,
