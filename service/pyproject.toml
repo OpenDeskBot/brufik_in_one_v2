@@ -27,6 +27,8 @@ dependencies = [
     "pyserial>=3.5",
     # werkzeug.security 用户密码哈希（scrypt，登录/改密用）
     "Werkzeug==3.1.8",
+    # jinja2 Web 控制台模板渲染（web/mount.py 顶层 import Jinja2Templates）
+    "Jinja2==3.1.6",
 ]
 
 [project.optional-dependencies]
