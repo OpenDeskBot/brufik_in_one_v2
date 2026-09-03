@@ -163,7 +163,9 @@ createApp({
     tvPower:false, // 老电视旋钮（sessionStorage 记忆）
     scenes:[], emotionMap:{},
     // 设备表情模拟：simScene=已下发表情行(循环动画)，null=走 idle 映射；talkEndsAt=说话口型结束时刻
+    // talkRows=服务端按音素口型表估算的表情行(与设备 pb 同款)，按行时间轴播放
     simScene:null, simSince:0, simNow:0, talkEndsAt:null,
+    talkRows:[], talkCums:[], talkT0:0,
     quick:{servo:{presets:[],busy:false},pb:{scenes:[],selected:'',busy:false},tts:{text:'你好，我是小歪。',busy:false},msg:''},
     homeRobotError:'', homeRobotServo:{x:90,y:90},
     cameraViewWsBase: {{ camera_view_ws_base|tojson }},
@@ -539,7 +541,7 @@ createApp({
       return {x:142, y:eyeBottom ? Math.min(200, eyeBottom + 44) : 158, w:30, h:8};
     },
     withTalkMouth(els){
-      // 说话口型：以原嘴位置为中心的开口椭圆，按音节节奏开合
+      // 说话口型兜底（无音素行时的旧正弦椭圆）：以原嘴位置为中心的开口椭圆，按音节节奏开合
       const reg = this.mouthRegion(els);
       const now = performance.now();
       const burst = Math.max(0, Math.sin(now * 0.011)); // ≈3Hz 音节
@@ -548,22 +550,65 @@ createApp({
       const rw = Math.max(12, Math.min(46, reg.w / 2 * (1 + 0.3 * frac)));
       return Object.assign({}, els, {mouth:[{shape:'ellipse_fill', x:reg.x, y:reg.y, rw, ry}]});
     },
+    talkRowElements(){
+      // 按已流逝时间找当前音素表情行（行首端为界）；行已全部播完返回 null
+      const rows = this.talkRows;
+      if(!Array.isArray(rows) || !rows.length || !Array.isArray(this.talkCums) || !this.talkCums.length) return null;
+      const elapsed = Math.max(0, performance.now() - this.talkT0);
+      const cums = this.talkCums;
+      if(elapsed >= cums[cums.length - 1]) return null;
+      let lo = 0, hi = cums.length - 1;
+      while(lo < hi){ // 找首个 cums[i] > elapsed
+        const mid = (lo + hi) >> 1;
+        if(cums[mid] <= elapsed) lo = mid + 1;
+        else hi = mid;
+      }
+      const row = rows[lo];
+      const els = row && row.elements;
+      return (els && typeof els === 'object') ? els : null;
+    },
     faceElsNow(){
       const scene = this.simBaseScene();
       if(!scene) return null;
       const els = window.DeskbotFacePreview.frameElements(scene, this.simFrameIndex(scene));
       if(!els) return null;
-      if(this.talkEndsAt != null && performance.now() < this.talkEndsAt) return this.withTalkMouth(els);
+      if(this.talkEndsAt != null && performance.now() < this.talkEndsAt){
+        // 说话中：优先逐音素表情行（整脸与设备 pb 同款：开口/扁口/圆口…）；
+        // 行已播完但仍在窗口边缘 → 保持底稿闭嘴；服务端未返回行(估算失败)时退回旧正弦椭圆口型
+        const rowEls = this.talkRowElements();
+        if(rowEls) return rowEls;
+        if(this.talkRows.length) return els;
+        return this.withTalkMouth(els);
+      }
       return els;
     },
     bumpSim(){
       this.simNow = performance.now();
       this.updateHomeRobotFace();
     },
-    startTalkSim(text){
-      const n = Array.from(String(text || '')).length;
-      const ms = Math.max(1800, Math.min(30000, n * 280 + 900)); // ≈0.28s/字 + 首尾余量
-      this.talkEndsAt = performance.now() + ms;
+    startTalkSim(text, sim){
+      // sim = /api/device_tts 响应 talk_sim：{total_ms, rows:[{phoneme,ms,elements}]}
+      const rows = Array.isArray(sim && sim.rows)
+        ? sim.rows.filter(r => r && r.elements && typeof r.elements === 'object') : [];
+      if(rows.length){
+        const cums = [];
+        let acc = 0;
+        for(const r of rows){
+          acc += Math.max(20, Number(r.ms) || 100);
+          cums.push(acc);
+        }
+        this.talkRows = rows;
+        this.talkCums = cums;
+        this.talkT0 = performance.now();
+        this.talkEndsAt = this.talkT0 + acc;
+      }else{
+        // 兜底：无音素行时沿用旧估算时长与正弦口型
+        const n = Array.from(String(text || '')).length;
+        const ms = Math.max(1800, Math.min(30000, n * 280 + 900)); // ≈0.28s/字 + 首尾余量
+        this.talkRows = [];
+        this.talkCums = [];
+        this.talkEndsAt = performance.now() + ms;
+      }
       this._faceLastDraw = 0;
       this.bumpSim();
     },
@@ -572,7 +617,7 @@ createApp({
       this._homeSimRaf = requestAnimationFrame(() => this.simLoop());
       const now = performance.now();
       const wasTalk = this.talkEndsAt != null;
-      if(wasTalk && now >= this.talkEndsAt) this.talkEndsAt = null; // 说话结束：下帧闭嘴
+      if(wasTalk && now >= this.talkEndsAt){ this.talkEndsAt = null; this.talkRows = []; this.talkCums = []; } // 说话结束：下帧闭嘴
       const talking = this.talkEndsAt != null;
       const scene = this.simScene;
       const animated = talking || (!!scene && Array.isArray(scene.frames) && scene.frames.length > 1);
@@ -580,7 +625,7 @@ createApp({
         if(wasTalk) this.bumpSim(); // 说完了补一帧闭嘴画面
         return;
       }
-      const cadence = talking ? 90 : 120;
+      const cadence = talking ? 60 : 120; // 音素行更密，说话时提高重绘频率保证口型切换不跳帧
       if(now - (this._faceLastDraw || 0) >= cadence){
         this._faceLastDraw = now;
         this.simNow = now;
@@ -669,10 +714,10 @@ createApp({
       if(!text){ this.quick.msg = '请输入要播报的文字'; return; }
       this.quick.tts.busy = true;
       try{
-        await this.quickSend('/api/device_tts', {method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({device_id:this.deviceId, text:text})});
+        const d = await this.quickSend('/api/device_tts', {method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({device_id:this.deviceId, text:text, want_sim:true})});
         this.quick.msg = 'TTS 已提交下发';
-        this.startTalkSim(text); // 按估算播报时长模拟口型
+        this.startTalkSim(text, d && d.talk_sim); // 按音素表情行播放口型，估算失败回退旧口型
       }catch(e){
         this.quick.msg = e.message || '下发失败';
       }finally{
@@ -694,6 +739,9 @@ createApp({
       this.simScene = null; // 表情模拟不跨刷新持久化，回到 idle 映射
       this.simSince = performance.now();
       this.talkEndsAt = null;
+      this.talkRows = [];
+      this.talkCums = [];
+      this.talkT0 = 0;
       // 以下表情数据依赖已选当前设备
       if(this.bound){
         await this.loadQuickControls();

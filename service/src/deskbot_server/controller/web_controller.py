@@ -666,6 +666,25 @@ async def api_device_tts(request: Request) -> JSONResponse:
     req_id = uuid.uuid4().hex[:16]
     settings = chat.settings
 
+    # 家页说话模拟：下发前按同一套音素口型表估算逐音素表情行（无真实合成）。
+    # 估算失败时返回 None，前端回退旧口型。CPU 型任务丢线程池，避免卡事件循环。
+    talk_sim = None
+    if method == "POST" and isinstance(payload, dict) and payload.get("want_sim"):
+        try:
+            from deskbot_server.pb.talk_sim import estimate_talk_sim
+
+            talk_sim = await run_blocking(estimate_talk_sim, text, tts_cfg=settings.tts_cfg, device_id=dev)
+            logger.info(
+                "[HTTP] /api/device_tts talk_sim text=%r total_ms=%d rows=%d device_id=%s",
+                text[:60],
+                talk_sim.get("total_ms"),
+                len(talk_sim.get("rows") or []),
+                dev,
+            )
+        except Exception:
+            logger.exception("[HTTP] /api/device_tts talk_sim 估算失败 device_id=%s", dev)
+            talk_sim = None
+
     async def _device_tts_job() -> None:
         downlink = WsDownlinkAdapter(ws, settings=settings, device_id=dev, bus_service=rt.bus_service)
         try:
@@ -709,6 +728,7 @@ async def api_device_tts(request: Request) -> JSONResponse:
             "text": text,
             "scene": scene_q or None,
             "req": req_id,
+            **({"talk_sim": talk_sim} if talk_sim is not None else {}),
             "t": time.time(),
         },
     )
