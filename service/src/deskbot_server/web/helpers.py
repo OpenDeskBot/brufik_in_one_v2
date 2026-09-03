@@ -194,14 +194,4 @@ def beijing_time_str() -> str:
     return now.strftime("%Y-%m-%d %H:%M:%S") + " " + weekdays[now.weekday()]
 
 
-def resolve_llm_api_key() -> str:
-    return (
-        os.environ.get("ARK_API_KEY")
-        or os.environ.get("VOLCENGINE_API_KEY")
-        or os.environ.get("DOUBAO_API_KEY")
-        or os.environ.get("LLM_API_KEY")
-        or ""
-    )
-
-
 ALLOWED_LLM_ROLES = {"system", "user", "assistant"}

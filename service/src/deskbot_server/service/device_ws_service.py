@@ -15,7 +15,7 @@ from websockets.exceptions import ConnectionClosed
 from deskbot_server.constants import PB_CHUNK_GAP_SEC, PB_MAX_PCM_BIN_BYTES, SAFE_SEND_TIMEOUT
 from deskbot_server.model.pb_seq import PbBlock, PbSeq, PbType
 from deskbot_server.pb.wire import device_pb_json_msg
-from deskbot_server.service.application.asr_chat_uplink import parse_packed_frame, pack_ws_downlink_frame
+from deskbot_server.service.application.asr_chat_uplink import pack_ws_downlink_frame, parse_packed_frame
 from deskbot_server.service.application.boot_wake import deliver_boot_wake_scene
 from deskbot_server.service.application.chat_service import ChatService
 from deskbot_server.service.camera_face_service import CameraFaceService
@@ -25,11 +25,7 @@ from deskbot_server.utils.async_helpers import spawn
 from deskbot_server.utils.singleton import SingletonMeta
 from deskbot_server.utils.util import _json_msg, format_exc_detail
 from deskbot_server.utils.ws_utils import WsUtils
-from deskbot_server.ws.uplink_rate_stats import (
-    ensure_uplink_rate_stats_started,
-    note_uplink_audio,
-    remove_device,
-)
+from deskbot_server.ws.uplink_rate_stats import ensure_uplink_rate_stats_started, note_uplink_audio, remove_device
 
 logger = logging.getLogger("deskbot-server")
 
@@ -882,10 +878,7 @@ class DeviceWsService(metaclass=SingletonMeta):
         """VAD 切出一句后：ASR → LLM → TTS。"""
         from deskbot_server.service.application.capability_labels import asr_model_label
         from deskbot_server.service.application.convo_audio_store import ConvoAudioStore
-        from deskbot_server.service.application.ws_chat_turn import (
-            publish_ws_chat_turn,
-            run_ws_chat_turn,
-        )
+        from deskbot_server.service.application.ws_chat_turn import publish_ws_chat_turn, run_ws_chat_turn
         from deskbot_server.service.asr_service import AsrService
 
         request_id = uuid.uuid4().hex[:16]

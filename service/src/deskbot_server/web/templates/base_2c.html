@@ -66,8 +66,8 @@
       <nav class="navi">
         <a href="{{ url_for('app2c.home') }}" class="navlink {{ 'on' if active_nav=='home' }}">{{ icon('home') }}家</a>
         <div class="lbl">我的小歪</div>
-        <a href="{{ url_for('app2c.lab') }}" class="navlink {{ 'on' if active_nav=='lab' }}">{{ icon('lab') }}实验台</a>
         <a href="{{ url_for('robot_settings.page') }}" class="navlink {{ 'on' if active_nav=='robot_settings' }}">{{ icon('robot') }}机器人配置</a>
+        <a href="{{ url_for('app2c.lab') }}" class="navlink {{ 'on' if active_nav=='lab' }}">{{ icon('lab') }}实验台</a>
         <a href="{{ url_for('flash.flash_page') }}" class="navlink {{ 'on' if active_nav=='flash' }}">{{ icon('flash') }}烧录固件</a>
         <div class="lbl">日常</div>
         <a href="{{ url_for('app2c.memories') }}" class="navlink {{ 'on' if active_nav=='memory' }}">{{ icon('memory') }}记忆</a>

@@ -55,7 +55,6 @@
             <a href="{{ url_for('app2c.people') }}" class="{% if active_nav == 'face_profiles' %}active{% endif %}">人脸识别</a>
             <a href="{{ url_for('app2c.memories') }}" class="{% if active_nav == 'memories' %}active{% endif %}">记忆</a>
             <a href="{{ url_for('app2c.advanced') }}" class="{% if active_nav == 'configure' %}active{% endif %}">设置</a>
-            <a href="{{ url_for('app2c.advanced') }}" class="{% if active_nav == 'llm_models' %}active{% endif %}">LLM 管理</a>
             <a href="{{ url_for('app2c.advanced') }}" class="{% if active_nav == 'usage' %}active{% endif %}">用量看板</a>
           </div>
           {% if nav_is_developer %}

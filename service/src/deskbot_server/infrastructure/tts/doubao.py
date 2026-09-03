@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -26,20 +25,14 @@ from deskbot_server.infrastructure.tts.protocols import (
     task_request,
     wait_for_event,
 )
-from deskbot_server.utils.env import load_dotenv
 
 logger = logging.getLogger("deskbot-server")
 
 DEFAULT_WS_URL = "wss://openspeech.bytedance.com/api/v3/tts/bidirection"
 DEFAULT_RESOURCE_ID = "seed-tts-2.0"
-DEFAULT_MODEL = "seed-tts-2.0-expressive"
+DEFAULT_MODEL = "seed-tts-2.0-standard"
 DEFAULT_SPEAKER = "zh_male_dongmanhaimian_mars_bigtts"  # 亮嗓萌仔（海绵宝宝）
-TTS_API_KEY_ENV_NAMES = (
-    "DOUBAO_TTS_API_KEY",
-    "VOLCENGINE_TTS_API_KEY",
-    "SEED_TTS_API_KEY",
-    "BYTEPLUS_SEED_SPEECH_API_KEY",
-)
+# 云端凭证一律设备级（devices.tts_param），本模块无任何全局密钥/环境变量读取。
 
 
 # 设备级参数白名单（robot_capability / resolve 共用，避免循环依赖）
@@ -94,48 +87,37 @@ def _is_masked_secret(value: str) -> bool:
 
 
 def resolve_optional_secret(incoming, fallback: str) -> str:
-    """表单留空或脱敏占位时不覆盖，使用 fallback（.env / 进程环境）。"""
+    """表单留空或脱敏占位时不覆盖，使用 fallback（现有设备配置 / 内置默认）。"""
     raw = str(incoming or "").strip()
     if not raw or _is_masked_secret(raw):
         return (fallback or "").strip()
     return raw
 
 
-def _resolve_tts_api_key() -> str:
-    for name in TTS_API_KEY_ENV_NAMES:
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value
-    return ""
-
-
 def load_doubao_tts_config(
     tts_cfg: dict[str, Any] | None = None, overrides: dict[str, Any] | None = None
 ) -> DoubaoTtsConfig:
-    """读取豆包 TTS 配置。
+    """读取豆包 TTS 配置（云端密钥一律设备级，无全局 env 读取）。
 
     参数优先级：``overrides``（设备 tts_param / 表单临时覆盖）> ``tts_cfg.doubao_speaker``
-    > 环境变量 ``DOUBAO_TTS_*`` > 内置默认。
+    > 内置默认。
     """
-    load_dotenv()
     ov = overrides or {}
 
-    def _pick(field: str, env_key: str, default: str = "") -> str:
+    def _pick(field: str, default: str = "") -> str:
         raw = str(ov.get(field) or "").strip()
-        if not raw:
-            raw = str(os.environ.get(env_key) or "").strip()
         return raw or default
 
     speaker = str(ov.get("speaker") or "").strip()
     if not speaker:
         speaker = str((tts_cfg or {}).get("doubao_speaker") or "").strip()
     if not speaker:
-        speaker = (os.environ.get("DOUBAO_TTS_SPEAKER") or DEFAULT_SPEAKER).strip()
-    resource_id = _pick("resource_id", "DOUBAO_TTS_RESOURCE_ID", DEFAULT_RESOURCE_ID)
-    model = _pick("model", "DOUBAO_TTS_MODEL", DEFAULT_MODEL)
-    ws_url = _pick("ws_url", "DOUBAO_TTS_WS_URL", DEFAULT_WS_URL)
-    audio_format = _pick("audio_format", "DOUBAO_TTS_FORMAT", "pcm")
-    sample_rate_raw = str(ov.get("sample_rate") or "").strip() or (os.environ.get("DOUBAO_TTS_SAMPLE_RATE") or "").strip()
+        speaker = DEFAULT_SPEAKER
+    resource_id = _pick("resource_id", DEFAULT_RESOURCE_ID)
+    model = _pick("model", DEFAULT_MODEL)
+    ws_url = _pick("ws_url", DEFAULT_WS_URL)
+    audio_format = _pick("audio_format", "pcm")
+    sample_rate_raw = str(ov.get("sample_rate") or "").strip()
     try:
         sample_rate = int(sample_rate_raw or 16000)
     except (TypeError, ValueError):
@@ -153,8 +135,8 @@ def load_doubao_tts_config(
         logger.info("speaker=%s 使用 seed-tts-1.0，忽略 2.0 model=%s", speaker, model)
         model = ""
     api_key = str(ov.get("api_key") or "").strip()
-    if not api_key:
-        api_key = _resolve_tts_api_key()
+    raw_flag = str(ov.get("enable_timestamp") or "").strip()
+    enable_timestamp = True if not raw_flag else raw_flag.strip().lower() not in ("0", "false", "no", "off")
     return DoubaoTtsConfig(
         api_key=api_key,
         speaker=speaker,
@@ -163,8 +145,7 @@ def load_doubao_tts_config(
         ws_url=ws_url,
         sample_rate=sample_rate,
         audio_format=audio_format,
-        enable_timestamp=(os.environ.get("DOUBAO_TTS_ENABLE_TIMESTAMP") or "1").strip().lower()
-        not in ("0", "false", "no", "off"),
+        enable_timestamp=enable_timestamp,
     )
 
 
@@ -194,11 +175,11 @@ def _describe_ws_connect_error(exc: Exception) -> str:
         status = exc.response.status_code
         hint = ""
         if status == 401:
-            hint = "（鉴权失败：请核对豆包语音/Seed Speech API Key，使用 DOUBAO_TTS_API_KEY，不要使用 ARK_API_KEY）"
+            hint = "（鉴权失败：请核对豆包语音/Seed Speech API Key，在机器人设置 → TTS「配置」中为该设备填写）"
         elif status == 403 and "not granted" in body:
             hint = "（资源未授权：请在控制台开通对应 Resource ID，例如 seed-tts-2.0）"
         elif status == 400 and "no token" in body:
-            hint = "（未提供 API Key：请配置 DOUBAO_TTS_API_KEY）"
+            hint = "（未提供 API Key：请在机器人设置 → TTS「配置」中为该设备填写）"
         detail = f"HTTP {status}"
         if body:
             detail += f": {body}"
@@ -252,7 +233,7 @@ class DoubaoTtsConnection:
         if not clean:
             raise ValueError("空文本")
         if not self._cfg.api_key:
-            raise ValueError("豆包 TTS 未配置 DOUBAO_TTS_API_KEY")
+            raise ValueError("豆包 TTS 缺少 API Key：请在机器人设置 → TTS「配置」中为该设备填写")
         if not self._cfg.speaker:
             raise ValueError("未设置 speaker（音色）")
 

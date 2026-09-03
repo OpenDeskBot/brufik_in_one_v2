@@ -2,11 +2,12 @@
 
 - ASR：设备级配置（device 表 asr_provider，默认 funasr），写表即生效——
   ``resolve_asr_adapter`` 每次调用动态解析（见 infrastructure/asr/resolve.py）
-- LLM：设备级覆盖（llm_models.json active 模型）优先于系统默认（config.yaml llm 段），
-  系统级受 .env 覆盖（env 优先），apply_llm 会清掉协议类覆盖
+- LLM：设备级配置（device 表 llm_provider：minicpm / qwen 本地固定端点 / ark 云端，
+  空=回落系统默认 config.yaml llm 段）；ark 的密钥/模型存 device 表 llm_param["ark"]，
+  写表即生效——``resolve_llm_config`` 每次调用动态解析（见 infrastructure/llm/runtime.py）
 - TTS：设备级配置（device 表 tts_provider，默认 moss-tts-nano；tts_param 存音色/凭证），
   写表即生效——``resolve_tts_adapter`` 每次调用动态解析（见 infrastructure/tts/resolve.py）。
-  config.yaml 不再持有 provider 与凭证，豆包 API Key 由各设备自配（服务器不承担公共凭证）
+  config.yaml 不再持有 provider 与凭证，ASR/TTS/LLM 云端凭证由各设备自配（服务器不承担公共凭证）
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ import base64
 import copy
 import json
 import logging
-import os
 import threading
 import time
 from dataclasses import dataclass
@@ -24,40 +24,53 @@ from typing import Any
 
 from deskbot_server.config import load_config, save_config
 from deskbot_server.controller.runtime import get_runtime
-from deskbot_server.dao.device_mapper import get_asr_param, get_tts_param, set_asr_provider, set_tts_provider, update_asr_param, update_tts_param
-from deskbot_server.dao.llm_config_store import get_active_llm_model, set_active_llm_model
+from deskbot_server.dao.device_mapper import (
+    get_asr_param,
+    get_llm_param,
+    get_tts_param,
+    set_asr_provider,
+    set_llm_provider,
+    set_tts_provider,
+    update_asr_param,
+    update_llm_param,
+    update_tts_param,
+)
 from deskbot_server.infrastructure.asr.audio_norm import DEFAULT_PCM_SAMPLE_RATE, normalize_test_audio
 from deskbot_server.infrastructure.asr.doubao import (
     DOUBAO_ASR_FIELDS,
+    DEFAULT_RESOURCE_ID as ASR_DEFAULT_RESOURCE_ID,
+    DEFAULT_UID as ASR_DEFAULT_UID,
+    DEFAULT_URL as ASR_DEFAULT_URL,
     STATUS_OK,
     STATUS_SILENCE,
     DoubaoAsrConfig,
-    transcribe_doubao_detailed,
-)
-from deskbot_server.infrastructure.asr.env_store import (
     _is_masked_secret,
     _mask_secret,
-    load_doubao_asr_env,
-    save_doubao_asr_env,
+    transcribe_doubao_detailed,
 )
 from deskbot_server.infrastructure.asr.funasr_adapter import TRANSCRIBE_TIMEOUT_S
 from deskbot_server.infrastructure.asr.protocol import AsrProtocolError, extract_error, parse_transcribe_response
 from deskbot_server.infrastructure.asr.resolve import resolve_asr_provider
-from deskbot_server.infrastructure.llm.env_store import clear_llm_env, read_llm_env, save_llm_env
 from deskbot_server.infrastructure.llm.runtime import (
     ARK_OPENAI_BASE_URL,
+    ARK_PARAM_FIELDS,
+    LOCAL_LLM_PROVIDERS,
     VOLCENGINE_PROTOCOLS,
     ResolvedLlmConfig,
-    _entry_to_config,
-    _first_env,
-    _normalized_protocol,
-    build_chat_model,
     chat_acompletion,
-    resolve_system_llm_config,
+    resolve_device_llm_provider,
+    resolve_llm_config,
 )
-from deskbot_server.infrastructure.tts.doubao import DOUBAO_TTS_FIELDS, _is_masked_secret as _tts_is_masked, _mask_secret as _tts_mask_secret
+from deskbot_server.infrastructure.tts.doubao import (
+    DOUBAO_TTS_FIELDS,
+    DEFAULT_MODEL as TTS_DEFAULT_MODEL,
+    DEFAULT_RESOURCE_ID as TTS_DEFAULT_RESOURCE_ID,
+    DEFAULT_SPEAKER as TTS_DEFAULT_SPEAKER,
+    DEFAULT_WS_URL as TTS_DEFAULT_WS_URL,
+    _is_masked_secret as _tts_is_masked,
+    _mask_secret as _tts_mask_secret,
+)
 from deskbot_server.infrastructure.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
-from deskbot_server.infrastructure.tts.env_store import read_env_file
 from deskbot_server.infrastructure.tts.moss_adapter import MOSS_TTS_FIELDS, MossTtsAdapter
 from deskbot_server.infrastructure.tts.resolve import resolve_tts_provider
 from deskbot_server.infrastructure.tts.speakers import list_doubao_tts_consumer_speaker_presets
@@ -74,19 +87,8 @@ MOSS_VOICES_FILE = SERVICE_ROOT / "externals" / "moss-tts-nano" / "checkout" / "
 TTS_TEST_DEFAULT_TEXT = "你好，这是语音合成测试。"
 LLM_TEST_DEFAULT_TEXT = "你好，请用一句话简短回复。"
 
-# 本地 llama-server 引擎端点（MiniCPM5-1B · Qwen3.8-2B）；服务端不校验 Authorization、不支持 stream
-MINICPM_LLM_BASE_URL = "http://127.0.0.1:9105/v1"
-MINICPM_LLM_MODEL = "minicpm5-1b"
-QWEN_LLM_BASE_URL = "http://127.0.0.1:9106/v1"
-QWEN_LLM_MODEL = "qwen3.8-2b"
-# 本地 LLM provider 目录：id（与 LLM_CANDIDATES 对齐）→ (服务名, base_url, 模型名)
-LOCAL_LLM_PROVIDERS = {
-    "minicpm": ("llm-minicpm", MINICPM_LLM_BASE_URL, MINICPM_LLM_MODEL),
-    "qwen": ("llm-qwen", QWEN_LLM_BASE_URL, QWEN_LLM_MODEL),
-}
-
-# 页面提示用环境变量清单（存在即表示 config.yaml 被覆盖；ASR/TTS 已设备级化，不在其中）
-ENV_OVERRIDE_KEYS = ("LLM_PROTOCOL", "LLM_MODEL", "LLM_BASE_URL")
+# 本地 LLM provider 的外部服务名（端点/模型常量统一在 infrastructure/llm/runtime.py）
+LOCAL_LLM_SERVICES = {"minicpm": "llm-minicpm", "qwen": "llm-qwen"}
 
 # ASR 测试默认音频样本（与 external/manager.DEFAULT_ASR_TEST_AUDIO 同路径）
 DEFAULT_ASR_TEST_AUDIO = SERVICE_ROOT / "data" / "test" / "asr.wav"
@@ -120,7 +122,7 @@ ASR_CANDIDATES = [
         "funasr", "FunASR 独立进程", "独立 funasr 进程（HTTP 9102，默认），需先安装并启动该服务", requires_service="funasr"
     ),
     CapabilityCandidate(
-        "doubao", "豆包云端 ASR 2.0", "新版控制台 Seed-ASR（x-api-key 鉴权）；可在「配置」中为该设备填写凭证（未填写时回落环境变量）"
+        "doubao", "豆包云端 ASR 2.0", "新版控制台 Seed-ASR（x-api-key 鉴权）；API Key 由该设备自配（服务器不承担公共凭证）"
     ),
 ]
 LLM_CANDIDATES = [
@@ -134,10 +136,14 @@ LLM_CANDIDATES = [
     CapabilityCandidate(
         "qwen",
         "本地 Qwen3.8-2B-Distill（Q4_K_M）",
-        "独立 llama-server 进程（HTTP 9106，OpenAI 兼容，Metal 加速）；2B 模型工具调用比 MiniCPM5-1B 可靠，但仍弱于云端；需 llm-qwen 服务运行",
+        "独立 llama-server 进程（HTTP 9106，OpenAI 兼容，Metal 加速）；2B 模型工具调用比 MiniCPM5-1B 可靠；需 llm-qwen 服务运行",
         requires_service="llm-qwen",
     ),
-    CapabilityCandidate("ark", "火山方舟 Ark（云端）", "默认 LLM，支持工具调用（提醒 / 记忆 / 实验台）"),
+    CapabilityCandidate(
+        "ark",
+        "火山方舟 Ark（云端）",
+        "默认云端 LLM，支持工具调用（提醒 / 记忆 / 实验台）；API Key 与模型 ID 由该设备自配（服务器不承担公共凭证）",
+    ),
 ]
 TTS_CANDIDATES = [
     CapabilityCandidate(
@@ -147,7 +153,7 @@ TTS_CANDIDATES = [
         requires_service="moss-tts-nano",
     ),
     CapabilityCandidate(
-        "doubao", "豆包语音合成", "火山云端 TTS；在「配置」中为该设备填写 API Key 等参数（未填写时回落环境变量）"
+        "doubao", "豆包语音合成", "火山云端 TTS；在「配置」中为该设备填写 API Key（密钥设备自配，服务器不承担公共凭证）"
     ),
 ]
 FACE_CANDIDATES = [
@@ -210,7 +216,6 @@ class RobotCapabilityService:
                 "voiceprint": self._voiceprint_status(cfg),
             },
             "services": self._service_snapshots(),
-            "env_overrides": {key: bool(os.environ.get(key)) for key in ENV_OVERRIDE_KEYS},
         }
 
     def _asr_status(self, device_id: str | None) -> dict[str, Any]:
@@ -260,22 +265,14 @@ class RobotCapabilityService:
         }
 
     def _llm_status(self, cfg: dict[str, Any], device_id: str | None) -> dict[str, Any]:
-        override = None
-        if device_id:
-            entry = get_active_llm_model(device_id)
-            if entry is not None:
-                override = {"active": True, "model": entry.to_dict(mask_key=True)}
-        if override is None:
-            override = {"active": False, "hint": None if device_id else "未选择当前设备"}
+        """LLM 为设备级配置：current 来自 device 表 llm_provider；未配置时回落系统默认并推导标签。"""
+        provider = resolve_device_llm_provider(device_id)
 
         effective: dict[str, Any] = {}
         try:
-            # 与 resolve_llm_config 相同的优先级：设备覆盖 → 系统默认；系统默认读同一份
-            # config（self._config_path），保证页面展示与 apply_llm 落盘的内容一致
-            if override["active"]:
-                resolved = _entry_to_config(get_active_llm_model(device_id))
-            else:
-                resolved = resolve_system_llm_config(self._load_cfg())
+            # 与运行时同源（resolve_llm_config）：设备 llm_provider/llm_param → 系统默认。
+            # cfg 传 self._load_cfg() 保证测试自定义 config 文件与展示/落盘同源。
+            resolved = resolve_llm_config(device_id, cfg)
             effective = {
                 "protocol": resolved.protocol,
                 "base_url": resolved.api_base,
@@ -284,38 +281,50 @@ class RobotCapabilityService:
                 "display_name": resolved.display_name,
                 "api_key_set": bool(str(resolved.api_key or "").strip()),
             }
-        except Exception as exc:  # 配置缺 model_name 等；页面展示错误而不是整页失败
+        except Exception as exc:  # 设备 ark 缺 model_name 等；页面展示错误而不是整页失败
             logger.warning("[robot-settings] resolve_llm_config 失败: %s", exc)
             effective = {"error": str(exc)}
 
-        if override["active"]:
-            current = "device"
+        if provider is not None:
+            current = provider
         elif effective.get("error"):
             current = "custom"
         else:
-            protocol = _normalized_protocol(effective.get("protocol"))
-            if protocol in VOLCENGINE_PROTOCOLS:
-                current = "ark"
-            elif protocol == "openai":
-                # 本地端点精确匹配（9105/9106 等，见 LOCAL_LLM_PROVIDERS）；其他（用户自定义本地服务）归 custom
+            protocol = str(effective.get("protocol") or "").strip()
+            if protocol == "openai":
+                # 本地端点精确匹配（9105/9106 等，见 runtime.LOCAL_LLM_PROVIDERS）；其他归 custom
                 base_url = str(effective.get("base_url") or "").strip().rstrip("/")
-                current = next((pid for pid, (_, url, _) in LOCAL_LLM_PROVIDERS.items() if base_url == url), "custom")
+                current = next(
+                    (pid for pid, (url, _) in LOCAL_LLM_PROVIDERS.items() if base_url == url), "custom"
+                )
+            elif protocol in VOLCENGINE_PROTOCOLS:
+                current = "ark"  # 系统默认指向云端：按候选标签展示，密钥需设备级配置
             else:
                 current = "custom"
 
         warning = None
-        if current in LOCAL_LLM_PROVIDERS:
-            svc_name = LOCAL_LLM_PROVIDERS[current][0]
+        if current in LOCAL_LLM_SERVICES:
+            svc_name = LOCAL_LLM_SERVICES[current]
             if not self._service_running(svc_name):
-                warning = f"{svc_name} 未在运行，切换后对话将失败；请先在「独立服务管理」中启动"
-        elif current == "ark" and not effective.get("api_key_set"):
-            warning = "未配置火山方舟 API Key，云端 LLM 不可用；请在环境变量中设置 ARK_API_KEY"
+                warning = f"{svc_name} 未在运行，对话将失败；请先在「独立服务管理」中启动"
+        elif current == "ark" and not effective.get("error") and not effective.get("api_key_set"):
+            # 设备选了 ark 但没配 key（或系统默认指向云端）→ 引导配置
+            if provider == "ark":
+                warning = (
+                    "该设备已选 ark 云端 LLM 但未配置 API Key：请点击 ark「配置」"
+                    "为该设备填写 API Key 与模型 ID（保存到该设备 llm_param）"
+                )
+            else:
+                warning = (
+                    "系统默认指向云端 LLM 但没有密钥（密钥仅设备级）：请切换 minicpm/qwen，"
+                    "或选中 ark 并在「配置」中为该设备填写 API Key"
+                )
 
         return {
             "candidates": [c.to_dict() for c in LLM_CANDIDATES],
             "current": current,
             "effective": effective,
-            "device_override": override,
+            "device_params": {"configured": bool(get_llm_param(device_id)) if device_id else False},
             "warning": warning,
         }
 
@@ -354,7 +363,7 @@ class RobotCapabilityService:
         return self.get_status(device_id)
 
     def clear_device_asr_override(self, device_id: str | None) -> dict[str, Any]:
-        """重置设备 ASR 为默认 funasr，并清空该设备 asr_param（回到全局配置）。"""
+        """重置设备 ASR 为默认 funasr，并清空该设备 asr_param（回到默认）。"""
         if not device_id:
             raise CapabilityError("未选择当前设备")
         set_asr_provider(device_id, "funasr")
@@ -367,7 +376,7 @@ class RobotCapabilityService:
     def asr_config_info(self, device_id: str | None = None) -> dict[str, Any]:
         """ASR 配置对话框元信息：默认音频样本、funasr 端点、豆包当前值（api_key 掩码）。
 
-        读链：设备 asr_param > 全局 env > 默认（url/uid/resource_id 有兜底）。
+        读链：设备 asr_param > 内置默认（url/uid/resource_id 有兜底；api_key 无默认）。
         """
         audio: dict[str, Any] = {"path": "data/test/asr.wav", "exists": False}
         if DEFAULT_ASR_TEST_AUDIO.is_file():
@@ -385,14 +394,21 @@ class RobotCapabilityService:
                     audio["duration_s"] = round(wav.getnframes() / max(1, wav.getframerate()), 2)
             except Exception:
                 pass  # 元信息展示失败不阻塞测试
-        env = load_doubao_asr_env()
         cfg = self._load_cfg()
         params = get_asr_param(device_id) if device_id else {}
         doubao_params = params.get("doubao") if isinstance(params.get("doubao"), dict) else {}
         funasr_params = params.get("funasr") if isinstance(params.get("funasr"), dict) else {}
 
+        # 内置默认（非密钥字段）；api_key 无默认 → 空
+        _asr_defaults = {
+            "api_key": "",
+            "resource_id": ASR_DEFAULT_RESOURCE_ID,
+            "uid": ASR_DEFAULT_UID,
+            "url": ASR_DEFAULT_URL,
+        }
+
         def _doubao_value(key: str) -> str:
-            return str(doubao_params.get(key) or "").strip() or env["DOUBAO_ASR_" + key.upper()]
+            return str(doubao_params.get(key) or "").strip() or _asr_defaults[key]
 
         api_key = _doubao_value("api_key")
         return {
@@ -409,11 +425,11 @@ class RobotCapabilityService:
         }
 
     def save_device_asr_config(self, device_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
-        """保存设备级 ASR 配置到 device 表 asr_param（JSON），不再写全局 .env。
+        """保存设备级 ASR 配置到 device 表 asr_param（JSON），不写全局 .env。
 
         payload 嵌套格式 ``{"funasr": {"url"}, "doubao": {api_key/resource_id/uid/url}}``；
         旧平铺 doubao 字段（脚本兼容）也会归一。空值/掩码按回填链保留：
-        payload > 设备已有 asr_param > 全局 env；解析后全空 → 清空 asr_param。
+        payload > 设备已有 asr_param；解析后全空 → 清空 asr_param。
         """
         if not device_id:
             raise CapabilityError("未选择当前设备，无法保存 ASR 配置")
@@ -424,7 +440,6 @@ class RobotCapabilityService:
             nested = {"doubao": payload}
 
         existing = get_asr_param(device_id)
-        raw_env = read_env_file()  # .env 真实值（不经默认兜底，避免默认值污染落库）
         existing_doubao = existing.get("doubao") if isinstance(existing.get("doubao"), dict) else {}
         existing_funasr = existing.get("funasr") if isinstance(existing.get("funasr"), dict) else {}
 
@@ -436,8 +451,6 @@ class RobotCapabilityService:
                 raw = ""  # 掩码占位 → 回填链取已有值
             if not raw:
                 raw = str(existing_doubao.get(key) or "").strip()
-            if not raw:
-                raw = (raw_env.get("DOUBAO_ASR_" + key.upper()) or "").strip()
             if raw:
                 doubao_out[key] = raw
 
@@ -461,12 +474,6 @@ class RobotCapabilityService:
         )
         return self.asr_config_info(device_id)
 
-    def save_doubao_asr_config(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Deprecated: 前端已改为设备级 save_device_asr_config；本方法写全局 .env，仅脚本/运维兜底。"""
-        save_doubao_asr_env({k: str(payload.get(k) or "") for k in DOUBAO_ASR_FIELDS})
-        logger.warning("[robot-settings] Deprecated: save_doubao_asr_config 写全局 .env，请改用设备级保存")
-        return self.asr_config_info()
-
     async def asr_test(
         self,
         provider: str,
@@ -480,7 +487,7 @@ class RobotCapabilityService:
 
         音频源：上传 bytes > 默认样本（data/test/asr.wav）；都缺 → CapabilityError。
         归一化为 16k 单声道 PCM；funasr 直连 external_url 抓 HTTP 状态码，
-        doubao 用覆盖字段（空/掩码回落 env）构造临时配置。
+        doubao 用覆盖字段（空/掩码回落设备值/内置默认）构造临时配置。
         返回 ``{ok:true, success, provider, http_code, elapsed_ms, text, error, business_code,
         used_default, sample_rate}``——失败也走 200 + success:false，便于前端渲染详情。
         """
@@ -569,10 +576,10 @@ class RobotCapabilityService:
     async def _doubao_test(
         self, pcm: bytes, sample_rate: int, overrides: dict[str, str], device_id: str | None = None
     ) -> dict[str, Any]:
-        """按"设备实际生效配置"测试豆包 2.0：覆盖字段 > 设备 asr_param > env，错误进结果不抛。"""
-        env = load_doubao_asr_env()
+        """按"设备实际生效配置"测试豆包 2.0：覆盖字段 > 设备 asr_param > 内置默认，错误进结果不抛。"""
         params = get_asr_param(device_id) if device_id else {}
         dev_params = params.get("doubao") if isinstance(params.get("doubao"), dict) else {}
+        fallback = {"resource_id": ASR_DEFAULT_RESOURCE_ID, "uid": ASR_DEFAULT_UID, "url": ASR_DEFAULT_URL, "api_key": ""}
 
         def _pick(field: str) -> str:
             val = (overrides.get(field) or "").strip()
@@ -581,7 +588,7 @@ class RobotCapabilityService:
             if not val:
                 val = str(dev_params.get(field) or "").strip()
             if not val:
-                val = (env.get("DOUBAO_ASR_" + field.upper()) or "").strip()
+                val = fallback[field]
             return val
 
         cfg = DoubaoAsrConfig(
@@ -712,16 +719,24 @@ class RobotCapabilityService:
         ]
 
     def tts_config_info(self, device_id: str | None) -> dict[str, Any]:
-        """TTS 配置对话框元信息：音色列表 + 当前设备参数（api_key 掩码；未填字段回落 .env）。"""
+        """TTS 配置对话框元信息：音色列表 + 当前设备参数（api_key 掩码；未填字段回落内置默认）。"""
         params = get_tts_param(device_id) if device_id else {}
         moss = params.get("moss") if isinstance(params.get("moss"), dict) else {}
         doubao = params.get("doubao") if isinstance(params.get("doubao"), dict) else {}
-        raw_env = read_env_file()
+        _tts_defaults = {
+            "api_key": "",
+            "speaker": TTS_DEFAULT_SPEAKER,
+            "resource_id": TTS_DEFAULT_RESOURCE_ID,
+            "model": TTS_DEFAULT_MODEL,
+            "ws_url": TTS_DEFAULT_WS_URL,
+            "sample_rate": "16000",
+            "audio_format": "pcm",
+        }
 
         def _doubao_value(key: str) -> str:
             val = str(doubao.get(key) or "").strip()
             if not val:
-                val = (raw_env.get("DOUBAO_TTS_" + key.upper()) or "").strip()
+                val = _tts_defaults[key]
             return val
 
         doubao_cfg = {key: _doubao_value(key) for key in DOUBAO_TTS_FIELDS}
@@ -743,7 +758,7 @@ class RobotCapabilityService:
         }
 
     def tts_test_info(self, device_id: str | None = None) -> dict[str, Any]:
-        """测试对话框元信息（兼容旧接口；当前音色从设备 tts_param 取，回落 .env）。"""
+        """测试对话框元信息（兼容旧接口；当前音色从设备 tts_param 取，回落内置默认）。"""
         info = self.tts_config_info(device_id)
         return {
             "text": info["text"],
@@ -756,24 +771,12 @@ class RobotCapabilityService:
     def save_device_tts_config(self, device_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
         """保存设备级 TTS 参数到 device 表 tts_param（JSON；掩码/空值按回填链保留）。
 
-        回填链：payload > 已有设备 tts_param > 全局 .env（api_key 掩码占位视为空）。
+        回填链：payload > 已有设备 tts_param（api_key 掩码占位视为空）。
         全空 → 置 NULL（清除）。写表即生效（运行期 resolve_tts_adapter 每次动态解析）。
         """
         if not device_id:
             raise CapabilityError("未选择当前设备")
         existing = get_tts_param(device_id)
-        raw_env = read_env_file()
-
-        # doubao 字段 → .env 键（moss 无 env 兜底）
-        env_key_by_field = {
-            "api_key": "DOUBAO_TTS_API_KEY",
-            "speaker": "DOUBAO_TTS_SPEAKER",
-            "resource_id": "DOUBAO_TTS_RESOURCE_ID",
-            "model": "DOUBAO_TTS_MODEL",
-            "ws_url": "DOUBAO_TTS_WS_URL",
-            "sample_rate": "DOUBAO_TTS_SAMPLE_RATE",
-            "audio_format": "DOUBAO_TTS_FORMAT",
-        }
 
         def _normalize(field: str, raw: str) -> Any:
             if field == "sample_rate":
@@ -794,10 +797,6 @@ class RobotCapabilityService:
                     raw = ""
                 if not raw:
                     raw = str(existing_p.get(field) or "").strip()
-                if not raw:
-                    env_key = env_key_by_field.get(field)
-                    if env_key:
-                        raw = (raw_env.get(env_key) or "").strip()
                 if raw:
                     provider_out[field] = _normalize(field, raw)
             if provider_out:
@@ -816,7 +815,7 @@ class RobotCapabilityService:
     ) -> dict[str, Any]:
         """按指定 provider 合成测试（临时 adapter，不落盘、不改表）。
 
-        参数优先级：表单覆盖（overrides / voice_id）> 设备 tts_param > 全局 env。
+        参数优先级：表单覆盖（overrides / voice_id）> 设备 tts_param > 内置默认。
         返回 WAV base64 + 采样率 + 音素分片概要。
         """
         _candidate("tts", provider)
@@ -874,118 +873,104 @@ class RobotCapabilityService:
             "elapsed_ms": elapsed_ms,
         }
 
-    # ---------- LLM 切换 ----------
-
-    def _apply_local_llm(self, llm: dict[str, Any], provider: str) -> None:
-        # 快照当前 ark 配置，切回时恢复（随 config 持久化，重启后仍可切回）
-        protocol = _normalized_protocol(llm.get("protocol"))
-        if protocol in VOLCENGINE_PROTOCOLS and not llm.get("ark_base_url"):
-            llm["ark_base_url"] = str(llm.get("base_url") or "").strip() or ARK_OPENAI_BASE_URL
-            llm["ark_model_name"] = str(llm.get("model_name") or "").strip()
-        _, base_url, model_name = LOCAL_LLM_PROVIDERS[provider]
-        llm["protocol"] = "openai"
-        llm["base_url"] = base_url
-        llm["model_name"] = model_name
+    # ---------- LLM 切换（设备级：写 device 表，动态解析即时生效） ----------
 
     def apply_llm(self, provider: str, device_id: str | None = None) -> dict[str, Any]:
+        """切换设备级 LLM provider（minicpm / qwen / ark，写 device 表 llm_provider 即生效）。
+
+        允许未配密钥先应用 ark（对齐 ASR/TTS 的 doubao）：缺 key 由卡片 warning 引导，
+        运行时错误文案亦指向设备配置。不再写 config.yaml / .env。
+        """
         _candidate("llm", provider)
-        cfg = self._load_cfg()
-        llm = cfg.setdefault("llm", {})
-        if provider in LOCAL_LLM_PROVIDERS:
-            self._apply_local_llm(llm, provider)
-        else:  # ark
-            llm["protocol"] = "ark_responses"
-            llm["base_url"] = str(llm.pop("ark_base_url", "") or "").strip() or ARK_OPENAI_BASE_URL
-            llm["model_name"] = str(llm.pop("ark_model_name", "") or "").strip() or str(llm.get("model_name") or "")
-        save_config(cfg, self._config_path)
-        # 清掉 .env 的协议/模型/地址覆盖（否则遮蔽 config.yaml），保留 ARK_API_KEY 密钥
-        clear_llm_env(keep_api_key=True)
-        logger.info("[robot-settings] LLM 切换生效 provider=%s", provider)
+        if not device_id:
+            raise CapabilityError("未选择当前设备")
+        set_llm_provider(device_id, provider)
+        logger.info("[robot-settings] LLM 设备级切换生效 device_id=%s provider=%s", device_id, provider)
         return self.get_status(device_id)
 
-    # ---------- LLM 配置（config-info / save / 试聊） ----------
+    # ---------- LLM 配置 / 试聊（对话框；密钥仅设备级 llm_param） ----------
 
-    def _ark_snapshot(self, llm: dict[str, Any]) -> tuple[str, str]:
-        """读 ark 模型名与地址：当前协议为 ark → 主键；否则 → 快照键（apply_llm 切走时保存）。"""
-        if _normalized_protocol(llm.get("protocol")) in VOLCENGINE_PROTOCOLS:
-            model_name = str(llm.get("model_name") or "").strip()
-            base_url = str(llm.get("base_url") or "").strip() or ARK_OPENAI_BASE_URL
-        else:
-            model_name = str(llm.get("ark_model_name") or "").strip()
-            base_url = str(llm.get("ark_base_url") or "").strip() or ARK_OPENAI_BASE_URL
-        return model_name, base_url
+    def llm_config_info(self, provider: str, device_id: str | None = None) -> dict[str, Any]:
+        """LLM 配置对话框元信息：本地引擎只读固定端点；ark 显示当前设备 llm_param 值（key 掩码）。
 
-    def llm_config_info(self, provider: str) -> dict[str, Any]:
-        """LLM 配置对话框元信息：ark → 当前值（api_key 掩码）；本地模型 → 只读固定端点。"""
+        ark 字段仅读设备 llm_param["ark"]，不回退 config.yaml（与 runtime 解析一致）。
+        """
         _candidate("llm", provider)
         if provider in LOCAL_LLM_PROVIDERS:
-            _, base_url, model_name = LOCAL_LLM_PROVIDERS[provider]
+            base_url, model_name = LOCAL_LLM_PROVIDERS[provider]
             return {"provider": provider, "base_url": base_url, "model_name": model_name, "readonly": True}
-        llm = (self._load_cfg().get("llm") or {})
-        model_name, base_url = self._ark_snapshot(llm)
-        api_key = str(os.environ.get("ARK_API_KEY") or "").strip()
-        if not api_key:
-            api_key = str((read_llm_env().get("ARK_API_KEY") or "")).strip()
+        ark = {}
+        if device_id:
+            raw = get_llm_param(device_id).get("ark")
+            ark = raw if isinstance(raw, dict) else {}
+        api_key = str(ark.get("api_key") or "").strip()
         return {
             "provider": provider,
-            "api_key": _tts_mask_secret(api_key),
+            "api_key": _mask_secret(api_key),
             "api_key_set": bool(api_key),
-            "model_name": model_name,
-            "base_url": base_url,
+            "model_name": str(ark.get("model_name") or "").strip(),
+            "base_url": str(ark.get("base_url") or "").strip(),
             "readonly": False,
         }
 
-    def save_llm_config(self, provider: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """保存 ark 配置：API Key → .env（掩码/空不覆盖已有）；模型/地址 → config.yaml llm 段。
+    def save_device_llm_config(
+        self, device_id: str | None, provider: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """保存设备级 ark 配置到 device 表 llm_param["ark"]（JSON），不写 .env / config.yaml。
 
-        当前协议为 ark → 写主键并清理快照键；否则 → 写快照键（ark_base_url / ark_model_name），
-        不污染当前生效的本地配置，切回 ark 时由 apply_llm 自动取用。本地模型无可保存字段。
+        掩码/空值按回填链保留：payload > 设备已有 llm_param["ark"]；全空 → 删除该键，
+        llm_param 空则置 NULL（回到系统默认）。写表即生效（runtime 每次动态解析）。
         """
         _candidate("llm", provider)
+        if not device_id:
+            raise CapabilityError("未选择当前设备，无法保存 LLM 配置")
         if provider not in ("ark",):
-            return self.llm_config_info(provider)
-        api_key = str(payload.get("api_key") or "").strip()
-        if not api_key or _tts_is_masked(api_key):
-            api_key = ""
-        if api_key:
-            save_llm_env({"api_key": api_key})  # 写 .env ARK_API_KEY + 刷新 os.environ
-        model_name = str(payload.get("model_name") or "").strip()
-        base_url = str(payload.get("base_url") or "").strip().rstrip("/")
-        if model_name or base_url:
-            cfg = self._load_cfg()
-            llm = cfg.setdefault("llm", {})
-            if _normalized_protocol(llm.get("protocol")) in VOLCENGINE_PROTOCOLS:
-                if base_url:
-                    llm["base_url"] = base_url
-                if model_name:
-                    llm["model_name"] = model_name
-                llm.pop("ark_base_url", None)
-                llm.pop("ark_model_name", None)
-            else:
-                if base_url:
-                    llm["ark_base_url"] = base_url
-                if model_name:
-                    llm["ark_model_name"] = model_name
-            save_config(cfg, self._config_path)
-        logger.info("[robot-settings] LLM 配置保存 provider=%s api_key_set=%s model=%s", provider, bool(api_key), model_name)
-        return self.llm_config_info(provider)
+            raise CapabilityError("本地模型无可保存字段（端点为固定内置值）")
+        existing = get_llm_param(device_id)
+        existing_ark = existing.get("ark") if isinstance(existing.get("ark"), dict) else {}
+
+        ark_out: dict[str, str] = {}
+        for key in ARK_PARAM_FIELDS:
+            raw = str(payload.get(key) or "").strip()
+            if key == "api_key" and _is_masked_secret(raw):
+                raw = ""  # 掩码占位 → 回填已有值
+            if not raw:
+                raw = str(existing_ark.get(key) or "").strip()
+            if raw:
+                ark_out[key] = raw
+
+        param = dict(existing)
+        if ark_out:
+            param["ark"] = ark_out
+        else:
+            param.pop("ark", None)
+        update_llm_param(device_id, json.dumps(param, ensure_ascii=False) if param else None)
+        logger.info(
+            "[robot-settings] 设备级 LLM 配置已保存 device_id=%s fields=%s",
+            device_id, sorted(ark_out),
+        )
+        return self.llm_config_info(provider, device_id)
 
     async def llm_test(
-        self, provider: str, text: str, overrides: dict[str, Any] | None = None
+        self,
+        provider: str,
+        text: str,
+        *,
+        device_id: str | None = None,
+        overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """按指定 provider 试聊（临时 ResolvedLlmConfig，不落盘、不改表）。
 
-        参数优先级：表单覆盖（overrides）> 当前配置（config.yaml llm 段 / ark 快照键）> 默认。
-        本地模型免 API Key（is_local_llm_url 豁免）；云端取覆盖字段 > 环境变量。
+        本地引擎直连固定端点（免 key）；ark 需 device_id，参数优先级：
+        表单覆盖（overrides）> 设备 llm_param["ark"] > 内置默认（api_key 无默认）。
         """
         _candidate("llm", provider)
         text = (text or "").strip() or LLM_TEST_DEFAULT_TEXT
-        ov = dict(overrides or {})
-        llm_cfg = self._load_cfg().get("llm") or {}
+        ov = dict(overrides or {}) if isinstance(overrides, dict) else {}
         if provider in LOCAL_LLM_PROVIDERS:
-            _, base_url, model_name = LOCAL_LLM_PROVIDERS[provider]
+            base_url, model_name = LOCAL_LLM_PROVIDERS[provider]
             resolved = ResolvedLlmConfig(
-                model=build_chat_model("openai", model_name),
+                model=model_name,
                 api_key="",
                 api_base=base_url,
                 protocol="openai",
@@ -993,22 +978,26 @@ class RobotCapabilityService:
                 display_name=f"{provider} 试聊",
             )
         else:  # ark
-            model_name, base_url = self._ark_snapshot(llm_cfg)
-            model_name = str(ov.get("model_name") or "").strip() or model_name
-            base_url = str(ov.get("base_url") or "").strip().rstrip("/") or base_url or ARK_OPENAI_BASE_URL
-            api_key = str(ov.get("api_key") or "").strip()
-            if _tts_is_masked(api_key):
-                api_key = ""
-            if not api_key:
-                api_key, _ = _first_env(
-                    "LLM_API_KEY", "ARK_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY", "DASHSCOPE_API_KEY", "QWEN_API_KEY"
-                )
+            if not device_id:
+                raise CapabilityError("未选择当前设备，无法试聊云端 LLM（密钥仅设备级）")
+            dev_ark = get_llm_param(device_id).get("ark")
+            dev_ark = dev_ark if isinstance(dev_ark, dict) else {}
+
+            def _pick(key: str, default: str = "") -> str:
+                val = str(ov.get(key) or "").strip()
+                if key == "api_key" and _is_masked_secret(val):
+                    val = ""
+                if not val:
+                    val = str(dev_ark.get(key) or "").strip()
+                return val or default
+
+            model_name = _pick("model_name")
             if not model_name:
-                raise CapabilityError("请先填写模型 ID（火山方舟控制台推理接入点 ep-xxx）")
+                raise CapabilityError("请先填写模型 ID（火山方舟推理接入点 ep-xxx）")
             resolved = ResolvedLlmConfig(
-                model=build_chat_model("ark_responses", model_name),
-                api_key=api_key,
-                api_base=base_url,
+                model=model_name,
+                api_key=_pick("api_key"),
+                api_base=_pick("base_url", ARK_OPENAI_BASE_URL).rstrip("/"),
                 protocol="ark_responses",
                 source="test",
                 display_name=f"ark 试聊 ({model_name})",
@@ -1034,10 +1023,13 @@ class RobotCapabilityService:
             "usage": meta.get("usage"),
         }
 
-    # ---------- 设备级 LLM 覆盖 ----------
+    # ---------- 设备级 LLM 清除（回到系统默认） ----------
 
     def clear_device_llm_override(self, device_id: str | None) -> dict[str, Any]:
+        """清除设备 LLM 配置：llm_provider 置空（回落系统默认 config.yaml llm 段），llm_param 清空。"""
         if not device_id:
             raise CapabilityError("未选择当前设备")
-        set_active_llm_model(device_id, None)
+        set_llm_provider(device_id, "")
+        update_llm_param(device_id, None)
+        logger.info("[robot-settings] LLM 设备配置已清除 device_id=%s（provider 置空，llm_param 清空）", device_id)
         return self.get_status(device_id)

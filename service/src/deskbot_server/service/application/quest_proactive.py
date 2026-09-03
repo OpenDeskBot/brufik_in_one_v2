@@ -81,7 +81,7 @@ class QuestProactiveRunner:
                 user_text,
                 request_id=req_id,
                 device_id=dev,
-                registry=self._device_ws,
+                device_ws=self._device_ws,
                 t_asr_text=t0,
                 force_voice=True,
                 bus_service=self._bus_service,

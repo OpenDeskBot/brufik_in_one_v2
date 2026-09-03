@@ -113,7 +113,7 @@ class ScheduledTaskScheduler:
                 user_text,
                 request_id=req_id,
                 device_id=device_id,
-                registry=self._device_ws,
+                device_ws=self._device_ws,
                 t_asr_text=t0,
                 force_voice=True,
                 reuse_session_id=task_session_id,

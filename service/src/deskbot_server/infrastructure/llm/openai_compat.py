@@ -107,8 +107,13 @@ class OpenAiLlmAdapter:
 
         return load_llm_system_prompt(device_id) or self._default_system_prompt
 
-    def _build_system_prompt(self, *, device_id: str | None = None) -> str:
+    def _build_system_prompt(self, *, device_id: str | None = None, native: bool = False) -> str:
         base = self._resolve_system_prompt(device_id=device_id)
+        if native:
+            from deskbot_server.infrastructure.llm.tool_schema import build_native_tool_schemas
+
+            names = [s["function"]["name"] for s in build_native_tool_schemas(device_id=device_id)]
+            return build_llm_system_prompt(base, device_id=device_id, native_tool_names=names)
         return build_llm_system_prompt(base, device_id=device_id)
 
     async def complete(
@@ -272,7 +277,7 @@ class OpenAiLlmAdapter:
         # 本地引擎（llm-minicpm / llm-qwen 等）不支持 stream，同样强制非流式（TTS 走完整响应后预取）。
         use_stream_tts = bool(on_tts_ready) and llm_cfg.protocol != "ark_responses" and not local_engine
 
-        system_content = self._build_system_prompt(device_id=device_id)
+        system_content = self._build_system_prompt(device_id=device_id, native=True)
         if on_system_prompt is not None:
             try:
                 on_system_prompt(system_content)

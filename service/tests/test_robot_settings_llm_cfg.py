@@ -1,13 +1,15 @@
 """机器人设置页 LLM 配置（config-info / config / test 试聊）测试。
 
-覆盖：ark 配置信息（掩码 key / 快照键读取）、保存语义（.env 密钥 + config.yaml
-主键/快照键）、本地模型只读端点、试聊临时 config（覆盖字段优先 / 本地免 Key）、
-三个 API 端点。
+覆盖：ark 配置信息（掩码 key，读该设备 llm_param["ark"]，不回退 config.yaml / .env）、
+保存语义（仅写 device 表 llm_param["ark"]，不写 .env / config.yaml）、本地模型只读端点、
+试聊临时 config（表单覆盖 > 设备 llm_param > 内置默认；本地免 Key）、三个 API 端点。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -25,20 +27,11 @@ MINIMAL_LLM_CFG = {
 
 
 @pytest.fixture()
-def tmp_env(monkeypatch, tmp_path):
-    """隔离 .env：update_env_keys / read_env_file 读 tts.env_store.ENV_FILE。"""
-    env_file = tmp_path / ".env"
-    env_file.write_text("", encoding="utf-8")
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
-    return env_file
-
-
-@pytest.fixture()
 def temp_db(monkeypatch):
-    import tempfile
-
     from deskbot_server.db import init_database
     from deskbot_server.db.engine import init_engine, reset_engine
+    from deskbot_server.service.user_service import UserService
+    from deskbot_server.utils.singleton import SingletonMeta
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.db"
@@ -46,7 +39,20 @@ def temp_db(monkeypatch):
         reset_engine()
         init_engine(db_path)
         init_database()
+        SingletonMeta.reset_instance(UserService)
         yield db_path
+        reset_engine()
+        SingletonMeta.reset_instance(UserService)
+
+
+@pytest.fixture()
+def device(temp_db):
+    """绑定一台测试设备（llm-cfg@example.com / deskbot_llm）。"""
+    from tests.device_bind_helpers import bind_device_online
+    from deskbot_server.service.user_service import UserService
+
+    user = UserService().register("llm-cfg@example.com", "password1234")
+    return bind_device_online(user.id, "deskbot_llm")
 
 
 def _llm_svc(tmp_path: Path, cfg: dict | None = None) -> RobotCapabilityService:
@@ -55,139 +61,132 @@ def _llm_svc(tmp_path: Path, cfg: dict | None = None) -> RobotCapabilityService:
     return RobotCapabilityService(config_path=p)
 
 
-@pytest.fixture()
-def clean_env(monkeypatch):
-    for name in ("ARK_API_KEY", "LLM_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY", "DASHSCOPE_API_KEY", "QWEN_API_KEY"):
-        monkeypatch.delenv(name, raising=False)
-
-
 # ---------- config-info ----------
 
 
-def test_llm_config_info_ark_masked_key_and_defaults(tmp_path, clean_env, tmp_env):
+def test_llm_config_info_ark_empty_without_device_param(tmp_path):
     svc = _llm_svc(tmp_path)
-    info = svc.llm_config_info("ark")
+    info = svc.llm_config_info("ark", "deskbot_nope")  # 设备不存在 → 空值（不回退 config.yaml）
     assert info["provider"] == "ark"
     assert info["readonly"] is False
-    assert info["api_key"] == "" and info["api_key_set"] is False  # 无 key
-    assert info["model_name"] == "ep-test"
-    assert info["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+    assert info["api_key"] == "" and info["api_key_set"] is False
+    assert info["model_name"] == ""
+    assert info["base_url"] == ""
 
 
-def test_llm_config_info_ark_masks_env_key(tmp_path, clean_env, tmp_env, monkeypatch):
-    from deskbot_server.infrastructure.tts.doubao import _mask_secret
+def test_llm_config_info_ark_masks_device_param(tmp_path, device):
+    from deskbot_server.dao.device_mapper import update_llm_param
+    from deskbot_server.infrastructure.asr.doubao import _mask_secret
 
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret-key-123")
+    update_llm_param(
+        "deskbot_llm",
+        json.dumps({"ark": {"api_key": "ark-secret-key-123", "model_name": "ep-dev", "base_url": ""}}),
+    )
     svc = _llm_svc(tmp_path)
-    info = svc.llm_config_info("ark")
+    info = svc.llm_config_info("ark", "deskbot_llm")
     assert info["api_key"] == _mask_secret("ark-secret-key-123")
     assert info["api_key_set"] is True
+    assert info["model_name"] == "ep-dev"
+    assert info["base_url"] == ""
 
 
-def test_llm_config_info_ark_uses_snapshot_when_local_active(tmp_path, clean_env, tmp_env):
-    """当前生效为本地模型时，ark 配置信息读快照键（apply_llm 切走时保存）。"""
-    svc = _llm_svc(
-        tmp_path,
-        {
-            "llm": {
-                "protocol": "openai",
-                "base_url": "http://127.0.0.1:9106/v1",
-                "model_name": "qwen3.8-2b",
-                "ark_base_url": "https://ark.cn-beijing.volces.com/api/v3",
-                "ark_model_name": "ep-snap",
-            }
-        },
-    )
-    info = svc.llm_config_info("ark")
-    assert info["model_name"] == "ep-snap"  # 快照键，而非当前 qwen 的 model_name
-    assert info["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
-
-
-def test_llm_config_info_local_readonly(tmp_path, clean_env, tmp_env):
+def test_llm_config_info_local_readonly_no_device_needed(tmp_path):
     svc = _llm_svc(tmp_path)
     info = svc.llm_config_info("minicpm")
     assert info["readonly"] is True
     assert info["base_url"] == "http://127.0.0.1:9105/v1"
     assert info["model_name"] == "minicpm5-1b"
-    info = svc.llm_config_info("qwen")
+    info = svc.llm_config_info("qwen", None)
     assert info["readonly"] is True
     assert info["base_url"] == "http://127.0.0.1:9106/v1"
     assert info["model_name"] == "qwen3.8-2b"
 
 
-def test_llm_config_info_unknown_provider_rejected(tmp_path, clean_env, tmp_env):
+def test_llm_config_info_unknown_provider_rejected(tmp_path):
     svc = _llm_svc(tmp_path)
     with pytest.raises(CapabilityError):
-        svc.llm_config_info("bogus")
+        svc.llm_config_info("bogus", "deskbot_llm")
 
 
-# ---------- save_llm_config ----------
+# ---------- save_device_llm_config ----------
 
 
-def test_save_llm_config_writes_env_and_main_keys(tmp_path, clean_env, tmp_env):
+def test_save_llm_config_writes_device_llm_param_only(tmp_path, device):
     from deskbot_server.config import load_config
+    from deskbot_server.dao.device_mapper import get_llm_param
 
     svc = _llm_svc(tmp_path)
-    svc.save_llm_config(
-        "ark", {"api_key": "ark-new-key", "model_name": "ep-2", "base_url": "https://ark.cn-beijing.volces.com/api/v3"}
+    before = load_config(svc._config_path)
+
+    info = svc.save_device_llm_config(
+        "deskbot_llm",
+        "ark",
+        {"api_key": "ark-new-key", "model_name": "ep-2", "base_url": "https://ark.cn-beijing.volces.com/api/v3"},
     )
-    # API Key → .env
-    assert "ARK_API_KEY=ark-new-key" in tmp_env.read_text(encoding="utf-8")
-    # 当前协议为 ark → 主键写入 + 快照键清理
-    llm = load_config(svc._config_path)["llm"]
-    assert llm["model_name"] == "ep-2"
-    assert llm["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
-    assert "ark_model_name" not in llm
-    assert "ark_base_url" not in llm
+
+    param = get_llm_param("deskbot_llm")
+    assert param["ark"] == {
+        "api_key": "ark-new-key",
+        "model_name": "ep-2",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    }
+    assert load_config(svc._config_path) == before  # config.yaml 不被改写
     # config-info 回填：掩码 + 新值
-    info = svc.llm_config_info("ark")
     assert info["model_name"] == "ep-2"
     assert info["api_key_set"] is True
 
 
-def test_save_llm_config_masked_api_key_keeps_existing(tmp_path, clean_env, tmp_env):
-    from deskbot_server.infrastructure.tts.doubao import _mask_secret
+def test_save_llm_config_masked_key_keeps_existing_and_preserves_other_keys(tmp_path, device):
+    from deskbot_server.dao.device_mapper import get_llm_param, update_llm_param
+    from deskbot_server.infrastructure.asr.doubao import _mask_secret
 
-    svc = _llm_svc(tmp_path)
-    svc.save_llm_config("ark", {"api_key": "ark-real-key", "model_name": "ep-1"})
-    svc.save_llm_config("ark", {"api_key": _mask_secret("ark-real-key"), "model_name": "ep-2"})
-    env_text = tmp_env.read_text(encoding="utf-8")
-    assert "ARK_API_KEY=ark-real-key" in env_text  # 掩码不覆盖
-    assert "ARK_API_KEY=" + _mask_secret("ark-real-key") not in env_text
-
-
-def test_save_llm_config_writes_snapshot_when_local_active(tmp_path, clean_env, tmp_env):
-    """当前生效为本地模型时，保存 ark 配置写快照键，不污染本地主键。"""
-    from deskbot_server.config import load_config
-
-    svc = _llm_svc(
-        tmp_path,
-        {
-            "llm": {
-                "protocol": "openai",
-                "base_url": "http://127.0.0.1:9106/v1",
-                "model_name": "qwen3.8-2b",
-            }
-        },
+    update_llm_param(
+        "deskbot_llm",
+        json.dumps({"context_window": 8192, "ark": {"api_key": "ark-real-key", "model_name": "ep-1"}}),
     )
-    svc.save_llm_config("ark", {"api_key": "ark-key", "model_name": "ep-9", "base_url": ""})
-    llm = load_config(svc._config_path)["llm"]
-    assert llm["protocol"] == "openai"  # 当前本地配置不动
-    assert llm["model_name"] == "qwen3.8-2b"
-    assert llm["ark_model_name"] == "ep-9"  # 预存快照，切回 ark 时生效
-    info = svc.llm_config_info("ark")
-    assert info["model_name"] == "ep-9"
+    svc = _llm_svc(tmp_path)
+
+    svc.save_device_llm_config(
+        "deskbot_llm", "ark",
+        {"api_key": _mask_secret("ark-real-key"), "model_name": "ep-2", "base_url": ""},
+    )
+
+    param = get_llm_param("deskbot_llm")
+    assert param["ark"]["api_key"] == "ark-real-key"  # 掩码不覆盖
+    assert param["ark"]["model_name"] == "ep-2"  # 非掩码空字段回填已有后才落新值
+    assert param["context_window"] == 8192  # 顶层键（context_window 等）原样保留
 
 
-def test_save_llm_config_local_provider_noop(tmp_path, clean_env, tmp_env):
-    """本地模型无可保存字段：payload 忽略，config 与 .env 均不被写。"""
-    from deskbot_server.config import load_config
+def test_save_llm_config_empty_payload_keeps_existing(tmp_path, device):
+    """空值按回填链保留已有（payload > 设备 llm_param）；清除走 clear_device_llm_override。"""
+    from deskbot_server.dao.device_mapper import get_llm_param, update_llm_param
+
+    update_llm_param("deskbot_llm", json.dumps({"ark": {"api_key": "sk-1", "model_name": "ep-1"}}))
+    svc = _llm_svc(tmp_path)
+
+    svc.save_device_llm_config("deskbot_llm", "ark", {"api_key": "", "model_name": "", "base_url": ""})
+
+    assert get_llm_param("deskbot_llm") == {"ark": {"api_key": "sk-1", "model_name": "ep-1"}}  # 空值保留已有
+
+
+def test_save_llm_config_empty_payload_without_existing_noop(tmp_path, device):
+    from deskbot_server.dao.device_mapper import get_llm_param
 
     svc = _llm_svc(tmp_path)
-    before = load_config(svc._config_path)
-    svc.save_llm_config("minicpm", {"api_key": "x", "model_name": "y"})
-    assert load_config(svc._config_path) == before
-    assert tmp_env.read_text(encoding="utf-8") == ""
+    svc.save_device_llm_config("deskbot_llm", "ark", {"api_key": "", "model_name": "", "base_url": ""})
+    assert get_llm_param("deskbot_llm") == {}  # 无已有值全空 → 不落键（保持 NULL）
+
+
+def test_save_llm_config_local_provider_rejected(tmp_path, device):
+    svc = _llm_svc(tmp_path)
+    with pytest.raises(CapabilityError, match="本地模型无可保存字段"):
+        svc.save_device_llm_config("deskbot_llm", "minicpm", {"api_key": "x"})
+
+
+def test_save_llm_config_requires_device(tmp_path):
+    svc = _llm_svc(tmp_path)
+    with pytest.raises(CapabilityError, match="未选择当前设备"):
+        svc.save_device_llm_config(None, "ark", {"api_key": "x"})
 
 
 # ---------- llm_test（试聊） ----------
@@ -202,47 +201,82 @@ def _fake_chat(captured: dict):
     return fake
 
 
-def test_llm_test_ark_overrides_beat_config(tmp_path, clean_env, tmp_env, monkeypatch):
-    captured: dict = {}
-    monkeypatch.setattr(
-        "deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured)
+def test_llm_test_ark_overrides_beat_device_param(tmp_path, device, monkeypatch):
+    from deskbot_server.dao.device_mapper import update_llm_param
+
+    update_llm_param(
+        "deskbot_llm",
+        json.dumps({"ark": {"api_key": "dev-key", "model_name": "ep-dev", "base_url": ""}}),
     )
-    monkeypatch.setenv("ARK_API_KEY", "env-key")
+    captured: dict = {}
+    monkeypatch.setattr("deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured))
     svc = _llm_svc(tmp_path)
     result = asyncio.run(
         svc.llm_test(
-            "ark", "你好",
-            overrides={"api_key": "form-key", "model_name": "ep-form", "base_url": "https://ark.cn-beijing.volces.com/api/v3"},
+            "ark", "你好", device_id="deskbot_llm",
+            overrides={"api_key": "form-key", "model_name": "ep-form", "base_url": "https://ark.example/api/v3"},
         )
     )
     assert result["ok"] is True
-    assert result["reply"] == "收到，我在。"
     cfg = captured["cfg"]
-    assert cfg.api_key == "form-key"  # 表单覆盖 > env
+    assert cfg.api_key == "form-key"  # 表单覆盖 > 设备 llm_param
     assert cfg.model == "ep-form"
     assert cfg.protocol == "ark_responses"
     assert captured["messages"][0]["content"] == "你好"
 
 
-def test_llm_test_ark_env_key_fallback_and_config_model(tmp_path, clean_env, tmp_env, monkeypatch):
-    captured: dict = {}
-    monkeypatch.setattr(
-        "deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured)
+def test_llm_test_ark_falls_back_to_device_param(tmp_path, device, monkeypatch):
+    from deskbot_server.dao.device_mapper import update_llm_param
+
+    update_llm_param(
+        "deskbot_llm",
+        json.dumps({"ark": {"api_key": "dev-key", "model_name": "ep-dev", "base_url": ""}}),
     )
-    monkeypatch.setenv("ARK_API_KEY", "env-key")
-    svc = _llm_svc(tmp_path)  # config: ep-test / 官方 base_url
-    result = asyncio.run(svc.llm_test("ark", ""))  # 空文本 → 默认文本
+    captured: dict = {}
+    monkeypatch.setattr("deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured))
+    svc = _llm_svc(tmp_path)
+    result = asyncio.run(svc.llm_test("ark", "", device_id="deskbot_llm"))
     assert result["ok"] is True
-    assert captured["messages"][0]["content"] == "你好，请用一句话简短回复。"
-    assert captured["cfg"].api_key == "env-key"
-    assert captured["cfg"].model == "ep-test"
+    assert captured["messages"][0]["content"] == "你好，请用一句话简短回复。"  # 空文本 → 默认
+    cfg = captured["cfg"]
+    assert cfg.api_key == "dev-key"  # 回填设备 llm_param
+    assert cfg.model == "ep-dev"
+    assert cfg.api_base == "https://ark.cn-beijing.volces.com/api/v3"  # 空 base_url → 内置默认
 
 
-def test_llm_test_local_no_api_key_needed(tmp_path, clean_env, tmp_env, monkeypatch):
+def test_llm_test_ark_masked_override_keeps_device_key(tmp_path, device, monkeypatch):
+    from deskbot_server.dao.device_mapper import update_llm_param
+    from deskbot_server.infrastructure.asr.doubao import _mask_secret
+
+    update_llm_param("deskbot_llm", json.dumps({"ark": {"api_key": "dev-key", "model_name": "ep-dev"}}))
     captured: dict = {}
-    monkeypatch.setattr(
-        "deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured)
+    monkeypatch.setattr("deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured))
+    svc = _llm_svc(tmp_path)
+    result = asyncio.run(
+        svc.llm_test("ark", "你好", device_id="deskbot_llm",
+                     overrides={"api_key": _mask_secret("dev-key"), "model_name": ""})
     )
+    assert result["ok"] is True
+    assert captured["cfg"].api_key == "dev-key"  # 掩码占位 → 回落设备值
+
+
+def test_llm_test_ark_requires_device(tmp_path, monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr("deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured))
+    svc = _llm_svc(tmp_path)
+    with pytest.raises(CapabilityError, match="未选择当前设备"):
+        asyncio.run(svc.llm_test("ark", "你好"))
+
+
+def test_llm_test_ark_missing_model_clear_error(tmp_path, device):
+    svc = _llm_svc(tmp_path)
+    with pytest.raises(CapabilityError, match="模型 ID"):
+        asyncio.run(svc.llm_test("ark", "你好", device_id="deskbot_llm"))
+
+
+def test_llm_test_local_no_api_key_needed(tmp_path, monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr("deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured))
     svc = _llm_svc(tmp_path)
     result = asyncio.run(svc.llm_test("minicpm", "你好"))
     assert result["ok"] is True
@@ -252,7 +286,7 @@ def test_llm_test_local_no_api_key_needed(tmp_path, clean_env, tmp_env, monkeypa
     assert cfg.model == "minicpm5-1b"
 
 
-def test_llm_test_failure_returns_ok_false(tmp_path, clean_env, tmp_env, monkeypatch):
+def test_llm_test_failure_returns_ok_false(tmp_path, monkeypatch):
     async def fail(messages, **kwargs):
         raise ConnectionError("无法连接")
 
@@ -263,7 +297,7 @@ def test_llm_test_failure_returns_ok_false(tmp_path, clean_env, tmp_env, monkeyp
     assert "无法连接" in result["error"]
 
 
-def test_llm_test_unknown_provider_rejected(tmp_path, clean_env, tmp_env):
+def test_llm_test_unknown_provider_rejected(tmp_path):
     svc = _llm_svc(tmp_path)
     with pytest.raises(CapabilityError):
         asyncio.run(svc.llm_test("bogus", "你好"))
@@ -272,26 +306,26 @@ def test_llm_test_unknown_provider_rejected(tmp_path, clean_env, tmp_env):
 # ---------- API 端点 ----------
 
 
-def _login_client(email: str):
+def _login_select_device(device_id: str):
+    """登录并选择当前设备，返回 test client。"""
     from deskbot_server.web.app import create_app
 
     client = create_app().test_client()
-    client.post("/login", data={"email": email, "password": "password1234"})
+    client.post("/login", data={"email": "llm-cfg@example.com", "password": "password1234"})
+    resp = client.post("/app/api/devices/select", json={"device_id": device_id})
+    assert resp.status_code == 200
     return client
 
 
-def test_api_llm_config_info_endpoint(temp_db, monkeypatch, tmp_path):
-    from tests._auth_compat import create_user
-
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", tmp_path / ".env")
-    create_user("llm-cfg-info@example.com", "password1234")
-    client = _login_client("llm-cfg-info@example.com")
+def test_api_llm_config_info_endpoint(temp_db, device):
+    client = _login_select_device("deskbot_llm")
 
     resp = client.get("/api/robot-settings/llm/config-info?provider=ark")
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["ok"] is True
     assert payload["readonly"] is False
+    assert payload["api_key_set"] is False  # 未配置设备 llm_param → 空（不回退 config）
 
     resp = client.get("/api/robot-settings/llm/config-info?provider=qwen")
     assert resp.get_json()["readonly"] is True
@@ -300,19 +334,10 @@ def test_api_llm_config_info_endpoint(temp_db, monkeypatch, tmp_path):
     assert resp.status_code == 400
 
 
-def test_api_llm_config_save_endpoint(temp_db, monkeypatch, tmp_path):
-    from deskbot_server.config import load_config
-    from tests._auth_compat import create_user
+def test_api_llm_config_save_endpoint_writes_device_llm_param(temp_db, device):
+    from deskbot_server.dao.device_mapper import get_llm_param
 
-    # 隔离默认 config.yaml：API 端点走真实默认路径，monkeypatch 到临时文件
-    cfg_file = tmp_path / "config.yaml"
-    cfg_file.write_text(yaml.safe_dump(MINIMAL_LLM_CFG, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    monkeypatch.setattr("deskbot_server.config.DEFAULT_CONFIG_PATH", str(cfg_file))
-
-    env_file = tmp_path / ".env"
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
-    create_user("llm-cfg-save@example.com", "password1234")
-    client = _login_client("llm-cfg-save@example.com")
+    client = _login_select_device("deskbot_llm")
 
     resp = client.post(
         "/api/robot-settings/llm/config",
@@ -322,30 +347,60 @@ def test_api_llm_config_save_endpoint(temp_db, monkeypatch, tmp_path):
     payload = resp.get_json()
     assert payload["ok"] is True
     assert payload["model_name"] == "ep-api"
-    assert "ARK_API_KEY=ark-api-1" in env_file.read_text(encoding="utf-8")
-    llm = load_config(None)["llm"]
-    assert llm["model_name"] == "ep-api"  # 当前协议 ark → 主键
-    assert llm["protocol"] == "ark_responses"
+    assert get_llm_param("deskbot_llm")["ark"] == {"api_key": "ark-api-1", "model_name": "ep-api"}
 
 
-def test_api_llm_test_endpoint(temp_db, monkeypatch, tmp_path):
-    from tests._auth_compat import create_user
+def test_api_llm_config_save_requires_current_device(temp_db, device):
+    from deskbot_server.web.app import create_app
 
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", tmp_path / ".env")
-    create_user("llm-test@example.com", "password1234")
-    client = _login_client("llm-test@example.com")
+    client = create_app().test_client()
+    client.post("/login", data={"email": "llm-cfg@example.com", "password": "password1234"})
+
+    resp = client.post(
+        "/api/robot-settings/llm/config",
+        json={"provider": "ark", "api_key": "x", "model_name": "ep-x"},
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
+
+
+def test_api_llm_test_endpoint_local_and_ark(temp_db, device, monkeypatch):
+    from deskbot_server.dao.device_mapper import update_llm_param
 
     async def fake(messages, **kwargs):
         return "试聊成功", {"model": "m", "usage": None}
 
     monkeypatch.setattr("deskbot_server.service.robot_capability.chat_acompletion", fake)
+    update_llm_param("deskbot_llm", json.dumps({"ark": {"api_key": "sk-dev", "model_name": "ep-dev"}}))
+    client = _login_select_device("deskbot_llm")
+
+    # 本地引擎：免 key、不依赖设备参数
     resp = client.post("/api/robot-settings/llm/test", json={"provider": "qwen", "text": "你好"})
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is True
+
+    # ark：回落设备 llm_param（表单空覆盖不丢设备值）
+    resp = client.post("/api/robot-settings/llm/test", json={"provider": "ark", "text": ""})
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["ok"] is True
     assert payload["reply"] == "试聊成功"
-    assert payload["model"] == "m"
 
     # 未知 provider → 400
     resp = client.post("/api/robot-settings/llm/test", json={"provider": "bogus", "text": "hi"})
     assert resp.status_code == 400
+
+
+def test_api_llm_test_ark_requires_current_device(temp_db, device, monkeypatch):
+    from deskbot_server.web.app import create_app
+
+    async def fake(messages, **kwargs):
+        return "试聊成功", {"model": "m", "usage": None}
+
+    monkeypatch.setattr("deskbot_server.service.robot_capability.chat_acompletion", fake)
+    client = create_app().test_client()
+    client.post("/login", data={"email": "llm-cfg@example.com", "password": "password1234"})
+
+    resp = client.post("/api/robot-settings/llm/test", json={"provider": "ark", "text": "你好"})
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False

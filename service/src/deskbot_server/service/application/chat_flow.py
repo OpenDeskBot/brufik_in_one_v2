@@ -10,16 +10,18 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from deskbot_server.dao import device_mapper
+from deskbot_server.dao.device_mapper import get_auto_reply
+from deskbot_server.infrastructure.llm.runtime import native_tools_enabled
 from deskbot_server.infrastructure.llm.utils import build_llm_user_message, parse_llm_reply
 from deskbot_server.infrastructure.tts.text_split import split_tts_by_punctuation
-from deskbot_server.service.application.capability_labels import asr_model_label, llm_model_label, tts_model_label
-from deskbot_server.service.application.convo_audio_store import ConvoAudioStore
 from deskbot_server.model.chat import ChatTurnResult, LlmTurnResult
 from deskbot_server.pb.scenes import _pb_scene_entry_by_name, _prepare_pb_scene_chain_frames
 from deskbot_server.pb.servo_pcm import parse_pb_cam_fps
 from deskbot_server.pb.shapes import PB_ACTION_APPEND, PB_ACTION_REPLACE, PB_LEVEL_TASK
 from deskbot_server.pb.wire import build_pb_wire_pairs
 from deskbot_server.ports.downlink import DownlinkPort, PipelineEventsPort
+from deskbot_server.service.application.capability_labels import asr_model_label, llm_model_label, tts_model_label
+from deskbot_server.service.application.convo_audio_store import ConvoAudioStore
 from deskbot_server.service.application.llm_error_fallback import (
     build_llm_error_fallback_plan,
     start_llm_error_motion_feedback,
@@ -28,12 +30,10 @@ from deskbot_server.service.application.llm_error_fallback import (
 from deskbot_server.service.application.llm_tool_runner import execute_llm_tools
 from deskbot_server.service.application.tool_interim_tts import build_tool_interim_tts
 from deskbot_server.service.camera_face_service import request_camera_fps_boost
-from deskbot_server.dao.device_mapper import get_auto_reply
 from deskbot_server.utils.util import _ms_between
 
 if TYPE_CHECKING:
     from deskbot_server.service.application.chat_service import ChatService
-    from deskbot_server.service.bus_service import BusService
     from deskbot_server.service.device_ws_service import DeviceWsService
 
 logger = logging.getLogger("deskbot-server")
@@ -382,6 +382,190 @@ async def _execute_tools_round(
     )
 
 
+async def _complete_llm_native_rounds(
+    chat: ChatService,
+    user_text: str,
+    *,
+    device_id: str | None,
+    session_id: str | None,
+    device_context: str | None,
+    history_messages: list[dict[str, str]] | None,
+    request_id: str | None,
+    pipeline_source: str | None,
+    device_ws: DeviceWsService | None,
+    tts_prefetch: _TtsPrefetch | None,
+    on_interim_tts_play: Callable[[str, int], Awaitable[None]] | None,
+    bus_service: Any | None,
+    user_message_override: str | None,
+) -> LlmTurnResult:
+    """原生 function calling 多轮：每轮 tools=原生 schema，执行结果以 role=tool 回灌。
+
+    收尾语义：模型某轮无 tool_calls → content 即最终 JSON envelope，直接结束；
+    content 非 JSON/为空 → 走 legacy 文本路径收口一次（自带 JSON 重试/纯文本包装兜底）。
+    """
+    from deskbot_server.infrastructure.llm.runtime import native_tools_enabled
+    from deskbot_server.infrastructure.llm.tool_schema import build_native_tool_schemas
+
+    extra_messages: list[dict[str, Any]] = []
+    all_tools: list[dict[str, Any]] = []
+    all_tool_results: list[dict[str, Any]] = []
+    llm_calls: list[dict[str, Any]] = []
+    answer = ""
+    parsed: dict[str, Any] = parse_llm_reply("")
+    system_prompt: str | None = None
+    captured_system_prompt = False
+    llm_model = llm_model_label(device_id)
+    native_schemas = build_native_tool_schemas(device_id=device_id)
+
+    def _on_system_prompt(content: str) -> None:
+        nonlocal system_prompt, captured_system_prompt
+        if not captured_system_prompt:
+            system_prompt = content
+            captured_system_prompt = True
+
+    def _base_kwargs(round_idx: int) -> dict[str, Any]:
+        kw: dict[str, Any] = {
+            "device_context": device_context if round_idx == 0 else None,
+            "device_id": device_id,
+            "history_messages": history_messages if round_idx == 0 else None,
+            "extra_messages": extra_messages or None,
+            "on_system_prompt": _on_system_prompt,
+        }
+        if user_message_override:
+            kw["user_message_override"] = user_message_override
+        return kw
+
+    async def _legacy_final_round() -> str:
+        """模型收尾失败时用文本路径收口（完整 JSON envelope + 内置重试/包装）。"""
+        kw = _base_kwargs(0)
+        kw.pop("extra_messages", None)
+        kw["extra_messages"] = extra_messages or None
+        return str(await chat.llm(user_text, **kw) or "")
+
+    for round_idx in range(MAX_LLM_TOOL_ROUNDS):
+        round_t0 = time.monotonic()
+        try:
+            result = await chat.llm_tool_round(
+                user_text,
+                tools=native_schemas,
+                tool_choice="auto",
+                **_base_kwargs(round_idx),
+            )
+        except Exception as llm_exc:
+            llm_calls.append({
+                "n": round_idx + 1, "model": llm_model,
+                "ms": int((time.monotonic() - round_t0) * 1000),
+                "text": f"[调用失败] {llm_exc}", "truncated": False,
+            })
+            raise
+        content = str(result.content or "")
+        calls = list(result.tool_calls or [])
+        summary = content or (
+            f"[tool_calls: {', '.join(str(c.get('name') or '') for c in calls)}]" if calls else ""
+        )
+        llm_calls.append({
+            "n": round_idx + 1, "model": llm_model,
+            "ms": int((time.monotonic() - round_t0) * 1000),
+            "text": summary[:3000], "truncated": len(summary) > 3000,
+        })
+
+        if calls:
+            native_tools: list[dict[str, Any]] = []
+            for c in calls:
+                row: dict[str, Any] = {"tool": str(c.get("name") or "")}
+                try:
+                    args = json.loads(c.get("arguments") or "{}")
+                    if isinstance(args, dict):
+                        row.update(args)
+                except (TypeError, ValueError):
+                    pass
+                native_tools.append(row)
+            all_tools.extend(native_tools)
+            if content:
+                maybe = parse_llm_reply(content)
+                if maybe.get("json_ok") and maybe.get("reply"):
+                    # 模型同时给最终回复与工具调用：执行后结束（与 legacy 特例一致）
+                    tool_results = await _execute_tools_round(
+                        native_tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws
+                    )
+                    all_tool_results.extend(tool_results)
+                    answer = content
+                    parsed = maybe
+                    break
+            interim_text = build_tool_interim_tts(native_tools)
+            if interim_text and on_interim_tts_play is not None:
+                await on_interim_tts_play(interim_text, round_idx + 1)
+            tool_results = await _execute_tools_round(
+                native_tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws
+            )
+            all_tool_results.extend(tool_results)
+            logger.info(
+                "[LLM] native tool round=%d device_id=%s req=%s tools=%s results=%s",
+                round_idx + 1, device_id, request_id,
+                native_tools, [_tool_result_for_llm(r) for r in tool_results],
+            )
+            if bus_service is not None and device_id and request_id:
+                tool_names = [str(t.get("tool") or "") for t in native_tools if str(t.get("tool") or "")]
+                await bus_service.pub(device_id, {
+                    "request_id": request_id,
+                    "source": pipeline_source or "asr",
+                    "asr_text": user_text,
+                    "stage": f"llm_tool_{round_idx + 1}",
+                    "status": "running",
+                    "llm_text": (f"执行工具: {', '.join(tool_names)}" if tool_names else "执行工具"),
+                })
+            # 原生 trail：assistant(tool_calls) + 逐条 role=tool
+            extra_messages.append({
+                "role": "assistant",
+                "content": content,
+                "tool_calls": [
+                    {
+                        "id": str(c.get("id") or ""),
+                        "type": "function",
+                        "function": {"name": str(c.get("name") or ""), "arguments": str(c.get("arguments") or "")},
+                    }
+                    for c in calls
+                ],
+            })
+            for i, c in enumerate(calls):
+                out_row = tool_results[i] if i < len(tool_results) else {
+                    "tool": c.get("name"), "ok": False, "error": "结果缺失"
+                }
+                extra_messages.append({
+                    "role": "tool",
+                    "tool_call_id": str(c.get("id") or ""),
+                    "content": json.dumps(out_row, ensure_ascii=False),
+                })
+            continue
+
+        # 模型收尾：无工具调用
+        if content:
+            answer = content
+            parsed = parse_llm_reply(content)
+            if parsed.get("json_ok"):
+                break
+            logger.warning(
+                "[LLM] native 收尾轮非 JSON，走文本收口 device_id=%s req=%s preview=%r",
+                device_id, request_id, content[:120],
+            )
+        else:
+            logger.warning("[LLM] native 轮空内容无调用，走文本收口 device_id=%s req=%s", device_id, request_id)
+        answer = await _legacy_final_round()
+        parsed = parse_llm_reply(answer)
+        break
+    else:
+        logger.warning("[LLM] native tool 循环达到上限 %d device_id=%s req=%s", MAX_LLM_TOOL_ROUNDS, device_id, request_id)
+
+    return LlmTurnResult(
+        parsed=parsed,
+        tools=all_tools,
+        tool_results=all_tool_results,
+        answer=answer,
+        system_prompt=system_prompt,
+        llm_calls=llm_calls,
+    )
+
+
 async def complete_llm_with_tool_loop(
     chat: ChatService,
     user_text: str,
@@ -408,7 +592,26 @@ async def complete_llm_with_tool_loop(
 
     返回 ``LlmTurnResult(parsed, tools, tool_results, answer, system_prompt)``；
     ``system_prompt`` 为每轮 LLM 调用构建的 system prompt（取首轮即主轮）。
+
+    设备开启原生 function calling（``devices.llm_param.native_tools`` / config
+    ``llm.native_tools``）时，委托 ``_complete_llm_native_rounds`` 走原生 tools 通道。
     """
+    if device_id and native_tools_enabled(device_id):
+        return await _complete_llm_native_rounds(
+            chat,
+            user_text,
+            device_id=device_id,
+            session_id=session_id,
+            device_context=device_context,
+            history_messages=history_messages,
+            request_id=request_id,
+            pipeline_source=pipeline_source,
+            device_ws=device_ws,
+            tts_prefetch=tts_prefetch,
+            on_interim_tts_play=on_interim_tts_play,
+            bus_service=bus_service,
+            user_message_override=user_message_override,
+        )
     extra_messages: list[dict[str, str]] = []
     all_tools: list[dict[str, Any]] = []
     all_tool_results: list[dict[str, Any]] = []

@@ -373,21 +373,44 @@ def beijing_time_str() -> str:
     return now.strftime("%Y-%m-%d %H:%M:%S") + " " + weekdays[now.weekday()]
 
 
-def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None) -> str:
-    """组装最终 system prompt：基础人设 + 动作/表情清单 + 记忆/工具 + 剧情任务 + 当前时间（文末）。"""
+def llm_native_tools_directive(tool_names: list[str]) -> str:
+    """原生 function calling 模式下的工具短指令（替代文本广告段）。"""
+    names = "、".join(str(n) for n in tool_names)
+    return (
+        f"可用工具（原生 function calling）：本轮提供 {names}。"
+        "需要时请直接发起函数调用；不需要或已完成时，仍按上方模板输出最终 JSON"
+        "（need_reply/tts/gesture/expression，tools 写 []）。不要再把工具写成 tools 数组文本。"
+    )
+
+
+def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None, native_tool_names: list[str] | None = None) -> str:
+    """组装最终 system prompt：基础人设 + 动作/表情清单 + 记忆/工具 + 剧情任务 + 当前时间（文末）。
+
+    ``native_tool_names`` 非空 → 原生 function calling 模式：文本工具广告替换为一行
+    directive（工具契约在 API ``tools`` 参数里），仅保留长期记忆情境。
+    """
     base = str(base_prompt or "")
     px = llm_pb_scenes_prompt_appendix(device_id=device_id)
     if px:
         base += "\n" + px
-    fx = llm_static_context_prompt_appendix(device_id)
-    if fx:
-        base += "\n\n" + fx
+    if native_tool_names:
+        fx = llm_memory_prompt_appendix(device_id)
+        if fx:
+            base += "\n\n" + fx
+        base += "\n\n" + llm_native_tools_directive(native_tool_names)
+    else:
+        fx = llm_static_context_prompt_appendix(device_id)
+        if fx:
+            base += "\n\n" + fx
     qx = llm_quest_tasks_prompt_appendix(device_id=device_id)
     if qx:
         base += "\n\n" + qx
-    qt = llm_quest_tools_prompt_appendix(device_id=device_id)
-    if qt:
-        base += "\n\n" + qt
+    # 原生模式下剧情工具契约已由 API tools schema 提供（update_task_result 等动态 id），
+    # 不再重复注入文本附录；legacy 模式保留原文本契约
+    if not native_tool_names:
+        qt = llm_quest_tools_prompt_appendix(device_id=device_id)
+        if qt:
+            base += "\n\n" + qt
     # 当前时间放全文末尾（其它规则段在前，时间戳始终最新可见）
     base += f"\n\n当前时间是: {beijing_time_str()}（北京时间，东八区）"
     return base

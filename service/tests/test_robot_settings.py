@@ -6,17 +6,16 @@
 from __future__ import annotations
 
 import asyncio
-import os
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
+from deskbot_server.infrastructure.llm.runtime import QWEN_LLM_BASE_URL
 from deskbot_server.service.robot_capability import (
     ASR_CANDIDATES,
     LLM_CANDIDATES,
-    MINICPM_LLM_BASE_URL,
-    QWEN_LLM_BASE_URL,
     TTS_CANDIDATES,
     CapabilityError,
     RobotCapabilityService,
@@ -198,94 +197,75 @@ def test_asr_status_default_when_no_device(svc, temp_db):
     assert svc.get_status(None)["capabilities"]["asr"]["current"] == "funasr"
 
 
-# ---------- 3. LLM 切换 ----------
+# ---------- 3. LLM 切换（设备级 llm_provider） ----------
 
-def test_apply_llm_minicpm_snapshots_ark(svc, clean_llm_env):
+def test_apply_llm_writes_device_table(svc, device, clean_llm_env):
+    """LLM 为设备级：apply_llm 写 device 表 llm_provider，动态解析即时生效（不落 config）。"""
     from deskbot_server.config import load_config
+    from deskbot_server.dao.device_mapper import get_llm_param, get_llm_provider
 
-    svc.apply_llm("minicpm")
+    assert get_llm_provider("deskbot_asr") == ""  # 默认未配置 → 系统默认
+    before = load_config(svc._config_path)
 
-    llm = load_config(svc._config_path)["llm"]
-    assert llm["protocol"] == "openai"
-    assert llm["base_url"] == "http://127.0.0.1:9105/v1"
-    assert llm["model_name"] == "minicpm5-1b"
-    assert llm["ark_base_url"] == "https://ark.cn-beijing.volces.com/api/v3"  # 快照
-    assert llm["ark_model_name"] == "ep-test"
+    svc.apply_llm("qwen", "deskbot_asr")
 
-    status = svc.get_status()
-    assert status["capabilities"]["llm"]["current"] == "minicpm"
-    assert status["capabilities"]["llm"]["effective"]["base_url"] == "http://127.0.0.1:9105/v1"
-    # minicpm → ark 恢复快照
-    svc.apply_llm("ark")
-    llm = load_config(svc._config_path)["llm"]
-    assert llm["protocol"] == "ark_responses"
-    assert llm["model_name"] == "ep-test"
-
-
-def test_apply_llm_qwen_snapshots_ark(svc, clean_llm_env):
-    from deskbot_server.config import load_config
-
-    svc.apply_llm("qwen")
-
-    llm = load_config(svc._config_path)["llm"]
-    assert llm["protocol"] == "openai"
-    assert llm["base_url"] == "http://127.0.0.1:9106/v1"
-    assert llm["model_name"] == "qwen3.8-2b"
-    assert llm["ark_base_url"] == "https://ark.cn-beijing.volces.com/api/v3"  # 快照
-    assert llm["ark_model_name"] == "ep-test"
-
-    status = svc.get_status()
+    assert get_llm_provider("deskbot_asr") == "qwen"
+    assert load_config(svc._config_path) == before  # config.yaml 不被改写
+    status = svc.get_status("deskbot_asr")
     assert status["capabilities"]["llm"]["current"] == "qwen"
-    assert status["capabilities"]["llm"]["effective"]["base_url"] == "http://127.0.0.1:9106/v1"
-    # qwen → ark 恢复快照
-    svc.apply_llm("ark")
-    llm = load_config(svc._config_path)["llm"]
-    assert llm["protocol"] == "ark_responses"
-    assert llm["model_name"] == "ep-test"
+    assert status["capabilities"]["llm"]["effective"]["base_url"] == QWEN_LLM_BASE_URL
+    assert status["capabilities"]["llm"]["device_params"]["configured"] is False
+
+    # ark 应用后 current=ark；密钥/模型走 llm_param（配置对话框）
+    svc.apply_llm("ark", "deskbot_asr")
+    assert get_llm_provider("deskbot_asr") == "ark"
+    assert get_llm_param("deskbot_asr") == {}
 
 
-def test_apply_llm_ark_restores_from_snapshot(svc, clean_llm_env):
-    from deskbot_server.config import load_config
-
-    svc.apply_llm("minicpm")
-    svc.apply_llm("ark")
-
-    llm = load_config(svc._config_path)["llm"]
-    assert llm["protocol"] == "ark_responses"
-    assert llm["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
-    assert llm["model_name"] == "ep-test"
-    assert "ark_base_url" not in llm
-    assert "ark_model_name" not in llm
+def test_apply_llm_requires_device(svc, clean_llm_env):
+    with pytest.raises(CapabilityError, match="未选择当前设备"):
+        svc.apply_llm("qwen", None)
 
 
-def test_apply_llm_clears_env_override_keeps_api_key(svc, clean_llm_env, monkeypatch, tmp_path):
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "LLM_PROTOCOL=openai\nLLM_MODEL=env-model\nLLM_BASE_URL=https://env.example.com/v1\nARK_API_KEY=ark-secret\n",
-        encoding="utf-8",
+def test_apply_llm_unknown_provider_rejected(svc, device, clean_llm_env):
+    from deskbot_server.dao.device_mapper import get_llm_provider
+
+    with pytest.raises(CapabilityError, match="未知的 LLM 能力"):
+        svc.apply_llm("bogus", "deskbot_asr")
+    assert get_llm_provider("deskbot_asr") == ""
+
+
+def test_llm_status_system_default_when_unset(svc, device, clean_llm_env):
+    """llm_provider 未配置 → 回落系统默认（MINIMAL_CONFIG = ark 云端、无密钥）并给出引导 warning。"""
+    from deskbot_server.infrastructure.llm.runtime import ARK_OPENAI_BASE_URL
+
+    llm = svc.get_status("deskbot_asr")["capabilities"]["llm"]
+    assert llm["current"] == "ark"
+    assert llm["effective"]["protocol"] == "ark_responses"
+    assert llm["effective"]["base_url"] == ARK_OPENAI_BASE_URL
+    assert llm["effective"]["api_key_set"] is False
+    assert llm["device_params"]["configured"] is False
+    assert llm["warning"]  # 系统默认指向云端但没有密钥的引导
+
+
+def test_llm_status_ark_with_llm_param(svc, device, clean_llm_env):
+    """设备 provider=ark 且 llm_param["ark"] 已配置 → effective 同源展示，warning 消失。"""
+    from deskbot_server.dao.device_mapper import update_llm_param
+    from deskbot_server.infrastructure.llm.runtime import ARK_OPENAI_BASE_URL
+
+    update_llm_param(
+        "deskbot_asr",
+        json.dumps({"ark": {"api_key": "sk-test", "model_name": "ep-test", "base_url": ""}}),
     )
-    monkeypatch.setattr("deskbot_server.utils.paths.ENV_FILE", env_file)
-    monkeypatch.setenv("LLM_PROTOCOL", "openai")
-    monkeypatch.setenv("LLM_MODEL", "env-model")
-    monkeypatch.setenv("LLM_BASE_URL", "https://env.example.com/v1")
-    monkeypatch.setenv("ARK_API_KEY", "ark-secret")
+    svc.apply_llm("ark", "deskbot_asr")
 
-    svc.apply_llm("minicpm")
-
-    # 协议类覆盖被清除，密钥保留
-    assert not os.environ.get("LLM_PROTOCOL")
-    assert not os.environ.get("LLM_MODEL")
-    assert not os.environ.get("LLM_BASE_URL")
-    assert os.environ.get("ARK_API_KEY") == "ark-secret"
-    text = env_file.read_text(encoding="utf-8")
-    assert "LLM_PROTOCOL" not in text
-    assert "ARK_API_KEY" in text
-
-    # 系统级生效为 minicpm 配置（同一份 config 真源）
-    from deskbot_server.infrastructure.llm.runtime import resolve_system_llm_config
-
-    resolved = resolve_system_llm_config(svc._load_cfg())
-    assert resolved.api_base == MINICPM_LLM_BASE_URL
+    llm = svc.get_status("deskbot_asr")["capabilities"]["llm"]
+    assert llm["current"] == "ark"
+    assert llm["effective"]["api_key_set"] is True
+    assert llm["effective"]["model_name"] == "ep-test"
+    assert llm["effective"]["base_url"] == ARK_OPENAI_BASE_URL  # 空 base_url 回落内置默认
+    assert llm["warning"] is None
+    assert llm["device_params"]["configured"] is True
 
 
 # ---------- 4. 本地 URL 判定 / key 豁免 / 流式禁用 ----------
@@ -343,31 +323,26 @@ def test_local_llm_forces_non_stream(monkeypatch):
     assert captured["plain"] == 1
 
 
-# ---------- 5. 设备级 LLM 覆盖 ----------
+# ---------- 5. 设备级 LLM 配置清除（回到系统默认） ----------
 
-def test_device_override_status_and_clear(svc, clean_llm_env, monkeypatch, tmp_path, temp_db):
-    monkeypatch.setattr("deskbot_server.utils.device_data.DATA_DIR", tmp_path)
-    from deskbot_server.dao.llm_config_store import add_llm_model, set_active_llm_model
+def test_llm_clear_device_config_back_to_system_default(svc, device, clean_llm_env):
+    """clear_device_llm_override：llm_provider 置空 + llm_param 清空，回落系统默认（MINIMAL_CONFIG ark）。"""
+    from deskbot_server.dao.device_mapper import get_llm_param, get_llm_provider
+    from deskbot_server.infrastructure.llm.runtime import ARK_OPENAI_BASE_URL
 
-    add_llm_model("deskbot_x", name="测试模型", model_name="test-model", protocol="openai", base_url="", api_key="sk-x")
-    set_active_llm_model("deskbot_x", None)
-    status = svc.get_status("deskbot_x")
-    assert status["capabilities"]["llm"]["device_override"]["active"] is False
+    svc.apply_llm("qwen", "deskbot_asr")
+    svc.save_device_llm_config("deskbot_asr", "ark", {"api_key": "sk-1", "model_name": "ep-1"})
+    assert get_llm_provider("deskbot_asr") == "qwen"
+    assert get_llm_param("deskbot_asr")["ark"]["api_key"] == "sk-1"
 
-    model = add_llm_model("deskbot_x", name="覆盖模型", model_name="override-model", protocol="openai", base_url="", api_key="sk-y")
-    set_active_llm_model("deskbot_x", model["id"])
+    svc.clear_device_llm_override("deskbot_asr")
 
-    status = svc.get_status("deskbot_x")
-    llm = status["capabilities"]["llm"]
-    assert llm["device_override"]["active"] is True
-    assert llm["device_override"]["model"]["name"] == "覆盖模型"
-    assert llm["current"] == "device"
-
-    svc.clear_device_llm_override("deskbot_x")
-
-    status = svc.get_status("deskbot_x")
-    assert status["capabilities"]["llm"]["device_override"]["active"] is False
-    assert status["capabilities"]["llm"]["current"] == "ark"
+    assert get_llm_provider("deskbot_asr") == ""  # 回到系统默认
+    assert get_llm_param("deskbot_asr") == {}
+    llm = svc.get_status("deskbot_asr")["capabilities"]["llm"]
+    assert llm["current"] == "ark"  # MINIMAL_CONFIG llm 段 = ark_responses
+    assert llm["effective"]["base_url"] == ARK_OPENAI_BASE_URL
+    assert llm["device_params"]["configured"] is False
 
 
 def test_clear_device_override_requires_device(svc):
@@ -412,7 +387,7 @@ def test_api_robot_settings_endpoints(temp_db):
     assert payload["ok"] is True
     assert payload["capabilities"]["asr"]["current"] in ("funasr", "doubao")
     assert payload["capabilities"]["tts"]["current"] in ("moss-tts-nano", "doubao")
-    assert payload["capabilities"]["llm"]["current"] in ("ark", "minicpm", "qwen", "device", "custom")
+    assert payload["capabilities"]["llm"]["current"] in ("ark", "minicpm", "qwen", "custom")
 
     # 行为开关（未选设备）：GET 回落默认值，写操作 → 400
     assert payload["behavior"] == {"auto_reply": True, "follow_mode": ""}
@@ -599,6 +574,8 @@ def fake_tts_engine():
 
 
 def test_tts_test_info(tmp_path, monkeypatch):
+    from deskbot_server.infrastructure.tts.doubao import DEFAULT_SPEAKER
+
     monkeypatch.delenv("DOUBAO_TTS_SPEAKER", raising=False)
     p = tmp_path / "config.yaml"
     p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -609,7 +586,7 @@ def test_tts_test_info(tmp_path, monkeypatch):
     assert info["voices"][0]["id"] == "demo-1"
     assert info["voices"][0]["name"]
     assert info["demo_id"] == "demo-1"  # 设备无 tts_param → 默认 demo-1
-    assert info["doubao_speaker"] == ""
+    assert info["doubao_speaker"] == DEFAULT_SPEAKER  # 空字段回落内置默认（无 env 回填）
     assert info["doubao_voices"], "豆包音色预设应从 data/doubao_tts_speakers.json 枚举"
     assert info["doubao_voices"][0]["id"]
     assert info["doubao_voices"][0]["label"]
@@ -703,23 +680,20 @@ def test_save_device_tts_config_masked_api_key_keeps_existing(svc, device):
     assert get_tts_param("deskbot_asr")["doubao"]["api_key"] == "dev-key"
 
 
-def test_save_device_tts_config_empty_fills_from_env(svc, device, tmp_path, monkeypatch):
+def test_save_device_tts_config_empty_fields_not_persisted(svc, device):
+    """设备级保存只落 payload / 设备已有值：空字段不落键、不回填 .env（密钥设备自配）。"""
     from deskbot_server.dao.device_mapper import get_tts_param
 
-    env_file = tmp_path / ".env"
-    env_file.write_text("DOUBAO_TTS_API_KEY=env-key\nDOUBAO_TTS_SPEAKER=env-speaker\n", encoding="utf-8")
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
-
-    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key"}})
+    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key", "speaker": ""}})
     params = get_tts_param("deskbot_asr")
     assert params["doubao"]["api_key"] == "dev-key"  # payload 优先
-    assert params["doubao"]["speaker"] == "env-speaker"  # 空字段回填 .env
+    assert "speaker" not in params["doubao"]  # 空字段不再回填 env → 不落键
 
     # 再次保存（payload 全空）→ 设备已有值保留
     svc.save_device_tts_config("deskbot_asr", {})
     params = get_tts_param("deskbot_asr")
     assert params["doubao"]["api_key"] == "dev-key"
-    assert params["doubao"]["speaker"] == "env-speaker"
+    assert "speaker" not in params["doubao"]
 
 
 def test_save_device_tts_config_empty_clears(svc, device, tmp_path, monkeypatch):
@@ -744,21 +718,17 @@ def test_save_device_tts_config_no_device_raises(svc):
         svc.save_device_tts_config(None, {"doubao": {"api_key": "k"}})
 
 
-def test_tts_config_info_device_param_wins_and_masks(svc, device, tmp_path, monkeypatch):
-    from deskbot_server.infrastructure.tts.doubao import _mask_secret
-
-    env_file = tmp_path / ".env"
-    env_file.write_text("DOUBAO_TTS_API_KEY=env-key\nDOUBAO_TTS_RESOURCE_ID=seed-tts-1.0\n", encoding="utf-8")
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+def test_tts_config_info_device_param_wins_and_masks(svc, device):
+    from deskbot_server.infrastructure.tts.doubao import DEFAULT_RESOURCE_ID, _mask_secret
 
     info = svc.tts_config_info("deskbot_asr")
-    assert info["doubao"]["api_key"] == _mask_secret("env-key")  # 设备未配置 → env 回填并掩码
-    assert info["doubao"]["resource_id"] == "seed-tts-1.0"  # env 回填
+    assert info["doubao"]["api_key"] == ""  # 设备未配置 key → 空（无 env 回填）
+    assert info["doubao"]["resource_id"] == DEFAULT_RESOURCE_ID  # 非密钥字段回落内置默认
 
-    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key", "resource_id": "seed-tts-2.0"}})
+    svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key", "resource_id": "my-res-1"}})
     info = svc.tts_config_info("deskbot_asr")
     assert info["doubao"]["api_key"] == _mask_secret("dev-key")  # 掩码回填密码框
-    assert info["doubao"]["resource_id"] == "seed-tts-2.0"  # 设备优先于 env
+    assert info["doubao"]["resource_id"] == "my-res-1"  # 设备值优先于内置默认
 
 
 def test_resolve_tts_adapter_device_params_win_over_env(svc, device, monkeypatch):

@@ -189,10 +189,10 @@ def api_robot_settings_apply_llm(request: Request, user: RequireUser):
 
 @router.get("/api/robot-settings/llm/config-info")
 def api_robot_settings_llm_config_info(request: Request, user: RequireUser):
-    """LLM 配置对话框元信息：ark 当前值（api_key 掩码）；本地模型只读固定端点。"""
+    """LLM 配置对话框元信息：ark 当前值（设备 llm_param，api_key 掩码）；本地模型只读固定端点。"""
     provider = str(request.query_params.get("provider") or "").strip()
     try:
-        return jsonify({"ok": True, **_svc().llm_config_info(provider)})
+        return jsonify({"ok": True, **_svc().llm_config_info(provider, get_current_device_id(request))})
     except CapabilityError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
@@ -201,10 +201,11 @@ def api_robot_settings_llm_config_info(request: Request, user: RequireUser):
 
 @router.post("/api/robot-settings/llm/config")
 def api_robot_settings_llm_save_config(request: Request, user: RequireUser):
-    """保存 ark 配置：API Key → .env（掩码/空不覆盖已有）；模型/地址 → config.yaml llm 段（快照键不污染当前本地配置）。"""
+    """保存设备级 ark 配置到 device 表 llm_param["ark"]（掩码/空值保留已有），不再写 .env / config.yaml。"""
     body = get_json(request) or {}
     try:
-        return jsonify({"ok": True, **_svc().save_llm_config(str(body.get("provider") or ""), body)})
+        device_id = get_current_device_id(request)
+        return jsonify({"ok": True, **_svc().save_device_llm_config(device_id, str(body.get("provider") or ""), body)})
     except CapabilityError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
@@ -213,13 +214,16 @@ def api_robot_settings_llm_save_config(request: Request, user: RequireUser):
 
 @router.post("/api/robot-settings/llm/test")
 async def api_robot_settings_llm_test(request: Request, user: RequireUser):
-    """LLM 试聊：临时 config 合成（overrides 为表单临时值，不落盘）。执行结果恒 200 ok:true + 字段；参数非法才 400。"""
+    """LLM 试聊：临时 ResolvedLlmConfig 合成（overrides 为表单临时值，不落盘；空/掩码回落设备 llm_param）。
+
+    本地引擎免 key；ark 依赖当前设备 llm_param 或 overrides 中的密钥/模型。执行结果恒 200 ok:true + 字段；参数非法才 400。"""
     body = get_json(request) or {}
     overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
     try:
         result = await _svc().llm_test(
             str(body.get("provider") or ""),
             str(body.get("text") or ""),
+            device_id=get_current_device_id(request),
             overrides=overrides,
         )
         return jsonify({"ok": True, **result})

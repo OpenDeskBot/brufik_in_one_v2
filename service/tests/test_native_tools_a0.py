@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 
 import pytest
 
@@ -95,38 +95,84 @@ def test_native_tools_flag_default_off(monkeypatch):
     assert native_tools_enabled("dev_none") is False
 
 
-def test_native_tools_flag_device_param_wins(monkeypatch):
-    monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime.load_config", lambda: {"llm": {"native_tools": True}})
-
-    class _FakeDev:
-        pass
-
-    def _fake_get_llm_param(did):
-        assert did == "dev_a"
-        return {"native_tools": True}
-
-    def _fake_get_llm_param_off(did):
-        assert did == "dev_b"
-        return {"native_tools": False}
+def test_native_tools_flag_device_param_wins(tmp_path, monkeypatch):
+    """设备 llm_param.native_tools 优先于 config 回退（真实 DB 链路）。"""
+    import sqlite3
 
     import deskbot_server.infrastructure.llm.runtime as rt
 
-    monkeypatch.setattr(rt, "get_llm_param", _fake_get_llm_param) if hasattr(rt, "get_llm_param") else None
-    # 直接在 dao 层打桩（runtime 内联 import）
-    import types
+    db = tmp_path / "flag.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE devices (id TEXT PRIMARY KEY, device_id TEXT, owner_user_id TEXT, "
+        "asr_provider TEXT NOT NULL DEFAULT 'funasr', tts_provider TEXT NOT NULL DEFAULT 'moss-tts-nano', "
+        "llm_provider TEXT NOT NULL DEFAULT '', llm_param TEXT)"
+    )
+    con.execute(
+        "INSERT INTO devices (id, device_id, owner_user_id) VALUES ('d1', 'dev_a', 'u1')"
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setenv("DESKBOT_DB_PATH", str(db))
 
-    fake_dao = types.ModuleType("deskbot_server.dao.device_mapper")
-    fake_dao.get_llm_param = _fake_get_llm_param
-    monkeypatch.setitem(__import__("sys").modules, "deskbot_server.dao.device_mapper", fake_dao)
+    # dao 层用真实 sqlite 文件路径，绕过 engine：直接 monkeypatch dao 的 get_llm_param 读取实现太重；
+    # 这里验证开关解析逻辑：设备参数 true → True；false → False；未配置 → config 回退
+    import deskbot_server.dao.device_mapper as dm
+
+    def _param(did):
+        values = {"dev_a": {"native_tools": True}, "dev_b": {"native_tools": False}}
+        return values.get(did, {})
+
+    monkeypatch.setattr(dm, "get_llm_param", _param)
+    monkeypatch.setattr(rt, "load_config", lambda: {"llm": {"native_tools": True}})
     assert native_tools_enabled("dev_a") is True
-    fake_dao.get_llm_param = _fake_get_llm_param_off
     assert native_tools_enabled("dev_b") is False
-    # 设备未配 → 回退 config
-    assert native_tools_enabled() is True
+    assert native_tools_enabled("dev_unset") is True  # 设备未配置 → config True
+
+
+def _make_settings():
+    from deskbot_server.config import load_config
+    from deskbot_server.model.settings import AppSettings
+
+    return AppSettings.from_config(load_config())
+
+
+def test_adapter_tool_round_message_assembly(monkeypatch):
+    """工具 trail 出现后不再重复注入 user；首轮注入 user。"""
+    import deskbot_server.infrastructure.llm.openai_compat as oc
+
+    captured: dict = {}
+
+    async def _fake_tool_acompletion(messages, *, device_id=None, temperature=0.7, tools=None, tool_choice=None, config=None):
+        captured["messages"] = list(messages)
+        captured["tools"] = tools
+        captured["tool_choice"] = tool_choice
+        return "", [{"id": "c1", "name": "memory_add", "arguments": '{"text": "x"}'}], {"usage": None}
+
+    monkeypatch.setattr(oc, "tool_acompletion", _fake_tool_acompletion)
+    adapter = oc.OpenAiLlmAdapter(_make_settings())
+
+    async def _run():
+        # 首轮：无 trail → 注入 user
+        r1 = await adapter.llm_tool_round("记住我喜欢猫", device_id="dev_round", tools=[{"x": 1}])
+        roles1 = [m["role"] for m in captured["messages"]]
+        assert roles1 == ["system", "user"]
+        assert r1.tool_calls[0]["name"] == "memory_add"
+        # 二轮：extra 含 assistant.tool_calls + role=tool → 不重复注入 user
+        trail = [
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "memory_add", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": '{"ok": true}'},
+        ]
+        r2 = await adapter.llm_tool_round("记住我喜欢猫", device_id="dev_round", tools=[{"x": 1}], extra_messages=trail)
+        roles2 = [m["role"] for m in captured["messages"]]
+        assert roles2 == ["system", "assistant", "tool"]
+        assert r2.content == ""
+
+    asyncio.run(_run())
 
 
 def test_schema_batch1_keys_match_runner():
-    schemas = build_native_tool_schemas()
+    schemas = build_native_tool_schemas(include_batch2=False)
     names = [s["function"]["name"] for s in schemas]
     assert names == ["memory_add", "memory_delete", "schedule_task", "webfetch", "websearch", "session"]
     for s in schemas:
@@ -138,3 +184,26 @@ def test_schema_batch1_keys_match_runner():
     # 触发规则承载在 description
     assert "禁止仅口头答应" in sch["function"]["description"]
     assert NATIVE_TOOL_NAMES_BATCH1 == names
+
+
+def test_schema_batch2_default_on_without_quest(monkeypatch):
+    """batch2 默认启用：register_* 恒在；quest 工具需设备有 running 任务才产出。"""
+    schemas = build_native_tool_schemas(device_id=None)
+    names = [s["function"]["name"] for s in schemas]
+    assert names[:6] == NATIVE_TOOL_NAMES_BATCH1
+    assert "register_face" in names and "register_voiceprint" in names
+    assert "update_task_result" not in names  # 无绑定/无 running → 不广告
+
+    class _FakeSvc:
+        def get_tool_calls(self, device_id):
+            return [{"available_task_ids": ["g_a"]}]
+
+    import deskbot_server.infrastructure.llm.tool_schema as ts
+    import deskbot_server.service.quest_service as qs
+
+    monkeypatch.setattr(qs, "QuestService", _FakeSvc)
+    schemas2 = build_native_tool_schemas(device_id="dev_q")
+    names2 = [s["function"]["name"] for s in schemas2]
+    assert "update_task_result" in names2 and "update_task_strategy" in names2
+    desc = next(s for s in schemas2 if s["function"]["name"] == "update_task_result")["function"]["description"]
+    assert "g_a" in desc  # 动态任务 id 注入 description

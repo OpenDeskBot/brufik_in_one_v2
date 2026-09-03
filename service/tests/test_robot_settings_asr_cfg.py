@@ -305,17 +305,17 @@ def test_save_device_asr_config_masked_api_key_keeps_existing(temp_db, tmp_path,
     assert get_asr_param("dev-1")["doubao"]["api_key"] == "secret-key"  # 掩码不覆盖
 
 
-def test_save_device_asr_config_empty_fields_fill_from_device_then_env(temp_db, tmp_path, monkeypatch, tmp_env):
+def test_save_device_asr_config_empty_fields_fill_from_device_only(temp_db, tmp_path, monkeypatch, tmp_env):
+    """保存只落 payload / 设备已有值：空字段不落键，无全局 env 播种（密钥设备自配）。"""
     _clean_doubao_env(monkeypatch)
-    tmp_env.write_text("DOUBAO_ASR_API_KEY=env-key\n", encoding="utf-8")
     _insert_device()
     svc = _asr_svc(tmp_path)
-    # 首存：api_key 留空 → env 播种
+    # 首存：api_key 留空 → 不落键（env 已移除，不播种）
     svc.save_device_asr_config("dev-1", {"doubao": {"uid": "custom-uid"}})
     params = get_asr_param("dev-1")
-    assert params["doubao"]["api_key"] == "env-key"
+    assert "api_key" not in params["doubao"]
     assert params["doubao"]["uid"] == "custom-uid"
-    # 二次存：uid 留空 → 设备已有
+    # 二次存：api_key 落新值，uid 留空 → 设备已有
     svc.save_device_asr_config("dev-1", {"doubao": {"api_key": "new-key"}})
     assert get_asr_param("dev-1")["doubao"]["uid"] == "custom-uid"
 
@@ -442,14 +442,26 @@ def test_asr_test_doubao_success_with_overrides(tmp_path, monkeypatch, tmp_env):
     assert captured["payload"]["audio"]["data"]  # base64 wav
 
 
-def test_asr_test_doubao_env_fallback(tmp_path, monkeypatch, tmp_env):
+def test_asr_test_doubao_override_key_and_builtin_defaults(tmp_path, monkeypatch, tmp_env):
+    """无覆盖/设备参数时 key 不再回落 env：override 给 key，其余字段回落内置默认。"""
     _clean_doubao_env(monkeypatch)
-    tmp_env.write_text("DOUBAO_ASR_API_KEY=env-key\n", encoding="utf-8")
     captured = _fake_doubao_post(monkeypatch, _doubao_ok())
     svc = _asr_svc(tmp_path)
-    result = asyncio.run(svc.asr_test("doubao", _stereo_wav_bytes(4800)))
+    result = asyncio.run(
+        svc.asr_test("doubao", _stereo_wav_bytes(4800), doubao_overrides={"api_key": "key-1"})
+    )
     assert result["success"] is True
-    assert captured["cfg"].api_key == "env-key"  # 无覆盖/设备参数 → env
+    cfg = captured["cfg"]
+    assert cfg.api_key == "key-1"
+    assert cfg.resource_id and cfg.uid and cfg.url  # 未覆盖字段回落内置默认
+
+
+def test_asr_test_doubao_missing_key_fails_cleanly(tmp_path, monkeypatch, tmp_env):
+    _clean_doubao_env(monkeypatch)
+    _fake_doubao_post(monkeypatch, _doubao_ok())
+    svc = _asr_svc(tmp_path)
+    result = asyncio.run(svc.asr_test("doubao", _stereo_wav_bytes(4800)))
+    assert result["success"] is False  # 无任何 key 源（env 已移除）→ 校验失败
 
 
 def test_asr_test_doubao_device_param_wins_over_env(temp_db, tmp_path, monkeypatch, tmp_env):
@@ -464,9 +476,9 @@ def test_asr_test_doubao_device_param_wins_over_env(temp_db, tmp_path, monkeypat
     assert captured["cfg"].api_key == "dev-key"  # 设备 asr_param > env
 
 
-def test_asr_test_doubao_masked_key_falls_back_env(tmp_path, monkeypatch, tmp_env):
+def test_asr_test_doubao_masked_key_without_backing_fails(tmp_path, monkeypatch, tmp_env):
+    """掩码占位视为空；无设备参数、无全局 env（已移除）→ 缺 key 失败。"""
     _clean_doubao_env(monkeypatch)
-    tmp_env.write_text("DOUBAO_ASR_API_KEY=env-key\n", encoding="utf-8")
     masked = _mask_secret("env-key")
     captured = _fake_doubao_post(monkeypatch, _doubao_ok())
     svc = _asr_svc(tmp_path)
@@ -477,8 +489,7 @@ def test_asr_test_doubao_masked_key_falls_back_env(tmp_path, monkeypatch, tmp_en
             doubao_overrides={"api_key": masked},
         )
     )
-    assert result["success"] is True
-    assert captured["cfg"].api_key == "env-key"  # 掩码回落 env
+    assert result["success"] is False  # 掩码不生效，无 env 兜底
 
 
 def test_asr_test_doubao_silence_ok(tmp_path, monkeypatch, tmp_env):
@@ -675,11 +686,11 @@ def test_resolve_doubao_device_overrides_env(temp_db, tmp_path, monkeypatch, tmp
 
 
 def test_resolve_doubao_masked_param_skipped(temp_db, tmp_path, monkeypatch, tmp_env):
-    """防御：asr_param 里存了掩码占位（绕过保存语义）→ resolve 跳过，回落 env。"""
+    """防御：asr_param 里存了掩码占位（绕过保存语义）→ 视为缺 key，构造即抛引导错误（无 env 兜底）。"""
     _clean_doubao_env(monkeypatch)
-    monkeypatch.setenv("DOUBAO_ASR_API_KEY", "env-key")
+    monkeypatch.setenv("DOUBAO_ASR_API_KEY", "env-key")  # 残留 env 也不应生效
     _insert_device()
     set_asr_provider("dev-1", "doubao")
     update_asr_param("dev-1", json.dumps({"doubao": {"api_key": _mask_secret("x")}}))
-    adapter = resolve_asr_adapter("dev-1", settings=_settings())
-    assert adapter._cfg.api_key == "env-key"
+    with pytest.raises(RuntimeError, match="API Key"):
+        resolve_asr_adapter("dev-1", settings=_settings())

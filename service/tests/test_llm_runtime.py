@@ -26,23 +26,23 @@ def test_build_chat_model_keeps_openai_compatible_model_id():
     assert build_chat_model("openai", "openai/ep-202607020001") == "ep-202607020001"
 
 
-def test_resolve_system_llm_config_prefers_ark_env(monkeypatch):
+def test_resolve_system_llm_config_ignores_env_keys(monkeypatch):
+    """系统默认 LLM 不读任何环境变量密钥（密钥仅设备级 llm_param）；只取 config.yaml llm 段。"""
     from deskbot_server.infrastructure.llm.runtime import resolve_system_llm_config
 
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    monkeypatch.delenv("QWEN_API_KEY", raising=False)
-    monkeypatch.delenv("ARK_MODEL", raising=False)
-    monkeypatch.delenv("VOLCENGINE_LLM_MODEL", raising=False)
     monkeypatch.setenv("ARK_API_KEY", "ark-test-key")
-    monkeypatch.setenv("ARK_BASE_URL", "https://ark.example.test/api/v3")
-    monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime.load_config", lambda: {"llm": {"model_name": "ep-202607020001"}})
+    monkeypatch.setenv("LLM_API_KEY", "llm-test-key")
+    monkeypatch.setattr(
+        "deskbot_server.infrastructure.llm.runtime.load_config",
+        lambda: {"llm": {"protocol": "ark_responses", "model_name": "ep-202607020001"}},
+    )
 
     cfg = resolve_system_llm_config()
 
-    assert cfg.api_key == "ark-test-key"
-    assert cfg.api_base == "https://ark.example.test/api/v3"
+    assert cfg.api_key == ""  # 系统默认恒无密钥
+    assert cfg.api_base == "https://ark.cn-beijing.volces.com/api/v3"
     assert cfg.model == "ep-202607020001"
+    assert cfg.source == "system"
 
 
 def test_chat_completion_stream_invokes_tts_extractor(monkeypatch):
@@ -129,7 +129,7 @@ def test_chat_completion_posts_to_openai_compatible_endpoint(monkeypatch):
     assert meta["usage"] == {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8}
 
 
-def test_missing_key_message_mentions_volcengine_env():
+def test_missing_key_message_points_to_device_config():
     from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, chat_completion
 
     cfg = ResolvedLlmConfig(
@@ -144,9 +144,11 @@ def test_missing_key_message_mentions_volcengine_env():
     with pytest.raises(ValueError) as exc:
         chat_completion([{"role": "user", "content": "hi"}], config=cfg)
 
-    assert "ARK_API_KEY" in str(exc.value)
-    assert "VOLCENGINE_API_KEY" in str(exc.value)
-    assert "pip install" not in str(exc.value).lower()
+    msg = str(exc.value)
+    assert "ARK_API_KEY" not in msg
+    assert "VOLCENGINE_API_KEY" not in msg
+    assert "该设备 LLM 配置" in msg  # 云端密钥指向设备级配置，不再提示环境变量
+    assert "pip install" not in msg.lower()
 
 
 def test_ark_responses_completion_posts_to_responses_endpoint(monkeypatch):

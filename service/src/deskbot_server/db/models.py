@@ -57,10 +57,11 @@ class Device(Base):
     tts_provider: Mapped[str] = mapped_column(String(32), default="moss-tts-nano", server_default="moss-tts-nano", nullable=False)
     # 设备级 TTS 参数（JSON：{"moss": {"demo_id"}, "doubao": {"api_key", ...}}），NULL=未配置
     tts_param: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 设备级 LLM provider：空=未配置（沿用 llm_models.json 注册表 / 系统默认）；
-    # 取值如 llama-local / qwen / ark / openai（供能力热切换展示与回落）
+    # 设备级 LLM provider：空=未配置（回落系统默认 config.yaml llm 段）；
+    # minicpm / qwen = 本地固定端点；ark = 云端（密钥/模型在该设备 llm_param["ark"]）
     llm_provider: Mapped[str] = mapped_column(String(64), default="", server_default="", nullable=False)
-    # 设备级 LLM 参数（JSON：{"context_window": 8192, ...}，上下文窗口影响历史 token 预算），NULL=未配置
+    # 设备级 LLM 参数（JSON：{"ark": {api_key, model_name, base_url}, "context_window": N,
+    # "native_tools": bool}；context_window 影响历史 token 预算），NULL=未配置
     llm_param: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 设备绑定的剧情剧本名（对应 data/quest/{quest_id}.json）；空/NULL=未绑定
     quest_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

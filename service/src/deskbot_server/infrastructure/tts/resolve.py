@@ -7,7 +7,7 @@
 设备级参数（device 表 ``tts_param``，JSON）按 provider 注入 adapter：
 - moss：``moss.{demo_id,base_url}`` 覆盖 config.yaml tts.extra
 - doubao：``doubao.{api_key,speaker,resource_id,model,ws_url,sample_rate,audio_format}``
-  覆盖全局 env（未填字段回落 env）
+  覆盖纯默认配置（未填字段回落 doubao.py 内置默认；密钥一律设备自配，无全局 env）
 两个 adapter 均为轻量构造（豆包连接池按 config key 复用），每次调用解析构造即可。
 """
 
@@ -58,7 +58,7 @@ def _doubao_overrides(params: dict) -> dict[str, str]:
 def resolve_tts_adapter(device_id: str | None = None, settings: AppSettings | None = None) -> TtsPort:
     """按设备解析 TTS adapter（轻量构造，可每次调用）。
 
-    参数优先级：设备 tts_param > 全局 env > config.yaml/默认值。
+    参数优先级：设备 tts_param > 内置默认（密钥仅设备级）。
     """
     provider = resolve_tts_provider(device_id)
     if settings is None:

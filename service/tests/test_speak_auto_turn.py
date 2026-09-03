@@ -21,6 +21,7 @@ def env(monkeypatch):
 
     monkeypatch.setattr(fb, "get_auto_reply", lambda device_id: state["auto_reply"])
     monkeypatch.setattr(fb, "get_camera_servo_auto_mode", lambda device_id: state["servo_mode"])
+    fb._speak_turn_last.clear()  # 防抖时间戳不跨用例泄漏
 
     def _set(analysis=None, *, auto_reply=True, servo_mode=""):
         state["auto_reply"] = auto_reply
@@ -81,7 +82,10 @@ def test_speak_turn_debounce_per_device(env):
     # 防抖窗口内第二次 → None；超过间隔后可再触发
     assert maybe_speak_face_turn("dev_turn", parsed_moves=[], now=1_000.5) is None
     assert maybe_speak_face_turn("dev_turn", parsed_moves=[], now=1_002.0) is not None
-    # 另一设备不受影响
+    # 另一设备不受影响（各自防抖）
+    from deskbot_server.service.application.interaction_feedback import note_face_analysis
+
+    note_face_analysis("dev_other", _analysis())
     assert maybe_speak_face_turn("dev_other", parsed_moves=[], now=1_000.6) is not None
 
 

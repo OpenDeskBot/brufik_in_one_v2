@@ -69,19 +69,19 @@ def _insert_device(device_id: str = "dev-1"):
 
 
 def test_tts_config_info_device_param_wins_and_masks(svc, temp_db, tmp_env):
-    # config-info 的 env 回填读 .env 文件（read_env_file），不读 os.environ
-    tmp_env.write_text("DOUBAO_TTS_API_KEY=env-key\nDOUBAO_TTS_RESOURCE_ID=seed-tts-1.0\n", encoding="utf-8")
+    from deskbot_server.infrastructure.tts.doubao import DEFAULT_RESOURCE_ID
+
     _insert_device("dev-1")
 
     info = svc.tts_config_info("dev-1")
-    assert info["doubao"]["api_key"] == _mask_secret("env-key")  # 设备未配置 → env 回填并掩码
-    assert info["doubao"]["resource_id"] == "seed-tts-1.0"
+    assert info["doubao"]["api_key"] == ""  # 设备未配置 key → 空（密钥设备自配，无 env 回填）
+    assert info["doubao"]["resource_id"] == DEFAULT_RESOURCE_ID  # 非密钥字段回落内置默认
     assert info["demo_id"] == "demo-1"  # moss 未配置 → 默认
 
-    svc.save_device_tts_config("dev-1", {"doubao": {"api_key": "dev-key", "resource_id": "seed-tts-2.0"}})
+    svc.save_device_tts_config("dev-1", {"doubao": {"api_key": "dev-key", "resource_id": "my-res-1"}})
     info = svc.tts_config_info("dev-1")
     assert info["doubao"]["api_key"] == _mask_secret("dev-key")  # 设备优先
-    assert info["doubao"]["resource_id"] == "seed-tts-2.0"
+    assert info["doubao"]["resource_id"] == "my-res-1"
 
 
 # ---------- save_device_tts_config ----------
@@ -110,22 +110,20 @@ def test_save_device_tts_config_masked_api_key_keeps_existing(svc, temp_db, tmp_
     assert params["doubao"]["speaker"] == "s2"  # 非掩码字段正常更新
 
 
-def test_save_device_tts_config_empty_fields_fill_from_device_then_env(svc, temp_db, tmp_env):
-    tmp_env.write_text("DOUBAO_TTS_API_KEY=env-key\nDOUBAO_TTS_SPEAKER=env-speaker\n", encoding="utf-8")
+def test_save_device_tts_config_empty_fields_fill_from_device_only(svc, temp_db, tmp_env):
     _insert_device("dev-1")
 
-    # 首次保存：空字段从 .env 回填
+    # 首次保存：空字段不落键（无 env 回填，密钥设备自配）
     svc.save_device_tts_config("dev-1", {"doubao": {"api_key": "dev-key"}})
     params = get_tts_param("dev-1")
     assert params["doubao"]["api_key"] == "dev-key"
-    assert params["doubao"]["speaker"] == "env-speaker"
+    assert "speaker" not in params["doubao"]
 
-    # 二次保存：设备已有值优先于 .env
-    tmp_env.write_text("DOUBAO_TTS_API_KEY=env-key\nDOUBAO_TTS_SPEAKER=env-speaker-2\n", encoding="utf-8")
-    svc.save_device_tts_config("dev-1", {"doubao": {"speaker": ""}})
+    # 二次保存：设备已有值保留，新值正常落
+    svc.save_device_tts_config("dev-1", {"doubao": {"speaker": "s2"}})
     params = get_tts_param("dev-1")
     assert params["doubao"]["api_key"] == "dev-key"
-    assert params["doubao"]["speaker"] == "env-speaker"  # 保留设备值，不随 .env 变化
+    assert params["doubao"]["speaker"] == "s2"
 
 
 def test_save_device_tts_config_empty_payload_preserves(svc, temp_db, tmp_env):
@@ -292,17 +290,23 @@ def test_resolve_tts_adapter_doubao_device_overrides_env(temp_db, tmp_env, monke
     assert cfg.audio_format == "pcm"  # 未配置字段回落默认
 
 
-def test_resolve_tts_adapter_doubao_env_fallback(temp_db, tmp_env, monkeypatch):
+def test_resolve_tts_adapter_doubao_device_param_only(temp_db, tmp_env, monkeypatch):
+    """运行期解析无 env 兜底：设备 tts_param 是唯一密钥源，残留 env 不生效。"""
     from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
     from deskbot_server.infrastructure.tts.resolve import resolve_tts_adapter
 
     _insert_device("dev-1")
     set_provider("dev-1", "doubao")
-    monkeypatch.setenv("DOUBAO_TTS_API_KEY", "env-key")
+    monkeypatch.setenv("DOUBAO_TTS_API_KEY", "env-key")  # 残留 env 也不应生效
 
     adapter = resolve_tts_adapter("dev-1")
     cfg = load_doubao_tts_config(None, adapter._overrides)
-    assert cfg.api_key == "env-key"  # 设备未配置 → env
+    assert cfg.api_key == ""  # 设备未配置 → 空
+
+    save_config("dev-1", {"doubao": {"api_key": "dev-key"}})
+    adapter = resolve_tts_adapter("dev-1")
+    cfg = load_doubao_tts_config(None, adapter._overrides)
+    assert cfg.api_key == "dev-key"  # 设备 tts_param 生效
 
 
 def test_resolve_tts_adapter_moss_device_demo_id(temp_db):
@@ -318,18 +322,20 @@ def test_resolve_tts_adapter_moss_device_demo_id(temp_db):
 
 
 def test_resolve_tts_adapter_masked_param_skipped(temp_db, tmp_env, monkeypatch):
-    """防呆：tts_param 中存了掩码占位 → resolve 跳过，回落 env。"""
+    """防呆：tts_param 中存了掩码占位 → resolve 跳过；无 env 兜底 → key 空。"""
+    from deskbot_server.dao.device_mapper import update_tts_param
     from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
     from deskbot_server.infrastructure.tts.resolve import resolve_tts_adapter
 
     _insert_device("dev-1")
     set_provider("dev-1", "doubao")
-    monkeypatch.setenv("DOUBAO_TTS_API_KEY", "env-key")
-    save_config("dev-1", {"doubao": {"api_key": _mask_secret("dev-key")}})  # 掩码占位被直接入库
+    monkeypatch.setenv("DOUBAO_TTS_API_KEY", "env-key")  # 残留 env 也不应生效
+    # 绕过保存语义直接入库掩码占位（防御场景）
+    update_tts_param("dev-1", '{"doubao": {"api_key": "%s"}}' % _mask_secret("dev-key"))
 
     adapter = resolve_tts_adapter("dev-1")
     cfg = load_doubao_tts_config(None, adapter._overrides)
-    assert cfg.api_key == "env-key"  # 掩码不参与合成，回落 env
+    assert cfg.api_key == ""  # 掩码不参与合成，密钥仅设备自配
 
 
 def save_config(device_id: str, payload: dict) -> None:

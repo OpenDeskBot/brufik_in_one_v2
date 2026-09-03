@@ -20,7 +20,6 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from deskbot_server.config import load_config
-from deskbot_server.dao.llm_config_store import LlmModelEntry, get_active_llm_model
 
 logger = logging.getLogger("deskbot-server")
 
@@ -35,6 +34,21 @@ OPENAI_COMPAT_PROTOCOLS = {"openai", "ark", "volcengine", "doubao", "dashscope",
 ARK_RESPONSES_PROTOCOLS = {"ark_responses"}
 LEGACY_MODEL_PREFIXES = OPENAI_COMPAT_PROTOCOLS | ARK_RESPONSES_PROTOCOLS | {"azure", "anthropic", "gemini", "ollama"}
 
+# 本地 llama-server 引擎端点（OpenAI 兼容；服务端不校验 Authorization、不支持 stream）
+MINICPM_LLM_BASE_URL = "http://127.0.0.1:9105/v1"
+MINICPM_LLM_MODEL = "minicpm5-1b"
+QWEN_LLM_BASE_URL = "http://127.0.0.1:9106/v1"
+QWEN_LLM_MODEL = "qwen3.8-2b"
+# 设备级 LLM provider 白名单：本地固定端点 / 云端 ark；空/非法回落系统默认（config.yaml llm 段）
+DEVICE_LLM_PROVIDERS = frozenset({"minicpm", "qwen", "ark"})
+LOCAL_LLM_PROVIDERS: dict[str, tuple[str, str]] = {
+    "minicpm": (MINICPM_LLM_BASE_URL, MINICPM_LLM_MODEL),
+    "qwen": (QWEN_LLM_BASE_URL, QWEN_LLM_MODEL),
+}
+# 设备级 ark 参数白名单（llm_param["ark"]），解析 / 保存 / 掩码共用
+ARK_PARAM_FIELDS = ("api_key", "model_name", "base_url")
+ARK_DEVICE_PROTOCOL = "ark_responses"
+
 
 @dataclass(frozen=True)
 class ResolvedLlmConfig:
@@ -46,14 +60,6 @@ class ResolvedLlmConfig:
     display_name: str
     # 模型上下文窗口 token 数；None = 未知（调用方回退默认预算）
     context_window: int | None = None
-
-
-def _first_env(*names: str) -> tuple[str, str | None]:
-    for name in names:
-        value = os.environ.get(name)
-        if value and value.strip():
-            return value.strip(), name
-    return "", None
 
 
 def _normalized_protocol(protocol: str | None) -> str:
@@ -104,10 +110,10 @@ def _resolve_api_base(protocol: str, configured_base_url: str | None) -> str | N
 
 
 def resolve_system_llm_config(cfg: dict | None = None) -> ResolvedLlmConfig:
-    """系统默认 LLM：只读 config.yaml ``llm`` 段（本地免费引擎）。
+    """系统默认 LLM：只读 config.yaml ``llm`` 段（本地免费引擎或未带密钥的旧配置）。
 
-    云端模型密钥一律为设备级（data/{device_id}/llm_models.json）；系统默认不读取
-    任何环境变量密钥，api_key 恒为空。
+    云端模型密钥一律为设备级（devices.llm_provider=ark + llm_param["ark"]）；系统默认
+    不读取任何环境变量密钥，api_key 恒为空。
     """
     if cfg is None:
         cfg = load_config()
@@ -152,23 +158,88 @@ def native_tools_enabled(device_id: str | None = None) -> bool:
         if raw is not None:
             return _coerce_bool_flag(raw)
     try:
-        from deskbot_server.config import load_config
-
         return _coerce_bool_flag((load_config().get("llm") or {}).get("native_tools"))
     except Exception:
         return False
 
 
-def resolve_llm_config(device_id: str | None = None) -> ResolvedLlmConfig:
-    """解析设备生效 LLM 配置；context_window 从 devices.llm_param 读取（可选）。
+def resolve_device_llm_provider(device_id: str | None) -> str | None:
+    """设备级 LLM provider（devices.llm_provider，白名单校验）。
 
-    devices.llm_param JSON：``{"context_window": 8192, ...}``；未填/非法 → None。
+    空 / 非法值 / 无设备 → None（回落系统默认，见 resolve_system_llm_config）。
     """
-    entry = get_active_llm_model(device_id)
-    cfg = _entry_to_config(entry) if entry is not None else resolve_system_llm_config()
     did = str(device_id or "").strip()
     if not did:
-        return cfg
+        return None
+    from deskbot_server.dao.device_mapper import get_llm_provider
+
+    provider = str(get_llm_provider(did) or "").strip()
+    if provider not in DEVICE_LLM_PROVIDERS:
+        if provider:
+            logger.warning("[LLM] 设备 llm_provider 非法/未知: %r（回落系统默认）", provider)
+        return None
+    return provider
+
+
+def _local_device_llm_config(provider: str) -> ResolvedLlmConfig:
+    """本地固定端点（minicpm / qwen）：免 API Key，无参数可配。"""
+    base_url, model_name = LOCAL_LLM_PROVIDERS[provider]
+    return ResolvedLlmConfig(
+        model=model_name,
+        api_key="",
+        api_base=base_url,
+        protocol="openai",
+        source="device",
+        display_name=f"本地 {provider}（{model_name}）",
+    )
+
+
+def _ark_device_llm_config(device_id: str) -> ResolvedLlmConfig:
+    """按设备 llm_param["ark"] 构造云端 ark 配置（密钥/模型仅设备级）。
+
+    model_name 缺失抛 ValueError（绝不回落 config.yaml，避免本地模型 ID 串位到云端）；
+    base_url 空 → 内置默认；api_key 空则留空，真正调用时由 _validate_api_key 报错。
+    """
+    from deskbot_server.dao.device_mapper import get_llm_param
+
+    param = get_llm_param(device_id)
+    ark = param.get("ark")
+    ark = ark if isinstance(ark, dict) else {}
+    model_name = str(ark.get("model_name") or "").strip()
+    if not model_name:
+        raise ValueError(
+            "该设备 ark LLM 配置缺少模型 ID（火山方舟推理接入点 ep-…）："
+            "请在机器人设置 → LLM → ark「配置」中为该设备填写"
+        )
+    base_url = str(ark.get("base_url") or "").strip().rstrip("/") or ARK_OPENAI_BASE_URL
+    return ResolvedLlmConfig(
+        model=build_chat_model(ARK_DEVICE_PROTOCOL, model_name),
+        api_key=str(ark.get("api_key") or "").strip(),
+        api_base=base_url,
+        protocol=ARK_DEVICE_PROTOCOL,
+        source="device",
+        display_name=f"ark · {model_name}",
+    )
+
+
+def resolve_llm_config(device_id: str | None = None, cfg: dict | None = None) -> ResolvedLlmConfig:
+    """解析设备生效 LLM 配置（设备级真源：devices.llm_provider / llm_param）。
+
+    优先级：minicpm / qwen（本地固定端点）→ ark（llm_param["ark"]，含密钥/模型）→
+    系统默认（config.yaml llm 段）。顶层键 context_window / native_tools 自
+    devices.llm_param 合并（未填 → None，调用方回退默认预算）。
+    ``cfg`` 仅供测试注入自定义 config 文件内容。
+    """
+    provider = resolve_device_llm_provider(device_id)
+    if provider in LOCAL_LLM_PROVIDERS:
+        resolved = _local_device_llm_config(provider)
+    elif provider == "ark":
+        resolved = _ark_device_llm_config(str(device_id or "").strip())
+    else:
+        resolved = resolve_system_llm_config(cfg)
+    did = str(device_id or "").strip()
+    if not did:
+        return resolved
     from deskbot_server.dao.device_mapper import get_llm_param
 
     param = get_llm_param(did)
@@ -176,23 +247,10 @@ def resolve_llm_config(device_id: str | None = None) -> ResolvedLlmConfig:
     try:
         cw = int(raw_cw)
     except (TypeError, ValueError):
-        return cfg
+        return resolved
     if cw > 0:
-        return replace(cfg, context_window=cw)
-    return cfg
-
-
-def _entry_to_config(entry: LlmModelEntry) -> ResolvedLlmConfig:
-    protocol = _normalized_protocol(entry.protocol)
-    api_base = _resolve_api_base(protocol, entry.base_url)
-    return ResolvedLlmConfig(
-        model=build_chat_model(protocol, entry.model_name),
-        api_key=str(entry.api_key or "").strip(),
-        api_base=api_base,
-        protocol=protocol,
-        source="device",
-        display_name=entry.name,
-    )
+        return replace(resolved, context_window=cw)
+    return resolved
 
 
 def build_chat_model(protocol: str, model_name: str) -> str:
@@ -326,7 +384,7 @@ def _validate_api_key(cfg: ResolvedLlmConfig) -> None:
     if not cfg.api_key or "请替换" in cfg.api_key:
         raise ValueError(
             "LLM API Key 未配置。系统默认仅支持本地免费引擎；"
-            "云端模型密钥请在该设备的 LLM 配置（llm_models.json）中设置。"
+            "云端模型密钥请在该设备 LLM 配置（机器人设置 → LLM → ark「配置」）中填写。"
         )
 
 

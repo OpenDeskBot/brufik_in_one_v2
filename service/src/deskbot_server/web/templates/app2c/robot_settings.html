@@ -141,10 +141,6 @@
   <div v-if="err" class="cap-warn err" style="margin-bottom:12px">[[ err ]]</div>
   <div v-if="msg" class="cap-warn" style="margin-bottom:12px">[[ msg ]]</div>
 
-  <div v-if="envNotice" class="cap-env" style="margin-bottom:12px">
-    [[ envNotice ]] —— 应用设置时会清除这些环境变量（密钥 ARK_API_KEY 保留）。
-  </div>
-
   <div class="cap-grid">
     <!-- ===== ASR（设备级） ===== -->
     <div class="cap-card">
@@ -189,15 +185,12 @@
         <div class="cap-ico">🧠</div>
         <div><b>大脑 LLM</b><small>LANGUAGE MODEL</small></div>
       </div>
-      <div v-if="llm.device_override.active" class="cap-ovr">
-        <span>设备级覆盖生效中：[[ llm.device_override.model.name ]]（[[ llm.device_override.model.model_name ]]），
-        此处修改系统默认 LLM 对该设备不生效。</span>
-        <button type="button" class="btn ghost" @click="clearOverride">清除覆盖</button>
+      <div v-if="llm.device_params && llm.device_params.configured" class="cap-ovr">
+        <span>该设备已配置 LLM 参数（llm_param，含 ark 的 API Key / 模型 ID）；清除后回到系统默认 LLM。</span>
+        <button type="button" class="btn ghost" @click="clearOverride">清除配置</button>
       </div>
-      <label v-for="c in llm.candidates" :key="c.id" class="cap-opt"
-             :class="{on: selected.llm===c.id, disabled: llm.device_override.active}">
-        <input type="radio" name="llm" :value="c.id" v-model="selected.llm"
-               :disabled="busyLlm || llm.device_override.active">
+      <label v-for="c in llm.candidates" :key="c.id" class="cap-opt" :class="{on: selected.llm===c.id}">
+        <input type="radio" name="llm" :value="c.id" v-model="selected.llm" :disabled="busyLlm || noDevice">
         <span class="cap-opt-main">
           <b>[[ c.name ]]
             <span v-if="c.experimental" class="cap-badge exp">实验性</span>
@@ -207,11 +200,12 @@
           </b>
           <small>[[ c.description ]]</small>
         </span>
-        <button type="button" class="btn ghost btn-sm cap-opt-test" :disabled="busyLlm || llm.device_override.active"
+        <button type="button" class="btn ghost btn-sm cap-opt-test" :disabled="busyLlm || noDevice"
                 @click.stop="openLlmCfg(c.id)">
           配置
         </button>
       </label>
+      <div v-if="noDevice" class="cap-warn">⚠ 未选择当前设备，请在「我的设备」中选择后再配置 LLM。</div>
       <div v-if="llm.warning" class="cap-warn">⚠ [[ llm.warning ]]</div>
       <p v-if="llm.effective && !llm.effective.error" class="cap-meta">
         [[ llm.effective.display_name ]] · [[ llm.effective.protocol ]] · [[ llm.effective.base_url ]]
@@ -219,12 +213,13 @@
       <p v-else-if="llm.effective && llm.effective.error" class="cap-meta">[[ llm.effective.error ]]</p>
       <div class="cap-foot">
         <span class="cap-cur">当前：<b>[[ curName(llm) ]]</b></span>
-        <button type="button" class="btn cap-apply" :disabled="busyLlm || llm.device_override.active || selected.llm===null || selected.llm===llm.current"
+        <button type="button" class="btn cap-apply" :disabled="busyLlm || noDevice || selected.llm===null || selected.llm===llm.current"
                 @click="applyLlm">
           [[ busyLlm ? '保存中…' : '应用' ]]
         </button>
       </div>
-      <p class="cap-hint">LLM 修改写入 config.yaml 并立即生效；若曾配置过环境变量（ARK_API_KEY 等），应用时会清掉协议类覆盖。</p>
+      <p class="cap-hint">LLM 为设备级配置，保存在 device 表（llm_provider / llm_param）；未设置时使用系统默认
+      （config.yaml llm 段，仅本地引擎，无密钥）。「配置」中为 ark 填写的 API Key / 模型 ID 保存到该设备，写表即生效。</p>
     </div>
 
     <!-- ===== TTS（设备级） ===== -->
@@ -324,7 +319,8 @@
   </div>
 
   <p class="cap-hint" style="margin-top:14px">
-    ASR / TTS 为设备级配置（device 表，立即生效）；LLM 为系统默认 + 设备覆盖；人脸识别写入
+    ASR / TTS / LLM 均为设备级配置（device 表 llm_provider / asr_param / tts_param 等，立即生效；
+    LLM 未设置时用系统默认 <code>config.yaml</code>）；人脸识别 / 声纹识别写入
     <code>config.yaml</code>（重启后保持；YAML 注释不保留）。依赖的外部服务
     {% if nav_is_developer %}请先在
     <a href="{{ url_for('services.page') }}" style="color:var(--accent)">独立服务管理</a> 中安装并启动。
@@ -341,25 +337,25 @@
       <div class="rts-modal-body">
         <div v-if="llmCfg.err" class="rts-fail" style="margin-bottom:10px">[[ llmCfg.err ]]</div>
 
-        <!-- ark：可编辑字段，保存到 .env + config.yaml -->
+        <!-- ark：可编辑字段，保存到该设备 llm_param -->
         <template v-if="llmCfg.provider==='ark'">
           <div class="rts-field">
             <h4>API Key（火山方舟控制台 → API Key 管理）</h4>
-            <input v-model="llmCfg.form.api_key" type="password" placeholder="ARK_API_KEY">
+            <input v-model="llmCfg.form.api_key" type="password" placeholder="sk-…（留空/掩码保留已保存值）">
           </div>
           <div class="rts-field">
             <h4>模型 ID（推理接入点）</h4>
-            <input v-model="llmCfg.form.model_name" placeholder="ep-xxxxxx（必填，切到 ark 时使用）">
+            <input v-model="llmCfg.form.model_name" placeholder="ep-xxxxxx（必填；保存后点「应用」选 ark 即生效）">
           </div>
           <div class="rts-field">
             <h4>Base URL</h4>
-            <input v-model="llmCfg.form.base_url" placeholder="默认 https://ark.cn-beijing.volces.com/api/v3">
+            <input v-model="llmCfg.form.base_url" placeholder="留空使用默认 https://ark.cn-beijing.volces.com/api/v3">
           </div>
           <div class="rts-actions">
             <button type="button" class="btn" :disabled="llmCfg.saveBusy" @click="saveLlmCfg">
               [[ llmCfg.saveBusy ? '保存中…' : '保存配置' ]]
             </button>
-            <span class="rts-hint">API Key 写入 .env（掩码/留空保留已有）；模型 / 地址写入 config.yaml——当前生效为 ark 时立即生效，否则预存到快照，点「应用」切到 ark 时生效。</span>
+            <span class="rts-hint">API Key / 模型 / 地址保存到该设备（device 表 llm_param，密钥设备自配，服务器不存公共凭证）；掩码/留空保留已保存值，全空则清除。写表即生效。</span>
           </div>
         </template>
 
@@ -593,7 +589,7 @@ createApp({
   },
   computed:{
     asr(){ return (this.status && this.status.capabilities.asr) || { candidates: [], current: null, warning: null }; },
-    llm(){ return (this.status && this.status.capabilities.llm) || { candidates: [], current: null, warning: null, device_override: { active: false } }; },
+    llm(){ return (this.status && this.status.capabilities.llm) || { candidates: [], current: null, warning: null, device_params: { configured: false } }; },
     tts(){ return (this.status && this.status.capabilities.tts) || { candidates: [], current: null, warning: null, device_params: { configured: false } }; },
     face(){ return (this.status && this.status.capabilities.face) || { candidates: [], current: null, warning: null }; },
     voiceprint(){ return (this.status && this.status.capabilities.voiceprint) || { candidates: [], current: null, warning: null }; },
@@ -603,13 +599,6 @@ createApp({
     followMode(){ return String(this.behavior.follow_mode || ''); },
     followLabel(){
       return { follow: '跟随人脸', follow_frontal: '跟随正脸', gaze: '注视人脸' }[this.followMode] || '';
-    },
-    envNotice(){
-      if(!this.status) return '';
-      const o = this.status.env_overrides || {};
-      const keys = Object.keys(o).filter(k => o[k]);
-      if(!keys.length) return '';
-      return '检测到环境变量覆盖配置：' + keys.join(' / ') + '（当前生效值可能不是 config.yaml 中的设置）';
     },
   },
   methods:{
@@ -636,7 +625,7 @@ createApp({
         const d = await this.api('/api/robot-settings');
         this.status = d;
         if(this.selected.asr === null) this.selected.asr = this.asr.current;
-        if(this.selected.llm === null && this.llm.current !== 'device') this.selected.llm = this.llm.current;
+        if(this.selected.llm === null && this.llm.candidates.some(c => c.id === this.llm.current)) this.selected.llm = this.llm.current;
         if(this.selected.tts === null) this.selected.tts = this.tts.current;
         if(this.selected.face === null) this.selected.face = this.face.current;
         if(this.selected.voiceprint === null) this.selected.voiceprint = this.voiceprint.current;
@@ -691,7 +680,7 @@ createApp({
       }
     },
     async applyLlm(){
-      if(this.busyLlm || this.selected.llm === null) return;
+      if(this.busyLlm || this.selected.llm === null || this.noDevice) return;
       this.err = ''; this.msg = '';
       this.busyLlm = true;
       try{
@@ -708,12 +697,13 @@ createApp({
       }finally{ this.busyLlm = false; }
     },
     async clearOverride(){
+      if(this.noDevice) return;
       this.err = ''; this.msg = '';
       try{
         const d = await this.api('/api/robot-settings/llm/clear-device-override', { method: 'POST' });
         this.status = d;
-        if(this.selected.llm === null && this.llm.current !== 'device') this.selected.llm = this.llm.current;
-        this.msg = '已清除设备级 LLM 覆盖，当前设备将使用机器人设置的系统默认 LLM';
+        if(this.selected.llm === null && this.llm.candidates.some(c => c.id === this.llm.current)) this.selected.llm = this.llm.current;
+        this.msg = '已清除该设备 LLM 配置，将使用系统默认 LLM（config.yaml）';
       }catch(e){ this.err = '清除失败：' + e.message; }
     },
     async applyTts(){
@@ -798,7 +788,7 @@ createApp({
     },
     closeLlmCfg(){ this.llmCfg = null; this.llmTestResult = null; },
     async saveLlmCfg(){
-      // 保存 ark 配置：api_key → .env（掩码/留空保留已有）；模型/地址 → config.yaml llm 段
+      // 保存 ark 配置到该设备 llm_param（device 表，写表即生效；掩码/留空保留已有值）
       const t = this.llmCfg;
       if(!t || t.saveBusy) return;
       t.saveBusy = true; t.err = '';

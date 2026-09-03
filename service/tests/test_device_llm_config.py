@@ -103,3 +103,46 @@ def test_history_token_budget_follows_context_window(temp_db):
 
     update_llm_param("dev_llm_cfg", '{"context_window": 16384}')
     assert _history_token_budget("dev_llm_cfg") == 8192
+
+
+def test_resolve_llm_config_device_provider_branches(temp_db):
+    """设备级真源：llm_provider 白名单生效，llm_param["ark"] 承载云端密钥/模型，非法值回落系统默认。"""
+    from deskbot_server.dao.device_mapper import update_llm_param, update_llm_provider
+    from deskbot_server.infrastructure.llm.runtime import (
+        ARK_OPENAI_BASE_URL,
+        QWEN_LLM_BASE_URL,
+        QWEN_LLM_MODEL,
+        resolve_llm_config,
+    )
+
+    _bind_device()
+
+    # 本地 qwen：固定端点、免 key、source=device
+    update_llm_provider("dev_llm_cfg", "qwen")
+    cfg = resolve_llm_config("dev_llm_cfg")
+    assert cfg.protocol == "openai"
+    assert cfg.api_base == QWEN_LLM_BASE_URL
+    assert cfg.model == QWEN_LLM_MODEL
+    assert cfg.api_key == ""
+    assert cfg.source == "device"
+
+    # ark：llm_param["ark"] 生效（key / model）；base_url 缺省回落内置默认
+    update_llm_provider("dev_llm_cfg", "ark")
+    update_llm_param("dev_llm_cfg", '{"ark": {"api_key": "sk-test", "model_name": "ep-1"}}')
+    cfg = resolve_llm_config("dev_llm_cfg")
+    assert cfg.protocol == "ark_responses"
+    assert cfg.api_key == "sk-test"
+    assert cfg.model == "ep-1"
+    assert cfg.api_base == ARK_OPENAI_BASE_URL
+    assert cfg.source == "device"
+
+    # ark 缺 model_name → ValueError（不回落 config.yaml，避免模型 ID 串位）
+    update_llm_param("dev_llm_cfg", '{"ark": {"api_key": "sk-test"}}')
+    with pytest.raises(ValueError):
+        resolve_llm_config("dev_llm_cfg")
+
+    # 非法 / 空 provider（app_bp PUT 可写任意串）→ 白名单校验回落系统默认
+    update_llm_provider("dev_llm_cfg", "openai")
+    assert resolve_llm_config("dev_llm_cfg").source == "system"
+    update_llm_provider("dev_llm_cfg", "")
+    assert resolve_llm_config("dev_llm_cfg").source == "system"

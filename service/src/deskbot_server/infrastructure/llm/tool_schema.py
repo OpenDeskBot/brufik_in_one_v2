@@ -143,9 +143,13 @@ def _batch2_schemas(*, device_id: str | None = None, quest_task_ids: list[str] |
 
 
 def build_native_tool_schemas(
-    *, device_id: str | None = None, include_batch2: bool = False
+    *, device_id: str | None = None, include_batch2: bool = True
 ) -> list[dict[str, Any]]:
-    """按批次输出当前启用的原生工具 schema（供每轮 tools 参数）。"""
+    """输出当前启用的原生工具 schema（供每轮 tools 参数）。
+
+    batch1 = 纯函数六工具；batch2 = 人脸/声纹注册 + 剧情任务（无 running 任务时
+    quest 工具不产出；任务 id 动态注入 description，不进 parameters enum）。
+    """
     schemas = _batch1_schemas()
     if include_batch2:
         task_ids: list[str] | None = None

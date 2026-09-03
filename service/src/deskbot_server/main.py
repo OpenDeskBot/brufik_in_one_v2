@@ -13,13 +13,20 @@ from deskbot_server.controller.runtime import AppRuntime
 from deskbot_server.infrastructure.bootstrap import build_chat_service
 from deskbot_server.model.settings import AppSettings
 from deskbot_server.service.application.scheduled_task_scheduler import ScheduledTaskScheduler
-from deskbot_server.service.camera_face_service import CameraFaceService, build_camera_face_runtime
-from deskbot_server.service.voiceprint_service import VoiceprintService, build_voiceprint_runtime
-from deskbot_server.service.device_ws_service import DeviceWsService
-from deskbot_server.service.live_service import ENTER_SEC, SLEEP_MAX_SEC, SLEEP_MIN_SEC, WANDER_MAX_CYCLES, LiveService
-from deskbot_server.service.pipeline.audio import AudioConfig
 from deskbot_server.service.bus_service import BusService
+from deskbot_server.service.camera_face_service import CameraFaceService, build_camera_face_runtime
+from deskbot_server.service.device_ws_service import DeviceWsService
+from deskbot_server.service.live_service import (
+    ENTER_SEC,
+    QUEST_ATTEMPT_IDLE_SEC,
+    SLEEP_MAX_SEC,
+    SLEEP_MIN_SEC,
+    WANDER_MAX_CYCLES,
+    LiveService,
+)
+from deskbot_server.service.pipeline.audio import AudioConfig
 from deskbot_server.service.vad_service import VadService
+from deskbot_server.service.voiceprint_service import VoiceprintService, build_voiceprint_runtime
 from deskbot_server.utils.env import load_dotenv
 
 logger = logging.getLogger("deskbot-server")
@@ -70,13 +77,19 @@ def build_runtime() -> AppRuntime:
     live_svc = LiveService()
     live_svc.bind(device_ws)
     device_ws.bind_live_service(live_svc)
+    from deskbot_server.service.application.quest_proactive import QuestProactiveRunner
+
+    quest_runner = QuestProactiveRunner(chat=pipeline, device_ws=device_ws, bus_service=bus_service)
+    live_svc.bind_quest_runner(quest_runner)
 
     logger.info(
-        "[server] live_mode: per-device (DB), 无有效对话 %.1fs 后 wander，1-%d 轮后 sleep %.0f-%.0fs，gaze 优先",
+        "[server] live_mode: per-device (DB), 无有效对话 %.1fs 后 wander，1-%d 轮后 sleep %.0f-%.0fs，gaze 优先；"
+        "剧情主动推进: 用户在且冷场 >=%.0fs 时尝试",
         ENTER_SEC,
         WANDER_MAX_CYCLES,
         SLEEP_MIN_SEC,
         SLEEP_MAX_SEC,
+        QUEST_ATTEMPT_IDLE_SEC,
     )
     camera_face_runtime = build_camera_face_runtime(config)
     CameraFaceService().configure(camera_face_runtime)

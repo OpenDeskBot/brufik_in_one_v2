@@ -79,11 +79,7 @@ def register_post(request: Request):
     login_user(request, SessionUser(user), remember=True)
     remove_session()
     flash(request, "注册成功，欢迎加入！", "success")
-    from deskbot_server.infrastructure.llm.runtime import resolve_system_llm_config
-
-    key = str(resolve_system_llm_config().api_key or "").strip()
-    if not key or "请替换" in key:
-        return redirect(url_for("app2c.advanced", tab="llm"))
+    # LLM 云端密钥为设备级（llm_param），系统默认不含密钥：注册后回首页绑定设备并进机器人设置配置
     return redirect(url_for("app2c.home"))
 
 
