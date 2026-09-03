@@ -33,6 +33,11 @@ QUEST_CHECK_SEC = 5.0                # 人脸帧内检查节流
 QUEST_NO_TASK_COOLDOWN_SEC = 60.0    # 无 running 任务 / 设备离线时空转冷却（避免高频查库）
 _QUEST_DB_TS_CACHE_SEC = 30.0        # DB 会话表兜底时间戳的内存缓存时长
 
+# ── 社交主动问候（与 quest 共用冷场判定/节流；SOCIAL_* 控制问候频率）──
+SOCIAL_MIN_GAP_SEC = 300.0           # 相邻主动问候 attempt 的最小间隔（同在场面孔时）
+SOCIAL_RETRY_GAP_SEC = 120.0         # 面孔集合变化（新面孔出现/返回）时的最短重试间隔
+SOCIAL_NO_FACE_COOLDOWN_SEC = 60.0   # 无已识别已知用户 / 设备离线时空转冷却
+
 
 class LiveState(str, Enum):
     SLEEP = "sleep"
@@ -114,6 +119,12 @@ class LiveService(metaclass=SingletonMeta):
         self._quest_last_check: dict[str, float] = {}
         self._quest_next_ok: dict[str, float] = {}
         self._quest_db_ts: dict[str, tuple[float, float]] = {}
+        # ── 社交主动问候（与 quest 共用冷场判定；节流状态独立）──
+        self._social_runner: Any = None
+        self._social_inflight: set[str] = set()
+        self._social_last_attempt_m: dict[str, float] = {}
+        self._social_last_names: dict[str, frozenset] = {}
+        self._social_next_ok: dict[str, float] = {}
 
     def bind(self, hub: Any) -> None:
         self._hub = hub
@@ -121,6 +132,10 @@ class LiveService(metaclass=SingletonMeta):
     def bind_quest_runner(self, runner: Any) -> None:
         """注入剧本主动推进器（冷场 1 分钟且用户在时由 LiveService 调度调用）。"""
         self._quest_runner = runner
+
+    def bind_social_runner(self, runner: Any) -> None:
+        """注入社交主动问候推进器（冷场 1 分钟且识别到认识的人在面前时调度）。"""
+        self._social_runner = runner
 
     @property
     def hub(self) -> Any:
@@ -204,23 +219,31 @@ class LiveService(metaclass=SingletonMeta):
     # ── 剧情主动推进（冷场 ≥1 分钟触发一轮任务尝试）──
 
     async def _maybe_quest_attempt(self, device_id: str) -> None:
-        """人脸 tick 内节流判定；满足冷场条件时 spawn 一次剧本尝试。"""
-        runner = self._quest_runner
-        if runner is None or self._hub is None:
+        """人脸 tick 内节流判定；满足冷场条件时 spawn 一次主动尝试。
+
+        社交问候优先于剧情推进：同一次 5s 节流内先试 social，social 已 spawn
+        本 tick 就不再起 quest（两者共用 convo_ts 冷场时钟，quest 自然排队）。
+        """
+        if self._hub is None or (self._quest_runner is None and self._social_runner is None):
             return
         dev = str(device_id or "").strip()
-        if not dev or dev in self._quest_inflight:
+        if not dev or dev in self._quest_inflight or dev in self._social_inflight:
             return
         now_m = time.monotonic()
         if now_m - self._quest_last_check.get(dev, 0.0) < QUEST_CHECK_SEC:
             return
         self._quest_last_check[dev] = now_m
-        if now_m < self._quest_next_ok.get(dev, 0.0):
-            return  # 空转冷却（无任务/离线），不重复打扰
-
         idle = await self._quiet_seconds(dev)
         if idle < QUEST_ATTEMPT_IDLE_SEC:
             return  # 最近 1 分钟内有对话轮
+
+        await self._maybe_social_attempt(dev)
+        if dev in self._social_inflight:
+            return  # 本 tick 已 spawn 社交问候轮，不再起 quest
+        if self._quest_runner is None:
+            return
+        if now_m < self._quest_next_ok.get(dev, 0.0):
+            return  # quest 空转冷却（无任务/离线），不重复打扰
         self._quest_inflight.add(dev)
         asyncio.create_task(self._run_quest_attempt(dev), name=f"quest_attempt_{dev[:8]}")
 
@@ -236,6 +259,67 @@ class LiveService(metaclass=SingletonMeta):
             logger.exception("[live] quest attempt 异常 device_id=%s", device_id)
         finally:
             self._quest_inflight.discard(device_id)
+
+    # ── 社交主动问候（冷场 + 识别到认识的人时触发）──
+
+    @staticmethod
+    def _known_face_names(device_id: str) -> list[str]:
+        """当前人脸快照中已匹配到档案的名字（升序去重，最多 4 个）。"""
+        try:
+            from deskbot_server.service.application.face_snapshot_cache import list_recognized_faces
+
+            rows = list_recognized_faces(device_id, limit=4) or []
+        except Exception:
+            return []
+        names: list[str] = []
+        for row in rows:
+            name = str(row.get("person_name") or "").strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    async def _maybe_social_attempt(self, device_id: str) -> None:
+        """社交问候节流判定：冷却/无已识别已知用户跳过；spawn 一次问候尝试。"""
+        runner = self._social_runner
+        if runner is None:
+            return
+        dev = str(device_id or "").strip()
+        if not dev or dev in self._social_inflight:
+            return
+        now_m = time.monotonic()
+        if now_m < self._social_next_ok.get(dev, 0.0):
+            return  # 空转冷却中
+        names = self._known_face_names(dev)
+        if not names:
+            # 无已识别已知用户：空转冷却，避免每 5s 重复判脸打扰
+            self._social_next_ok[dev] = now_m + SOCIAL_NO_FACE_COOLDOWN_SEC
+            return
+        changed = frozenset(names) != self._social_last_names.get(dev)
+        gap = now_m - self._social_last_attempt_m.get(dev, 0.0)
+        min_gap = SOCIAL_RETRY_GAP_SEC if changed else SOCIAL_MIN_GAP_SEC
+        if gap < min_gap:
+            return  # 间隔内不重复打扰（新面孔出现可提前重试，防识别闪烁）
+        self._social_inflight.add(dev)
+        asyncio.create_task(
+            self._run_social_attempt(dev, names=names, t_attempt=now_m), name=f"social_attempt_{dev[:8]}"
+        )
+
+    async def _run_social_attempt(self, device_id: str, *, names: list[str], t_attempt: float) -> None:
+        try:
+            started = await self._social_runner.attempt(device_id)
+            if started:
+                # 已发起轮（开口或静默由 LLM 定）：更新 attempt 节流基线
+                self._social_last_attempt_m[device_id] = t_attempt
+                self._social_last_names[device_id] = frozenset(names)
+            else:
+                # 设备离线 / 无已识别已知用户 → 冷却后复查
+                self._social_next_ok[device_id] = time.monotonic() + SOCIAL_NO_FACE_COOLDOWN_SEC
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[live] social attempt 异常 device_id=%s", device_id)
+        finally:
+            self._social_inflight.discard(device_id)
 
     async def _quiet_seconds(self, device_id: str) -> float:
         """距最后一轮对话的秒数（内存打点优先，进程冷启动时用会话表 updated_at 兜底）。

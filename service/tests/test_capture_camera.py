@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from deskbot_server.service.camera_face_service import capture_camera_for_device_async
+from deskbot_server.service.camera_face_service import CameraFaceService, capture_camera_for_device_async
 from deskbot_server.infrastructure.llm.utils import parse_llm_reply
-from deskbot_server.pb.cam_signal import build_cam_fps_signal_pb
-from deskbot_server.pb.servo_pcm import make_anim_item, parse_pb_cam_fps, pb_json_messages
-from deskbot_server.service.camera_face_service import CameraFaceService
 
 
 def _fake_jpeg() -> bytes:
@@ -39,28 +36,8 @@ def test_capture_camera_for_device_async_via_video_subscribe():
     assert len(svc._video_subs) == 0
 
 
-def test_parse_llm_reply_cam_fps():
+def test_parse_llm_reply_ignores_cam_fps():
+    """cam_fps 全链路已移除（ROM+服务端）：LLM 信封字段不再解析下发。"""
     parsed = parse_llm_reply('{"tts":"好","cam_fps":5,"tools":[]}')
     assert parsed["json_ok"] is True
-    assert parsed["cam_fps"] == 5
-
-
-def test_build_cam_fps_signal_pb():
-    msg = build_cam_fps_signal_pb(cam_fps=5)
-    assert msg["type"] == "pb_single"
-    assert msg["cam_fps"] == 5
-
-
-def test_pb_json_messages_cam_fps_on_chain():
-    row = {"chunk_ms": 50, "anim": [make_anim_item({}, 50)]}
-    pairs = pb_json_messages(
-        pb_req="req1",
-        sample_rate=24000,
-        fmt="s16le",
-        channels=1,
-        anim_rows=[row],
-        pcm_per_idx=[b""],
-        cam_fps=parse_pb_cam_fps(4),
-    )
-    msg, _ = pairs[0]
-    assert msg["cam_fps"] == 4
+    assert "cam_fps" not in parsed

@@ -233,7 +233,6 @@ bool pb_model_from_json(const JsonDocument& doc, const uint8_t* media, size_t me
     else if (doc["ch"].is<uint8_t>()) out.ch = doc["ch"].as<uint8_t>();
     if (doc["fmt"].is<String>()) copy_string(out.fmt, sizeof(out.fmt), doc["fmt"].as<String>());
     if (doc["volume"].is<int>()) out.volume = constrain(doc["volume"].as<int>(), 0, 100);
-    if (doc["cam_fps"].is<int>()) out.cam_fps = doc["cam_fps"].as<int>();
     if (!parse_anim_frames(doc["anim"], out)) {
       err = "invalid anim";
       pb_model_free(out);

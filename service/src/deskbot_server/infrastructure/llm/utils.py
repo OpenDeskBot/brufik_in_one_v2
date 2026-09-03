@@ -19,7 +19,7 @@ from deskbot_server.constants import SERVO_CFG_FILE
 from deskbot_server.dao.face_design_store import resolve_face_design_path
 from deskbot_server.dao.face_expr_scenes_store import load_face_expr_scenes_file
 from deskbot_server.dao.servo_config_store import load_servo_cfg_file
-from deskbot_server.pb.servo_pcm import parse_pb_cam_fps, parse_pb_volume
+from deskbot_server.pb.servo_pcm import parse_pb_volume
 from deskbot_server.utils.device_data import resolve_json_path
 
 _LLM_APPENDIX_CACHE: dict[str, tuple[float, str]] = {}
@@ -181,6 +181,10 @@ def llm_tools_prompt_appendix() -> str:
         "读写本设备 tmp 目录（路径仅限 data/device/{device_id}/tmp/，禁止 .. 与绝对路径）。\n"
         "  - session: 查询当前与最近对话 session（10 分钟无对话自动开新 session）\n"
         '    当前：{"action":"current"}；列表：{"action":"list","limit":10}；详情：{"action":"get","session_id":"…"}（省略 id 读当前）\n'
+        '  - update_user_info: {"tool":"update_user_info","user_name":"姓名","chat_message":"新披露的事实短句"} '
+        "用户当面告知姓名/性别/年龄/家庭/住址/爱好等个人信息时调用，按人归档；随口闲聊不要存。\n"
+        '  - update_daily_task: {"tool":"update_daily_task","user_name":"姓名","message":"我跟小明说了早上好"} '
+        "主动问候/关心/表达思念开口前先记账到当日任务记录；message 用第一人称一句话，不用自带时间，服务端自动补。\n"
     )
 
 
@@ -231,6 +235,130 @@ def llm_static_context_prompt_appendix(device_id: str | None = None) -> str:
     """长期记忆 + 工具说明（图像/声音识别见每轮 user 消息）。"""
     parts = [llm_memory_prompt_appendix(device_id), llm_tools_prompt_appendix()]
     return "\n\n".join(p for p in parts if p)
+
+
+# ───────────────────── 用户社交情境（识别到已知的人时按人注入） ─────────────────────
+
+# 单轮 system prompt 最多注入的已知用户数 / 整段社交附录总字符上限
+USER_SOCIAL_MAX_USERS = 3
+USER_SOCIAL_TOTAL_CHAR_CAP = 2000
+
+
+def recognized_known_users(device_id: str | None) -> list[str]:
+    """当前识别出的已知用户：声纹 found 说话人优先，人脸按置信度降序补足。
+
+    去重后最多 ``USER_SOCIAL_MAX_USERS`` 人；无人脸/声纹判定或非法 device → []。
+    进程内快照在 LLM 轮内读取（与 user 消息识别行同源）。
+    """
+    dev = str(device_id or "").strip()
+    if not dev:
+        return []
+    out: list[str] = []
+    try:
+        from deskbot_server.service.application.voice_snapshot_cache import (
+            STATE_FOUND,
+            get_voice_snapshot,
+        )
+
+        snap = get_voice_snapshot(dev)
+        if snap is not None and snap.get("state") == STATE_FOUND:
+            name = str(snap.get("name") or "").strip()
+            if name and name not in out:
+                out.append(name)
+    except Exception:
+        pass  # 声纹判定异常不影响人脸路径
+    try:
+        from deskbot_server.service.application.face_snapshot_cache import list_recognized_faces
+
+        for row in list_recognized_faces(dev, limit=5) or []:
+            name = str(row.get("person_name") or "").strip()
+            if name and name not in out:
+                out.append(name)
+    except Exception:
+        pass  # 人脸快照异常按无人脸处理
+    return out[:USER_SOCIAL_MAX_USERS]
+
+
+def llm_user_social_context_prompt_appendix(*, device_id: str | None = None) -> str:
+    """已识别已知用户时的按人情境附录：user_info 资料 + 今日 done_list。
+
+    无 device_id / 无已识别已知用户 / 文件缺失 → 空串（不注入，旧行为不变）。
+    直读不缓存：单文件 ≤ 数 KB，且多文件 mtime 会让单键缓存误判失效。
+    """
+    if not device_id:
+        return ""
+    names = recognized_known_users(device_id)
+    if not names:
+        return ""
+    from deskbot_server.dao.user_social_store import (
+        read_done_list_block,
+        read_user_info_block,
+    )
+
+    blocks: list[str] = []
+    used = 0
+    for name in names:
+        info = read_user_info_block(str(device_id), name)
+        done = read_done_list_block(str(device_id), name)
+        info_txt = info if info else "（暂无已记录的自我介绍，不要编造用户资料）"
+        done_txt = done if done else "（今日暂无主动互动记录）"
+        block = (
+            f"{name} 的资料（update_user_info 归档，时间旧→新）：\n  {info_txt}\n"
+            f"{name} 今日已完成的主动问候/关心（update_daily_task 记账）：\n  {done_txt}"
+        )
+        cost = len(block)
+        if blocks and used + cost > USER_SOCIAL_TOTAL_CHAR_CAP:
+            break
+        blocks.append(block)
+        used += cost
+    if not blocks:
+        return ""
+    head = "已识别到认识的人，以下是按人归档的情境（对话时称呼其名；资料冲突以时间更新者为准）："
+    return head + "\n\n" + "\n\n".join(blocks)
+
+
+def llm_social_active_tasks_prompt_appendix(*, device_id: str | None = None) -> str:
+    """「你的当前任务」段：识别到认识的人时的主动社交规则。
+
+    无已知用户 → 空串。规则含记账（update_daily_task）与重复抑制指引；
+    明确静默退出语义（need_reply=false 不硬聊）。
+    """
+    if not device_id or not recognized_known_users(device_id):
+        return ""
+    return (
+        "你的当前任务（见到认识的人时的主动社交，用于机器人主动发起的对话轮）：\n"
+        "- 早上(约 5:00-11:00)/中午(约 11:00-14:00)/晚上(约 17:00-23:00)该时段**第一次**见到"
+        "认识的人，主动问候；问候开口前先调用 update_daily_task 记账一次，再开口说问候语；"
+        "同一时段问候过（今日记录里已有）就不重复问候。\n"
+        "- 早/中/晚饭时间(约 7:00-9:00/11:00-13:00/17:00-19:00)，可以自然地问对方吃饭了没、"
+        "打算吃什么或已经吃了什么；同一餐问过并记账后不要重复问。\n"
+        "- 距与该用户上一次对话时间超过 5 分钟再次见到时，可表达思念/又见到你的亲近之情；"
+        "开口前先 update_daily_task 记账，同一意图 30 分钟内不重复。\n"
+        "- 语气自然口语化、像真人聊天，禁止「已问候/已汇报」式的汇报腔；"
+        "用户正在提问、剧情任务轮或定时提醒轮进行中时，以当前事务为先，不要插话问候。\n"
+        "- 若此刻没有任何需要主动表达的情形（如刚问候过、刚聊过不久且不在饭点），"
+        "本轮无需开口：need_reply=false、tts 留空，只输出 JSON。"
+    )
+
+
+def llm_user_last_talk_prompt_appendix(*, device_id: str | None = None) -> str:
+    """「与{name}上一次对话的时间是 …」行（拼在当前时间之后，每人一行）。
+
+    仅对已识别已知用户且有服务端打点记录的人输出；无记录/无已知用户 → 空串。
+    """
+    if not device_id:
+        return ""
+    names = recognized_known_users(device_id)
+    if not names:
+        return ""
+    from deskbot_server.dao.user_social_store import read_user_last_talk
+
+    lines: list[str] = []
+    for name in names:
+        ts = read_user_last_talk(str(device_id), name)
+        if ts:
+            lines.append(f"与{name}上一次对话的时间是{ts}")
+    return "\n".join(lines)
 
 
 def _nose_xy(face: dict[str, Any]) -> tuple[float, float, int, int] | None:
@@ -384,35 +512,50 @@ def llm_native_tools_directive(tool_names: list[str]) -> str:
 
 
 def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None, native_tool_names: list[str] | None = None) -> str:
-    """组装最终 system prompt：基础人设 + 动作/表情清单 + 记忆/工具 + 剧情任务 + 当前时间（文末）。
+    """组装最终 system prompt：基础人设 + 动作/表情 + 长期记忆 + 原生工具 directive
+    + 剧情任务情境 + 用户社交情境 + 当前时间（文末）。
 
-    ``native_tool_names`` 非空 → 原生 function calling 模式：文本工具广告替换为一行
-    directive（工具契约在 API ``tools`` 参数里），仅保留长期记忆情境。
+    工具一律走原生 function calling（契约在 API ``tools`` 参数/response 里），
+    不再向模型广告「tools 数组文本」写法；legacy 文本工具段已整体移除。
+
+    ``native_tool_names``：
+    - ``None`` → 按设备解析当前启用工具名单并给一行 directive（默认/预览语义）；
+    - 空列表 ``[]`` → 本轮 API 未提供 tools（文本收口/无工具轮），prompt 完全不再
+      提及任何工具，防止模型在收口轮重复输出函数调用文本；
+    - 非空列表 → 按名单给 directive。
     """
     base = str(base_prompt or "")
+    if native_tool_names is None:
+        from deskbot_server.infrastructure.llm.tool_schema import build_native_tool_schemas
+
+        native_tool_names = [s["function"]["name"] for s in build_native_tool_schemas(device_id=device_id)]
     px = llm_pb_scenes_prompt_appendix(device_id=device_id)
     if px:
         base += "\n" + px
+    fx = llm_memory_prompt_appendix(device_id)
+    if fx:
+        base += "\n\n" + fx
     if native_tool_names:
-        fx = llm_memory_prompt_appendix(device_id)
-        if fx:
-            base += "\n\n" + fx
         base += "\n\n" + llm_native_tools_directive(native_tool_names)
-    else:
-        fx = llm_static_context_prompt_appendix(device_id)
-        if fx:
-            base += "\n\n" + fx
     qx = llm_quest_tasks_prompt_appendix(device_id=device_id)
     if qx:
         base += "\n\n" + qx
-    # 原生模式下剧情工具契约已由 API tools schema 提供（update_task_result 等动态 id），
-    # 不再重复注入文本附录；legacy 模式保留原文本契约
-    if not native_tool_names:
-        qt = llm_quest_tools_prompt_appendix(device_id=device_id)
-        if qt:
-            base += "\n\n" + qt
-    # 当前时间放全文末尾（其它规则段在前，时间戳始终最新可见）
-    base += f"\n\n当前时间是: {beijing_time_str()}（北京时间，东八区）"
+    # 剧情工具契约由 API tools schema 承载（update_task_result 等动态 id 注入
+    # description），不再注入文本契约段。
+    # 用户社交情境（识别到已知用户时才有内容；无人识别 → 空串保持旧行为）
+    sx = llm_user_social_context_prompt_appendix(device_id=device_id)
+    if sx:
+        base += "\n\n" + sx
+    tx = llm_social_active_tasks_prompt_appendix(device_id=device_id)
+    if tx:
+        base += "\n\n" + tx
+    # 当前时间放全文末尾（其它规则段在前，时间戳始终最新可见）；
+    # 识别到认识的人时紧随其后拼「上一次对话时间」行（build 时读取服务端打点）
+    time_tail = f"当前时间是: {beijing_time_str()}（北京时间，东八区）"
+    lt = llm_user_last_talk_prompt_appendix(device_id=device_id)
+    if lt:
+        time_tail += "\n" + lt
+    base += "\n\n" + time_tail
     return base
 
 
@@ -574,6 +717,30 @@ def _parse_llm_tool_items(raw: Any) -> list[dict[str, Any]]:
     for item in raw:
         if not isinstance(item, dict):
             continue
+        # OpenAI 嵌套 function-call 形状：{"type":"function","function":{"name","arguments"}}。
+        # 部分模型在文本 JSON 通道里也会输出这种形状——解包并把 arguments 并入平铺键，
+        # 与执行器（execute_llm_tools 读平铺键）对齐；arguments 为 JSON 字符串时解析。
+        fn = item.get("function")
+        if isinstance(fn, dict):
+            row = dict(item)
+            row.pop("function", None)
+            row.pop("type", None)
+            row.pop("id", None)
+            tool = str(fn.get("name") or "").strip()
+            if not tool:
+                continue
+            row["tool"] = tool
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (TypeError, ValueError):
+                    args = None
+            if isinstance(args, dict):
+                for k, v in args.items():
+                    row.setdefault(str(k), v)
+            out.append(row)
+            continue
         tool = str(item.get("tool") or item.get("name") or "").strip()
         if not tool:
             continue
@@ -605,7 +772,6 @@ def _coerce_llm_reply_object(obj: Any) -> dict[str, Any] | None:
                 "gesture",
                 "expression",
                 "volume",
-                "cam_fps",
                 "scenes",
                 "servo",
             ):
@@ -697,7 +863,6 @@ def parse_llm_reply(raw: str) -> dict:
                     if v:
                         scenes_out.append(v)
         vol = parse_pb_volume(parsed.get("volume"))
-        cam_fps = parse_pb_cam_fps(parsed.get("cam_fps"))
         return {
             "reply": reply,
             "moves": moves_out,
@@ -706,7 +871,6 @@ def parse_llm_reply(raw: str) -> dict:
             "scenes": scenes_out,
             "servo": servo_out,
             "volume": vol,
-            "cam_fps": cam_fps,
             "need_reply": _parsed_json_need_reply(parsed),
             "json_ok": True,
             "raw": text,
@@ -720,7 +884,6 @@ def parse_llm_reply(raw: str) -> dict:
         "scenes": [],
         "servo": [],
         "volume": None,
-        "cam_fps": None,
         "need_reply": True,
         "json_ok": False,
         "raw": text,
@@ -741,10 +904,14 @@ __all__ = [
     "llm_quest_tasks_prompt_appendix",
     "llm_quest_tools_prompt_appendix",
     "llm_recognized_faces_prompt_appendix",
+    "llm_social_active_tasks_prompt_appendix",
     "llm_static_context_prompt_appendix",
     "llm_tools_prompt_appendix",
+    "llm_user_last_talk_prompt_appendix",
+    "llm_user_social_context_prompt_appendix",
     "parse_llm_reply",
     "parse_servo_plan_item",
     "coerce_pb_v2_downlink_payload",
     "normalize_pb_servo_dict",
+    "recognized_known_users",
 ]

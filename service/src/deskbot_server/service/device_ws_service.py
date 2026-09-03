@@ -439,11 +439,17 @@ class DeviceWsService(metaclass=SingletonMeta):
                                 return
                         is_last_window = batch_end >= n
                         if is_last_window:
+                            t_pb_end_wait = time.monotonic()
                             logger.info(
                                 "[pb TX] %s 末窗口已下发 req=%s last_idx=%d 等待 pb_end",
                                 device_id, req, entries[batch_end - 1].idx,
                             )
                         ack_type = await self._wait_ack(entry, req, want_end=is_last_window)
+                        if is_last_window and ack_type == "pb_end":
+                            logger.info(
+                                "[pb ACK] %s 收到 pb_end req=%s 末窗口到播毕 %.0fms",
+                                device_id, req, (time.monotonic() - t_pb_end_wait) * 1000,
+                            )
                         if ack_type == "pb_cancel":
                             cancel_block = PbBlock(type=PbType.CANCEL, req=req, idx=0)
                             await self._do_send_to_device(device_id, cancel_block)

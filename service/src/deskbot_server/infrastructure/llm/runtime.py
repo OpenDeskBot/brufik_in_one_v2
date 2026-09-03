@@ -286,6 +286,45 @@ def _completion_url(api_base: str | None, protocol: str) -> str:
     return f"{base}/chat/completions"
 
 
+def _ark_responses_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """ChatCompletions 嵌套 tools → 方舟 Responses API 扁平 tools。
+
+    Responses API 的 function 工具**不带** ``function`` 嵌套：name/description/
+    parameters 平铺在工具条目上（嵌套形状会被 ark 判 ``json: unknown field
+    "function"`` 400）。已是扁平形状/未知形状原样透传。
+    """
+    out: list[dict[str, Any]] = []
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        fn = t.get("function") if isinstance(t.get("function"), dict) else None
+        if fn is None:
+            out.append(t)
+            continue
+        row: dict[str, Any] = {"type": "function"}
+        for key in ("name", "description", "parameters", "strict"):
+            if key in fn and fn[key] is not None:
+                row[key] = fn[key]
+        if not row.get("name"):
+            continue  # 无工具名视为无效条目
+        out.append(row)
+    return out
+
+
+def _ark_responses_tool_choice(tool_choice: Any) -> Any:
+    """Responses API 的 tool_choice：对象形状扁平化为 {type, name}；字符串原样。"""
+    if not isinstance(tool_choice, dict):
+        return tool_choice
+    fn = tool_choice.get("function") if isinstance(tool_choice.get("function"), dict) else None
+    if fn is None:
+        return tool_choice
+    out: dict[str, Any] = {"type": str(tool_choice.get("type") or "function")}
+    name = fn.get("name")
+    if name:
+        out["name"] = name
+    return out
+
+
 def _messages_to_ark_input(messages: list[dict[str, str] | dict[str, Any]]) -> list[dict[str, Any]]:
     """OpenAI ``messages`` → 火山方舟 Responses API ``input``。
 
@@ -410,9 +449,10 @@ def _build_completion_payload(
         if want_json:
             payload["text"] = {"format": {"type": "json_object"}}
         if tools:
-            payload["tools"] = tools
+            # Responses API 工具形状与 ChatCompletions 不同：嵌套 function 需扁平化
+            payload["tools"] = _ark_responses_tools(tools)
             if tool_choice is not None:
-                payload["tool_choice"] = tool_choice
+                payload["tool_choice"] = _ark_responses_tool_choice(tool_choice)
         return payload
 
     payload = {

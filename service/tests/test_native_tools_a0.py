@@ -48,6 +48,48 @@ def test_payload_ark_tools_shape():
     assert "text" not in p  # 无 json 约束
 
 
+def test_payload_ark_tools_flattened_responses_shape():
+    """回归：ark_responses 的 tools 不接受 ChatCompletions 的 function 嵌套（live 400）。
+
+    Responses API 语义：type/name/description/parameters 平铺；tool_choice 对象同源扁平。
+    """
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "update_user_info",
+                "description": "按人归档",
+                "parameters": {"type": "object", "properties": {"user_name": {"type": "string"}}, "required": ["user_name"]},
+            },
+        }
+    ]
+    choice = {"type": "function", "function": {"name": "update_user_info"}}
+
+    cfg = _Cfg()
+    cfg.protocol = "ark_responses"
+    p = _build_completion_payload(
+        [{"role": "user", "content": "hi"}], cfg, temperature=0.7, json_mode=True, stream=False,
+        tools=tools, tool_choice=choice,
+    )
+    assert p["tools"] == [
+        {
+            "type": "function",
+            "name": "update_user_info",
+            "description": "按人归档",
+            "parameters": {"type": "object", "properties": {"user_name": {"type": "string"}}, "required": ["user_name"]},
+        }
+    ]
+    assert p["tool_choice"] == {"type": "function", "name": "update_user_info"}
+    assert "text" not in p  # 带 tools 不加 json 约束
+
+    # openai 协议（本地引擎）保持 ChatCompletions 嵌套形状不变
+    cfg2 = _Cfg()
+    p2 = _build_completion_payload(
+        [{"role": "user", "content": "hi"}], cfg2, temperature=0.7, json_mode=True, stream=False, tools=tools
+    )
+    assert p2["tools"] == tools
+
+
 def test_tool_calls_parsing_openai_and_ark():
     openai_resp = {
         "choices": [

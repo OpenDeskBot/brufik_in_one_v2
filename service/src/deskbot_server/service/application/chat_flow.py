@@ -12,11 +12,10 @@ from typing import TYPE_CHECKING, Any
 from deskbot_server.dao import device_mapper
 from deskbot_server.dao.device_mapper import get_auto_reply
 from deskbot_server.infrastructure.llm.runtime import native_tools_enabled
-from deskbot_server.infrastructure.llm.utils import build_llm_user_message, parse_llm_reply
+from deskbot_server.infrastructure.llm.utils import build_llm_user_message, parse_llm_reply, recognized_known_users
 from deskbot_server.infrastructure.tts.text_split import split_tts_by_punctuation
 from deskbot_server.model.chat import ChatTurnResult, LlmTurnResult
 from deskbot_server.pb.scenes import _pb_scene_entry_by_name, _prepare_pb_scene_chain_frames
-from deskbot_server.pb.servo_pcm import parse_pb_cam_fps
 from deskbot_server.pb.shapes import PB_ACTION_APPEND, PB_ACTION_REPLACE, PB_LEVEL_TASK
 from deskbot_server.pb.wire import build_pb_wire_pairs
 from deskbot_server.ports.downlink import DownlinkPort, PipelineEventsPort
@@ -29,7 +28,6 @@ from deskbot_server.service.application.llm_error_fallback import (
 )
 from deskbot_server.service.application.llm_tool_runner import execute_llm_tools
 from deskbot_server.service.application.tool_interim_tts import build_tool_interim_tts
-from deskbot_server.service.camera_face_service import request_camera_fps_boost
 from deskbot_server.utils.util import _ms_between
 
 if TYPE_CHECKING:
@@ -40,7 +38,11 @@ logger = logging.getLogger("deskbot-server")
 
 _SCHEDULED_TASK_PREFIX = "[系统定时任务]"
 _QUEST_PROACTIVE_PREFIX = "[系统剧情推进]"
+# 社交主动问候轮：不进 _SYSTEM_INITIATED_PREFIXES —— 不强制开口，
+# LLM 判定此刻无话可说时可 need_reply=false 静默退出（区别于剧情/定时轮必须口播）
+_SOCIAL_PROACTIVE_PREFIX = "[系统主动问候]"
 _SYSTEM_INITIATED_PREFIXES = (_SCHEDULED_TASK_PREFIX, _QUEST_PROACTIVE_PREFIX)
+_ALL_SYSTEM_PREFIXES = _SYSTEM_INITIATED_PREFIXES + (_SOCIAL_PROACTIVE_PREFIX,)
 
 
 def _convo_watching_sync(device_id: str | None) -> bool:
@@ -233,6 +235,21 @@ def _scheduled_tts_looks_like_meta_report(text: str) -> bool:
     return any(m in t for m in meta_markers)
 
 
+_SOCIAL_META_MARKERS = ("已向", "已问候", "已表达", "已关心", "已主动", "问候完成", "关心完了")
+
+
+def _social_tts_looks_like_meta_report(text: str) -> bool:
+    """社交主动轮判定是否为「记账式汇报」文案（应静默而非照字朗读）。
+
+    模型在问候类主动轮里易把已调用的 update_daily_task 内容复述成
+    「已向小明问好」类句子——这种汇报腔不是对用户说的话，一律按静默处理。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return True
+    return any(m in t for m in _SOCIAL_META_MARKERS) or _scheduled_tts_looks_like_meta_report(t)
+
+
 def _voice_was_played(result: ChatTurnResult) -> bool:
     if result.voice_auto_reply_off or result.error or result.status != "ok":
         return False
@@ -372,14 +389,9 @@ async def _execute_tools_round(
     device_id: str,
     session_id: str | None,
     device_ws: DeviceWsService | None,
-    cam_fps: int | None,
 ) -> list[dict[str, Any]]:
-    if cam_fps and device_ws:
-        await request_camera_fps_boost(device_id, device_ws, cam_fps=cam_fps)
-
-    return await execute_llm_tools(
-        tools, device_id=device_id, session_id=session_id, device_ws=device_ws, cam_fps=cam_fps
-    )
+    """执行一轮工具（相机帧率由固件默认策略决定，无 cam_fps 下发/提升）。"""
+    return await execute_llm_tools(tools, device_id=device_id, session_id=session_id, device_ws=device_ws)
 
 
 async def _complete_llm_native_rounds(
@@ -672,13 +684,12 @@ async def complete_llm_with_tool_loop(
             )
             break
 
-        cam_fps = parse_pb_cam_fps(parsed.get("cam_fps"))
         interim_text = (parsed.get("reply") or "").strip()
         if interim_text:
             # LLM 已给出完整回复，reply 即最终结果，不再继续调用 LLM
             all_tools.extend(tools)
             tool_results = await _execute_tools_round(
-                tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws, cam_fps=cam_fps
+                tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws
             )
             all_tool_results.extend(tool_results)
             break
@@ -693,7 +704,7 @@ async def complete_llm_with_tool_loop(
             if interim_text and tts_prefetch is not None:
                 tts_prefetch.cancel()
             tool_results = await _execute_tools_round(
-                tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws, cam_fps=cam_fps
+                tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws
             )
             if interim_text and on_interim_tts_play is not None:
                 await on_interim_tts_play(interim_text, round_idx + 1)
@@ -705,7 +716,7 @@ async def complete_llm_with_tool_loop(
                 tts_prefetch.cancel()
 
             tool_coro = _execute_tools_round(
-                tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws, cam_fps=cam_fps
+                tools, device_id=str(device_id), session_id=session_id, device_ws=device_ws
             )
             if play_coro is not None:
                 tool_results, _ = await asyncio.gather(tool_coro, play_coro)
@@ -766,6 +777,8 @@ async def run_chat_turn(
     result = ChatTurnResult()
     is_scheduled = _is_scheduled_task_user_text(user_text)
     is_quest_proactive = str(user_text or "").strip().startswith(_QUEST_PROACTIVE_PREFIX)
+    is_social_proactive = str(user_text or "").strip().startswith(_SOCIAL_PROACTIVE_PREFIX)
+    is_system_round = is_scheduled or is_quest_proactive or is_social_proactive
     sched_desc = _scheduled_task_description(user_text) if is_scheduled else ""
 
     # 语音轮在 asr 完成后「一次性装配」user 消息（含该时刻的人脸识别）：
@@ -784,6 +797,14 @@ async def run_chat_turn(
             result.voice_sight = _extract_voice_sight_lines(voice_user_message)
         except Exception:
             logger.debug("[LLM] 语音轮 user 消息装配失败 device_id=%s", device_id, exc_info=True)
+
+    # 捕获本轮在场的已知用户（与 user 消息识别同刻；供对话结束打点 last_talk）
+    recognized_users: list[str] = []
+    if device_id and not is_system_round:
+        try:
+            recognized_users = recognized_known_users(device_id)
+        except Exception:
+            logger.debug("[LLM] 捕获已知用户失败 device_id=%s", device_id, exc_info=True)
 
     try:
         if not force_voice and not get_auto_reply(device_id):
@@ -864,6 +885,10 @@ async def run_chat_turn(
         need_reply = bool(parsed.get("need_reply", True))
         if is_scheduled or is_quest_proactive:
             need_reply = True  # 系统发起轮必须开口，禁止静默
+        # 社交主动问候轮允许静默退出：meta 汇报语/空文案一律按不开口处理
+        # （防「已问候」类汇报语被照字朗读；有动作则走下方静默分支只下发动作）
+        if is_social_proactive and _social_tts_looks_like_meta_report(reply_text):
+            need_reply = False
 
         if parsed.get("volume") is not None and device_id:
             from deskbot_server.pb.servo_pcm import parse_pb_volume
@@ -890,13 +915,29 @@ async def run_chat_turn(
             from deskbot_server.dao.device_session_mapper import append_turn
             from deskbot_server.utils.async_helpers import run_blocking
 
-            assistant_text = (reply_text or "").strip() or (answer or "").strip()
+            # 会话归档用整轮最终输出（含 legacy 原始文本）；llm_turn.answer 兜底
+            # 空 tts 轮（静默/纯动作），避免引用作用域外的局部变量
+            assistant_text = (reply_text or "").strip() or (llm_turn.answer or "").strip()
             try:
                 await run_blocking(append_turn, device_id, session_id, user_text, assistant_text)
             except Exception:
                 logger.exception(
                     "[session] 保存对话失败 device_id=%s session_id=%s req=%s", device_id, session_id, request_id
                 )
+
+        # 用户发起的对话轮识别出已知用户 → 打点该用户「上次对话时间」。
+        # 系统前缀轮（定时提醒/剧情推进/主动问候）是机器人单方面开口，不计为对话；
+        # LLM 判定无需回复（need_reply=false）的轮次也算对话（用户确实说了话）。
+        if device_id and recognized_users and not is_system_round and result.status != "error":
+            from deskbot_server.dao.user_social_store import stamp_user_last_talk
+
+            for _name in recognized_users:
+                try:
+                    stamp_user_last_talk(device_id, _name)
+                except Exception:
+                    logger.debug(
+                        "[LLM] last_talk 打点失败 device_id=%s user=%r", device_id, _name, exc_info=True
+                    )
 
         llm_ms = _ms_between(t_asr_text, result.t_llm_end)
         logger.info(
@@ -1315,7 +1356,6 @@ async def _run_pb_playback(
             request_id=(f"{request_id}_{chunk_i}" if request_id and len(text_chunks) > 1 else request_id),
             random_servo_cfg=chat.settings.pb_random_servo_cfg() if chunk_is_first else None,
             volume=parsed_eff.get("volume") if chunk_is_first else None,
-            cam_fps=parsed_eff.get("cam_fps") if chunk_is_first else None,
             device_id=device_id,
             action=PB_ACTION_REPLACE if chunk_is_first else PB_ACTION_APPEND,
             leading_move_steps=int(parsed_eff.get("leading_move_steps") or 0) if chunk_is_first else 0,

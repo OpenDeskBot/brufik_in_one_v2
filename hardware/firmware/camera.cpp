@@ -36,13 +36,14 @@
 #define PCLK_GPIO_NUM  48
 
 static constexpr bool kCameraCaptureEnabled = true;
-/* XGA 1024×768（= QXGA 的 1/2）+ 质量 10：质量 5→10 折中带宽与可读性
- * （5 时帧体 ~70KB/send ~250ms；10 预期 ~50KB/~180ms，浅色字略降）。 */
+/* 临时改道 VGA 640×480 + 画质 10→12(数值越大压缩越强画质越低,10→12 再低一档,
+ * 原 5→10 实测帧体 ~70KB→~50KB、浅色字略降):帧体更小、发送更快。
+ * 验证完发送速度后恢复:kFrameSize = FRAMESIZE_XGA、kFrameSizeName = "XGA"、kJpegQuality = 10。 */
 static constexpr size_t kMaxJpegBin = 2 * 1024 * 1024;
 static constexpr uint32_t kFbNullLogIntervalMs = 30000u;
-static constexpr uint8_t kJpegQuality = 10;
-static constexpr framesize_t kFrameSize = FRAMESIZE_XGA;
-static constexpr const char* kFrameSizeName = "XGA";
+static constexpr uint8_t kJpegQuality = 12;
+static constexpr framesize_t kFrameSize = FRAMESIZE_VGA;
+static constexpr const char* kFrameSizeName = "VGA";
 /* 传感器级边缘增强（OV3660 驱动实现，范围 -3..3，0=默认）。denoise 保持关（抹细节）。
  * 对比度 +1：+2 实测浅字略清但高光过曝裁切；+1 折中。 */
 static constexpr int8_t kSensorSharpness = 3;
@@ -58,8 +59,7 @@ static constexpr uint8_t kFbCount = 1;
 static bool s_camera_ok = false;
 static bool s_hw_inited = false;
 static bool s_task_ready = false;
-/* 默认 2 FPS（500ms）：XGA 质量 10 帧体 ~50KB，2fps 仅 ~0.8Mbps，链路余量充足；
- * 服务端 pb cam_fps 仍可动态覆盖（抓拍 boost）。 */
+/* 固定 2 FPS（500ms）：XGA 质量 10 帧体 ~50KB，2fps 仅 ~0.8Mbps，链路余量充足。 */
 static std::atomic<uint32_t> s_interval_ms{500u};
 static uint32_t s_last_capture_ms = 0;
 static uint32_t s_last_fb_null_log_ms = 0;
@@ -311,15 +311,6 @@ void task_setup_camera() {
   }
   log_warn("[CAMERA] task OK stack=%u prio=%u interval=%ums", (unsigned)kCameraTaskStack,
            (unsigned)kCameraTaskPrio, (unsigned)s_interval_ms.load(std::memory_order_relaxed));
-}
-
-void camera_set_fps(uint32_t fps) {
-  if (fps == 0) {
-    return;
-  }
-  const uint32_t interval = 1000u / fps;
-  s_interval_ms.store(interval, std::memory_order_relaxed);
-  log_warn("[CAMERA] set fps=%u interval=%ums", (unsigned)fps, (unsigned)interval);
 }
 
 bool camera_try_capture_packed(uint8_t** packed, size_t* packed_len) {

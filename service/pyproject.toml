@@ -25,6 +25,8 @@ dependencies = [
     "pypinyin>=0.53.0",
     "g2p-en>=2.1.0",
     "pyserial>=3.5",
+    # werkzeug.security 用户密码哈希（scrypt，登录/改密用）
+    "Werkzeug==3.1.8",
 ]
 
 [project.optional-dependencies]

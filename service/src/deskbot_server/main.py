@@ -78,13 +78,16 @@ def build_runtime() -> AppRuntime:
     live_svc.bind(device_ws)
     device_ws.bind_live_service(live_svc)
     from deskbot_server.service.application.quest_proactive import QuestProactiveRunner
+    from deskbot_server.service.application.social_proactive import SocialProactiveRunner
 
     quest_runner = QuestProactiveRunner(chat=pipeline, device_ws=device_ws, bus_service=bus_service)
     live_svc.bind_quest_runner(quest_runner)
+    social_runner = SocialProactiveRunner(chat=pipeline, device_ws=device_ws, bus_service=bus_service)
+    live_svc.bind_social_runner(social_runner)
 
     logger.info(
         "[server] live_mode: per-device (DB), 无有效对话 %.1fs 后 wander，1-%d 轮后 sleep %.0f-%.0fs，gaze 优先；"
-        "剧情主动推进: 用户在且冷场 >=%.0fs 时尝试",
+        "剧情主动推进: 用户在且冷场 >=%.0fs 时尝试；社交主动问候: 冷场且识别到认识的人时尝试",
         ENTER_SEC,
         WANDER_MAX_CYCLES,
         SLEEP_MIN_SEC,

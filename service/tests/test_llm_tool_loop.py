@@ -23,7 +23,18 @@ def temp_db(monkeypatch):
         yield db_path
 
 
-def test_complete_llm_with_tool_loop_two_rounds(temp_db):
+def _force_legacy_channel(monkeypatch):
+    """钉死 legacy 文本 tools 通道（设备显式关 native 时的兜底语义）。
+
+    config 默认已开 native_tools；本用例模拟旧文本 tools 双轮路径，需显式关掉。
+    """
+    import deskbot_server.service.application.chat_flow as cf
+
+    monkeypatch.setattr(cf, "native_tools_enabled", lambda dev: False)
+
+
+def test_complete_llm_with_tool_loop_two_rounds(temp_db, monkeypatch):
+    _force_legacy_channel(monkeypatch)
     from deskbot_server.service.application.chat_flow import complete_llm_with_tool_loop
 
     round1 = json.dumps(
@@ -56,8 +67,9 @@ def test_complete_llm_with_tool_loop_two_rounds(temp_db):
         assert set(call.keys()) == {"n", "model", "ms", "text", "truncated"}
 
 
-def test_loop_pins_user_message_override_across_rounds(temp_db):
+def test_loop_pins_user_message_override_across_rounds(temp_db, monkeypatch):
     """语音轮的 user_message_override 应整轮锁定：每次 LLM 调用都收到同一份。"""
+    _force_legacy_channel(monkeypatch)
     from deskbot_server.service.application.chat_flow import complete_llm_with_tool_loop
 
     round1 = json.dumps(
@@ -102,7 +114,8 @@ def test_loop_no_override_keeps_plain_kwargs(temp_db):
     assert "user_message_override" not in chat.llm.await_args.kwargs
 
 
-def test_complete_llm_with_tool_loop_single_round():
+def test_complete_llm_with_tool_loop_single_round(monkeypatch):
+    _force_legacy_channel(monkeypatch)
     from deskbot_server.service.application.chat_flow import complete_llm_with_tool_loop
 
     answer = json.dumps({"tts": "你好", "tools": [], "moves": [], "anims": []})

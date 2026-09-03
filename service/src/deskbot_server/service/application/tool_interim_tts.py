@@ -12,6 +12,8 @@ _TOOL_INTERIM_PHRASES: dict[str, str] = {
     "scheduled_task": "我记下了",
     "memory_add": "我记住了",
     "memory_delete": "好，我删掉这条记忆",
+    "update_user_info": "我记下了",
+    "update_daily_task": "好，我记一笔",
     "register_face": "我记住你的样子了",
     "register_voiceprint": "我记住你的声音了",
     "session": "我换一下话题",

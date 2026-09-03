@@ -108,7 +108,6 @@ struct pb_model {
   uint8_t ch = 0;
   char fmt[PB_MODEL_FMT_CAPACITY]{};
   int volume = -1;   // 0–100；-1 表示未指定。
-  int cam_fps = 0;   // >0 时调整相机帧率。
   pb_anim_frame* anim = nullptr;
   size_t anim_count = 0;
   pb_servo_frame* servo = nullptr;

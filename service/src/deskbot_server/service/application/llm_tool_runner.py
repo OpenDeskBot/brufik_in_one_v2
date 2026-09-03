@@ -7,6 +7,7 @@ from typing import Any
 
 from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory
 from deskbot_server.dao.device_session_mapper import execute_session_tool
+from deskbot_server.dao.user_social_store import append_daily_task_line, append_user_info_line
 from deskbot_server.service.application.face_registration import register_face_for_device
 from deskbot_server.service.application.voice_registration import register_voice_for_device
 from deskbot_server.service.camera_face_service import capture_camera_for_device_async
@@ -16,6 +17,12 @@ from deskbot_server.service.scheduled_task_service import execute_schedule_task_
 from deskbot_server.service.web_tools import webfetch, websearch
 
 logger = logging.getLogger("deskbot-server")
+
+# 工具参数键名容错（模型常把 user_name/chat_message 写成近似键）：
+# 前者按序取第一个非空，后者用于识别「身份键」以把剩余事实键拼成可读行
+_NAME_KEYS = ("user_name", "person_name", "user", "person", "name")
+_MESSAGE_KEYS = ("chat_message", "message", "content", "text", "msg")
+_IDENT_KEYS = frozenset({"tool", "type", "function", "id", "arguments", "tool_call_id"}) | set(_NAME_KEYS) | set(_MESSAGE_KEYS)
 
 
 def _require_quest_playbook(device_id: str) -> str:
@@ -32,12 +39,10 @@ async def execute_llm_tools(
     device_id: str | None = None,
     session_id: str | None = None,
     device_ws: Any = None,
-    cam_fps: int | None = None,
 ) -> list[dict[str, Any]]:
     """逐条执行工具，返回结果摘要（供日志与 pipeline 事件）。"""
     results: list[dict[str, Any]] = []
     dev = str(device_id or "").strip()
-    boost_fps = cam_fps or 5
     for raw in tools or []:
         if not isinstance(raw, dict):
             continue
@@ -70,11 +75,41 @@ async def execute_llm_tools(
                         "name": out["profile"].get("name"),
                     }
                 )
-                cap = await capture_camera_for_device_async(dev, hub=device_ws, cam_fps=boost_fps)
+                cap = await capture_camera_for_device_async(dev, hub=device_ws)
                 if not cap.get("ok"):
                     results.append({"tool": tool, "ok": False, "error": cap.get("error")})
                 else:
                     results.append({"tool": tool, **cap})
+            elif tool == "update_user_info":
+                name = next((str(raw.get(k) or "").strip() for k in _NAME_KEYS if str(raw.get(k) or "").strip()), "")
+                message = next(
+                    (str(raw.get(k) or "").strip() for k in _MESSAGE_KEYS if str(raw.get(k) or "").strip()), ""
+                )
+                if not message:
+                    # 模型把事实拆成散键（location/age/hobby…）时拼成可读行归档
+                    facts = [f"{k}: {v}" for k, v in raw.items() if k not in _IDENT_KEYS and str(v or "").strip()]
+                    message = "，".join(facts)
+                if not name:
+                    raise ValueError("update_user_info 需要 user_name")
+                if not message:
+                    raise ValueError("update_user_info 需要 chat_message")
+                if not dev:
+                    raise ValueError("update_user_info 需要 device_id")
+                out = append_user_info_line(dev, name, message)
+                results.append({"tool": tool, "ok": True, "user_name": name, **out})
+            elif tool == "update_daily_task":
+                name = next((str(raw.get(k) or "").strip() for k in _NAME_KEYS if str(raw.get(k) or "").strip()), "")
+                message = next(
+                    (str(raw.get(k) or "").strip() for k in _MESSAGE_KEYS if str(raw.get(k) or "").strip()), ""
+                )
+                if not name:
+                    raise ValueError("update_daily_task 需要 user_name")
+                if not message:
+                    raise ValueError("update_daily_task 需要 message")
+                if not dev:
+                    raise ValueError("update_daily_task 需要 device_id")
+                out = append_daily_task_line(dev, name, message)
+                results.append({"tool": tool, "ok": True, "user_name": name, **out})
             elif tool == "memory_add":
                 text = str(raw.get("text") or raw.get("value") or "").strip()
                 if not text:

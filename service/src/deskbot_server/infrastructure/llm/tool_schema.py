@@ -142,13 +142,56 @@ def _batch2_schemas(*, device_id: str | None = None, quest_task_ids: list[str] |
     return out
 
 
+# ───────────────────── 第三批：用户社交（按人归档）工具 ─────────────────────
+
+def _user_social_schemas() -> list[dict[str, Any]]:
+    """update_user_info / update_daily_task：识别到具体用户时按人归档与记账。
+
+    独立于 batch1（不破坏 NATIVE_TOOL_NAMES_BATCH1 的既有精确断言），
+    随 batch2 开关默认启用。
+    """
+    return [
+        _fn(
+            "update_user_info",
+            "用户当面告知姓名/性别/年龄/家庭/住址/爱好/职业等个人信息时调用，"
+            "按人归档到该用户资料文件（该用户在场被识别到时才会被参考）。"
+            "只写用户刚新披露的事实短句；纠正旧信息写成「更正:…」新行；"
+            "不要整段重述已写过的内容。参数键**必须**为 user_name 与 chat_message："
+            "user_name 写被识别到的人名（中文/字母/数字），chat_message 写原意的"
+            "完整短句（如「我住在北京市海淀区」），不需要带时间；不要拆成 user/"
+            "location/age 等散键。",
+            ["user_name", "chat_message"],
+            {
+                "user_name": {"type": "string", "description": "用户姓名（须为中文/字母/数字）"},
+                "chat_message": {"type": "string", "description": "用户透露的信息，原意短句"},
+            },
+        ),
+        _fn(
+            "update_daily_task",
+            "主动任务记账：早上/中午/晚上第一次见到认识的人时主动问候、饭点询问吃饭、"
+            "或距上次对话较久表达思念——开口**前**必须先调用本工具记账一次，再开口说话；"
+            "用户当面交代的饮食/日程等完成事项也可记。参数键**必须**为 user_name 与 "
+            "message：user_name 写被问候/关心的用户姓名，message 用第一人称一句话写这次"
+            "主动互动的内容（如「我跟小明说了早上好」「我问了小明中午吃了什么」），"
+            "不用自带时间，服务端自动补；同一意图已记录则不重复（同时段问候只记一次、"
+            "思念 30 分钟内不重复）。",
+            ["user_name", "message"],
+            {
+                "user_name": {"type": "string", "description": "被问候/关心的用户姓名"},
+                "message": {"type": "string", "description": "本次主动互动内容，第一人称一句话"},
+            },
+        ),
+    ]
+
+
 def build_native_tool_schemas(
     *, device_id: str | None = None, include_batch2: bool = True
 ) -> list[dict[str, Any]]:
     """输出当前启用的原生工具 schema（供每轮 tools 参数）。
 
     batch1 = 纯函数六工具；batch2 = 人脸/声纹注册 + 剧情任务（无 running 任务时
-    quest 工具不产出；任务 id 动态注入 description，不进 parameters enum）。
+    quest 工具不产出；任务 id 动态注入 description，不进 parameters enum）；
+    batch3（随 batch2 开关）= 用户社交按人归档两工具，恒在。
     """
     schemas = _batch1_schemas()
     if include_batch2:
@@ -160,6 +203,7 @@ def build_native_tool_schemas(
             if calls:
                 task_ids = list(calls[0].get("available_task_ids") or [])
         schemas += _batch2_schemas(device_id=device_id, quest_task_ids=task_ids)
+        schemas += _user_social_schemas()
     return schemas
 
 

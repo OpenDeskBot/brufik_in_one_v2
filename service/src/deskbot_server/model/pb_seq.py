@@ -179,7 +179,6 @@ class PbBlock:
         servo: 舵机动作列表。
         audio: 音频 binary 元数据（``None`` 表示本片无音频）。
         volume: 音量 0–100；``None`` 表示不指定（设备保持现状）。
-        cam_fps: 相机目标帧率；``None`` 或 0 表示不指定。
         binaries: 紧随 JSON 之后的 binary 数据列表（如 Opus 音频）。
     """
 
@@ -191,7 +190,6 @@ class PbBlock:
     servo: tuple[PbServo, ...] = ()
     audio: PbAudio | None = None
     volume: int | None = None
-    cam_fps: int | None = None
     binaries: tuple[bytes, ...] = ()
 
     @property
@@ -227,8 +225,6 @@ class PbBlock:
                 msg["ch"] = ch
         if self.volume is not None:
             msg["volume"] = self.volume
-        if self.cam_fps is not None and self.cam_fps > 0:
-            msg["cam_fps"] = self.cam_fps
         return msg
 
     @classmethod
@@ -266,7 +262,6 @@ class PbBlock:
             servo=servo,
             audio=audio,
             volume=wire.get("volume"),
-            cam_fps=wire.get("cam_fps"),
             binaries=binaries,
         )
 

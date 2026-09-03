@@ -99,7 +99,6 @@ class PbService(metaclass=SingletonMeta):
         level: int = PB_LEVEL_TASK,
         action: str = PB_ACTION_REPLACE,
         volume: int | None = None,
-        cam_fps: int | None = None,
         leading_move_steps: int = 0,
         random_servo_cfg: dict[str, Any] | None = None,
         servo_plan: list[dict[str, Any]] | None = None,
@@ -117,7 +116,6 @@ class PbService(metaclass=SingletonMeta):
             level: 序列优先级（默认 task=1）。
             action: 队列调度策略（默认 replace）。
             volume: 音量 0-100。
-            cam_fps: 相机帧率。
             leading_move_steps: 前置舵机步数。
             random_servo_cfg: 随机舵机配置。
             servo_plan: 舵机计划（与 moves 互斥）。
@@ -138,7 +136,6 @@ class PbService(metaclass=SingletonMeta):
             request_id=request_id,
             random_servo_cfg=random_servo_cfg,
             volume=volume,
-            cam_fps=cam_fps,
             device_id=device_id,
             action=action,
             leading_move_steps=leading_move_steps,
