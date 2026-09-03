@@ -29,6 +29,8 @@ dependencies = [
     "Werkzeug==3.1.8",
     # jinja2 Web 控制台模板渲染（web/mount.py 顶层 import Jinja2Templates）
     "Jinja2==3.1.6",
+    # itsdangerous 调试 WS token（auth/debug_ws_token.py 顶层 import）
+    "itsdangerous==2.2.0",
 ]
 
 [project.optional-dependencies]
@@ -48,7 +50,6 @@ miot = [
 
 [project.scripts]
 deskbot-server = "deskbot_server.__main__:cli"
-deskbot-server-web = "deskbot_server.web.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

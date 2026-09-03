@@ -13,7 +13,7 @@ def web_debug_enabled() -> bool:
 
 
 def create_app() -> FastAPI:
-    """仅挂载 Web（测试 / ``python -m deskbot_server.web``）。"""
+    """仅挂载 Web 控制台（测试用；运行时由主服务 create_fastapi_app 一并挂载）。"""
     app = create_fastapi_app(None, web_only=True)
 
     def test_client():
@@ -26,11 +26,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    host = (os.environ.get("DESKBOT_WEB_HOST") or "0.0.0.0").strip()
-    port = int(os.environ.get("DESKBOT_WEB_PORT") or "9000")
-    uvicorn.run(app, host=host, port=port, log_level="info")

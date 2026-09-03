@@ -16,7 +16,6 @@
 # 模型加载边界：本脚本只负责主服务进程内仍加载的 Silero VAD（对话打断切句）；
 # 人脸 / ASR / TTS / 声纹 / LLM 模型均由各独立外部服务自备
 # （externals/*/install.sh：独立 venv + 服务目录内模型副本），经 9101-9106 端口调用。
-# Web 控制台已合并进主 FastAPI（:9000）常驻，随本脚本一并启动。
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -145,8 +144,6 @@ ensure_models() {
 run_services() {
   trap 'trap - INT TERM EXIT; kill 0 2>/dev/null || true' INT TERM EXIT
 
-  echo "[web] Web 控制台已合并进主 FastAPI，随主服务一并启动（:9000），无需独立进程"
-  echo "[1/1] 启动 deskbot-server ($ROOT) ..."
   cd "$ROOT"
   exec env SKIP_SETUP=1 bash "$ROOT/scripts/setup_venv.sh"
 }

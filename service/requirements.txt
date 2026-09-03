@@ -19,3 +19,5 @@ pyserial>=3.5
 Werkzeug==3.1.8
 # jinja2 Web 控制台模板渲染（web/mount.py 顶层 import Jinja2Templates，勿省）
 Jinja2==3.1.6
+# itsdangerous 调试 WS token（auth/debug_ws_token.py + web/blueprints/debug_bp.py，勿随 flask 移除）
+itsdangerous==2.2.0
