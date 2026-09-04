@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 from deskbot_server.vision.face_identity import (
@@ -15,6 +16,9 @@ from deskbot_server.vision.face_identity import (
 
 _lock = threading.Lock()
 _snapshots: dict[str, dict[int, dict[str, Any]]] = {}
+# 最近一次人脸检测**完成**时刻（wall-clock）：含「无人脸帧」——检测过即打点，
+# 供按时间窗判断「相机画面里现在是否有人」（无时间戳会把几分钟前的旧脸算成在场）
+_detect_ts: dict[str, float] = {}
 
 
 def update_device_faces(device_id: str, faces: list[dict[str, Any]]) -> None:
@@ -31,6 +35,17 @@ def update_device_faces(device_id: str, faces: list[dict[str, Any]]) -> None:
         by_id[int(fid)] = dict(face)
     with _lock:
         _snapshots[device_id] = by_id
+        _detect_ts[device_id] = time.time()
+
+
+def face_snapshot_ts(device_id: str) -> float | None:
+    """最近一次人脸检测完成时刻（wall-clock）；从未检测过返回 None。"""
+    device_id = str(device_id or "").strip()
+    if not device_id:
+        return None
+    with _lock:
+        ts = _detect_ts.get(device_id)
+    return ts if ts is not None else None
 
 
 def list_device_faces(device_id: str) -> dict[int, dict[str, Any]]:
