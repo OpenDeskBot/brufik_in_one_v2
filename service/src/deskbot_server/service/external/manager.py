@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import shutil
@@ -849,6 +850,14 @@ class ExternalServiceManager:
         proc = ExternalProcess(cfg)
         try:
             await proc.spawn()
+        except OSError as exc:
+            # ENOEXEC = 二进制格式与当前平台不匹配（如 macOS 的 bin/ 整目录拷到 Linux）
+            if exc.errno == errno.ENOEXEC:
+                detail = "二进制与当前平台不匹配（Exec format error）——bin/ 可能来自其他系统，请先「卸载」再重新「安装」"
+            else:
+                detail = str(exc)
+            self._set_state(handle, ServiceState.FAILED, error=f"spawn 失败: {detail}")
+            raise ServiceError(f"{manifest.name} 启动失败: {detail}") from exc
         except Exception as exc:
             self._set_state(handle, ServiceState.FAILED, error=f"spawn 失败: {exc}")
             raise ServiceError(f"{manifest.name} 启动失败: {exc}") from exc

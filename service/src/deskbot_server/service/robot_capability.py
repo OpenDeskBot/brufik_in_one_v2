@@ -129,14 +129,14 @@ LLM_CANDIDATES = [
     CapabilityCandidate(
         "minicpm",
         "本地 MiniCPM5-1B（Q4_K_M）",
-        "独立 llama-server 进程（HTTP 9105，OpenAI 兼容，Metal 加速）；实验性：1B 模型工具调用不可靠，定时提醒 / 长期记忆可能失效；需 llm-minicpm 服务运行",
+        "独立 llama-server 进程（HTTP 9105，OpenAI 兼容，本地 GPU/CPU 推理）；实验性：1B 模型工具调用不可靠，定时提醒 / 长期记忆可能失效；需 llm-minicpm 服务运行",
         requires_service="llm-minicpm",
         experimental=True,
     ),
     CapabilityCandidate(
         "qwen",
         "本地 Qwen3.8-2B-Distill（Q4_K_M）",
-        "独立 llama-server 进程（HTTP 9106，OpenAI 兼容，Metal 加速）；2B 模型工具调用比 MiniCPM5-1B 可靠；需 llm-qwen 服务运行",
+        "独立 llama-server 进程（HTTP 9106，OpenAI 兼容，本地 GPU/CPU 推理）；2B 模型工具调用比 MiniCPM5-1B 可靠；需 llm-qwen 服务运行",
         requires_service="llm-qwen",
     ),
     CapabilityCandidate(

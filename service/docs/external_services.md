@@ -271,16 +271,21 @@ install.sh **不会**在安装期从主服务源码生成副本（避免覆盖�
 
 `externals/llm-minicpm/`（MiniCPM5-1B Q4_K_M，端口 **9105**）与
 `externals/llm-qwen/`（Qwen3.8-2B-Distill Q4_K_M，端口 **9106**）共用同一模式：
-llama.cpp **llama-server 二进制**（macOS arm64 官方 release，Metal 加速）+ 本地 GGUF，
-无 Python 依赖、无独立 venv；`install.sh` 幂等（GitHub→gh-proxy 下二进制、
-hf-mirror→huggingface.co 下模型，GGUF 魔数 + 大小校验）。
+llama.cpp **llama-server 二进制**（macOS Metal / Linux CPU 官方 release，`install.sh`
+按平台自动选资产）+ 本地 GGUF，无 Python 依赖、无独立 venv；`install.sh` 幂等
+（GitHub→gh-proxy 下二进制、hf-mirror→huggingface.co 下模型，GGUF 魔数 + 大小校验）。
 
+- **平台资产**：`llama-bXXXX-bin-macos-arm64|macos-x64|ubuntu-x64|ubuntu-arm64.tar.gz`
+  （Linux 官方仍用 ubuntu 前缀，均为 tar.gz 同结构）；bin/ 带 `.platform` 标记，
+  跨平台拷贝（macOS→Linux）后重跑 install.sh 会清空重下；官方 Linux 构建是 CPU 版
+  （`-ngl 99` 自动忽略），要 GPU 手动把 install.sh 的 PLATFORM 换成 vulkan/rocm/cuda
+  资产后缀
 - 端点：`GET /health`；`POST /v1/chat/completions`（OpenAI 兼容，`--jinja` 聊天模板 +
-  `--alias` 模型名）；启动参数 `-ngl 99`（全层 Metal 卸载）、`-c 8192`、
+  `--alias` 模型名）；启动参数 `-ngl 99`（全层卸载 GPU，macOS=Metal）、`-c 8192`、
   `-rea "off"`（关 think，content 不被思考吃掉）
 - **qwen35 架构要求 llama.cpp ≥ b10360**（Gated DeltaNet），llm-qwen 固定
-  **b10733**（含 Gated DeltaNet fused Metal kernel，Apple Silicon 不走 CPU 回退）；
-  llm-minicpm 用 b10717。两者二进制相互独立、各自下载，不共享
+  **b10733**（含 Gated DeltaNet fused Metal kernel，Apple Silicon 不走 CPU 回退；
+  Linux 无 Metal 走 CPU 内核）；llm-minicpm 用 b10717。两者二进制相互独立、各自下载，不共享
 - 契约覆盖：llm 默认契约 `POST /chat` 在 llama-server 上 404，manifest `test`
   段覆盖到 `/v1/chat/completions`（expect `choices`）；健康检查 /health 就绪前
   非 200，`startup_grace_s: 180`
