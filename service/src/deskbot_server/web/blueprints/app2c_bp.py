@@ -52,7 +52,7 @@ def home(request: Request, user: RequireUser):
         request,
         "app2c/home.html",
         active_nav="home",
-        camera_view_ws_base=camera_view_ws_base(),
+        camera_view_ws_base=camera_view_ws_base(request),
         **_default_robot_face_payload(),
     )
 
@@ -69,7 +69,7 @@ def lab(request: Request, user: RequireUser):
         request,
         "app2c/lab.html",
         active_nav="lab",
-        device_pipeline_ws_base=device_pipeline_ws_base(),
+        device_pipeline_ws_base=device_pipeline_ws_base(request),
     )
 
 

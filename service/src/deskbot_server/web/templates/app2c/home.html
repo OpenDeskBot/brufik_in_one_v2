@@ -155,6 +155,16 @@ const HOME_EXPR_DEFAULT_ANIM = HOME_FACE.defaultAnim || {
   },
 };
 const HOME_ROBOT_CENTER = 90;
+/** WS 基址与当前页面 host 对齐（避免用 127.0.0.1 打开页面却连局域网 IP）。 */
+function alignWsBaseToPageHost(base) {
+  const raw = String(base || '').trim();
+  if (!raw) return raw;
+  try {
+    const u = new URL(raw);
+    if (window.location.hostname) u.hostname = window.location.hostname;
+    return u.toString().replace(/\/$/, '');
+  } catch (_) { return raw; }
+}
 createApp({
   delimiters: ['[[', ']]'],
   data(){ return {
@@ -168,7 +178,7 @@ createApp({
     talkRows:[], talkCums:[], talkT0:0,
     quick:{servo:{presets:[],busy:false},pb:{scenes:[],selected:'',busy:false},tts:{text:'你好，我是小歪。',busy:false},msg:''},
     homeRobotError:'', homeRobotServo:{x:90,y:90},
-    cameraViewWsBase: {{ camera_view_ws_base|tojson }},
+    cameraViewWsBase: alignWsBaseToPageHost({{ camera_view_ws_base|tojson }}),
     camera:{ws:null,status:'idle',statusText:'选择设备后显示摄像头画面',imageUrl:'',frameBytes:0},
   }; },
   computed:{

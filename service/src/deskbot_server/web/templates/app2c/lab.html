@@ -154,11 +154,21 @@
 {% block scripts %}
 <script>
 const { createApp } = Vue;
+/** WS 基址与当前页面 host 对齐（避免用 127.0.0.1 打开页面却连局域网 IP）。 */
+function alignWsBaseToPageHost(base) {
+  const raw = String(base || '').trim();
+  if (!raw) return raw;
+  try {
+    const u = new URL(raw);
+    if (window.location.hostname) u.hostname = window.location.hostname;
+    return u.toString().replace(/\/$/, '');
+  } catch (_) { return raw; }
+}
 createApp({
   delimiters:['[[',']]'],
   data(){ return {
     msg:'',
-    devicePipelineWsBase: {{ device_pipeline_ws_base|tojson }},
+    devicePipelineWsBase: alignWsBaseToPageHost({{ device_pipeline_ws_base|tojson }}),
     devices:[], currentDeviceId:'',
     pipeline:{ws:null,status:'',retry:0,retryTimer:null},
     convo:{rows:{}},
