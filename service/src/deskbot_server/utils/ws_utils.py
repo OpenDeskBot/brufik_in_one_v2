@@ -15,6 +15,10 @@ logger = logging.getLogger("deskbot-server")
 
 _WS_OUTBOUND_LOCK_ATTR = "_bot_outbound_send_lock"
 
+# 顶替旧连接时 ws.close() 的有界等待。websockets close 握手无 close_timeout（默认 None），
+# 僵尸 peer 不答 close 帧时会永久挂起——曾因此把新连接卡在接管阶段，禁止无限等待。
+_LINK_REPLACE_CLOSE_TIMEOUT = 1.0
+
 
 class WsUtils:
     """按 ``(device_id, path)`` 管理活跃 WebSocket，并提供 peer / safe_send。"""
@@ -27,7 +31,11 @@ class WsUtils:
 
     @staticmethod
     async def keep_only_one_link(device_id: str | None, path: str, ws: Any) -> None:
-        """同一 ``device_id`` + ``path`` 只保留最新一条连接，关闭旧 peer。"""
+        """同一 ``device_id`` + ``path`` 只保留最新一条连接，关闭旧 peer。
+
+        新连接先占位生效，旧连接关闭为**有界**尽力而为：正常毫秒级完成；僵尸 peer
+        （TCP 半开、不答 close 握手）超时即放行，绝不阻塞新连接的服务。
+        """
         if not device_id or ws is None:
             return
         key = WsUtils._key(device_id, path)
@@ -35,12 +43,23 @@ class WsUtils:
         if prev is None or prev is ws:
             WsUtils._active[key] = ws
             return
+        # 先占位（新连接即刻生效；旧连接的 release_link 因身份不匹配不会误删新连接）
+        WsUtils._active[key] = ws
         logger.info("[ws] 关闭旧连接 device_id=%s path=%s (新 peer 接入)", device_id, path)
         try:
-            await prev.close(code=1000, reason=f"superseded by new {path}")
+            await asyncio.wait_for(
+                prev.close(code=1000, reason=f"superseded by new {path}"),
+                timeout=_LINK_REPLACE_CLOSE_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "[ws] 旧连接 close 超时(%.1fs) device_id=%s path=%s —— 新连接已接管，交由连接自身收敛",
+                _LINK_REPLACE_CLOSE_TIMEOUT,
+                device_id,
+                path,
+            )
         except Exception:
             logger.warning("[ws] 旧连接 close 异常 device_id=%s path=%s", device_id, path, exc_info=True)
-        WsUtils._active[key] = ws
 
     @staticmethod
     def release_link(device_id: str | None, path: str, ws: Any) -> bool:

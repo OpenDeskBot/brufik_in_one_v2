@@ -39,12 +39,20 @@ _IDLE_TIMEOUT = 300
 _PB_IDLE_SEC = 10.0     # PbSeq 空闲超时：超过此时长无下发则触发 LiveService
 _IDLE = object()         # _dequeue 超时哨兵
 
+# 连接接管的有界等待上限（防卡死）：
+# 曾发生同设备 3ms 双连触发接管竞态 → register() 在旧连接清理上无限等待，
+# 此后每条新连接都卡死、设备永远收不到 ready，形成 ~14.6s 重连风暴且不自愈。
+# 原则：新连接的服务绝不依赖旧连接清理完成；任何清理步骤超时只告警不阻塞。
+_SUPERSEDE_CLOSE_TIMEOUT = 1.0   # 顶替旧连接时 ws.close() 的有界等待（僵尸 peer 不答 close 握手）
+_RETIRE_TIMEOUT = 2.0            # 退役 worker（seq/dl 任务）的整体有界等待
+
 
 @dataclass
 class _PbDownlinkJob:
     """ws 下行 pb 发送任务。"""
     wire: str
     binaries: list[bytes] = field(default_factory=list)
+    generation: int | None = None   # 入队时的设备代数；worker 发送前校验，过期 job 直接丢弃
     done: asyncio.Event = field(default_factory=asyncio.Event)
     ok_json: bool = False
     ok_bins: bool = True
@@ -69,6 +77,7 @@ class _DeviceEntry:
 
     # ── ws 连接（每个设备同时只有一条连接）──
     ws: Any = None  # WebSocket | None
+    generation: int = 0  # 连接代数：每次抢占槽位 +1；worker/job 按代数门控，旧代任务不得向新连接发送
 
     # ── PbSeq 消息队列（优先级 + 抢占 + ACK 流控）──
     queue: list = field(default_factory=list)                           # list[PbSeq]
@@ -217,8 +226,9 @@ class DeviceWsService(metaclass=SingletonMeta):
                 pass
             self._cleanup_task = None
         async with self._lock:
-            for entry in list(self._devices.values()):
-                await self._stop_device(entry)
+            entries = list(self._devices.values())
+        for entry in entries:
+            await self._retire_workers(entry)
         logger.info("[DeviceWsService] Shutdown complete")
 
     # ======================================================================
@@ -228,7 +238,10 @@ class DeviceWsService(metaclass=SingletonMeta):
     async def register(self, device_id: str, ws, *, claim_slot: bool = True) -> None:
         """注册设备连接。
 
-        ``claim_slot=True``（asr_chat）：抢占设备唯一下行槽位，关闭同设备旧连接；
+        ``claim_slot=True``（asr_chat）：抢占设备唯一下行槽位——**先换** ``entry.ws``
+        并递增 ``generation``，同步摘除并取消旧代 seq/dl worker 后立即拉起新代 worker，
+        最后**有界**关闭旧连接；新连接的服务绝不依赖旧连接清理完成，任一步超时只告警。
+
         ``claim_slot=False``（device_pipeline 生产者等）：只登记在线状态，不覆盖
         ``entry.ws``，避免把设备的真实 asr_chat 连接挤掉造成反复重连。
         """
@@ -238,17 +251,8 @@ class DeviceWsService(metaclass=SingletonMeta):
         if not self._cleanup_task:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
-        # 只有抢占槽位的连接才需要关闭同设备旧连接
-        if claim_slot:
-            old_ws = None
-            async with self._lock:
-                old_entry = self._devices.get(device_id)
-                if old_entry is not None and old_entry.ws is not None:
-                    old_ws = old_entry.ws
-            if old_ws is not None:
-                await self._close_old_connection(device_id, old_ws)
-
         is_new = False
+        old_ws = None
         async with self._lock:
             now = time.time()
             entry = self._devices.get(device_id)
@@ -258,14 +262,46 @@ class DeviceWsService(metaclass=SingletonMeta):
                 is_new = True
             entry.last_seen_ts = now
             entry.online = True
-            if claim_slot:
+            if claim_slot and entry.ws is not ws:
+                old_ws = entry.ws
                 entry.ws = ws
+                entry.generation += 1
 
-        # 启动 PbSeq 队列协程
-        async with self._queue_lock:
-            entry.stopped = False
-            if entry.seq_task is None or entry.seq_task.done():
-                entry.seq_task = asyncio.create_task(self._device_loop(device_id))
+        if claim_slot:
+            # 队列 worker 换代：摘除旧任务并取消（纯同步，无 await，不等待其退出；
+            # 旧任务即使滞留也由 generation 门控，无法向新连接发送或污染共享状态）
+            async with self._queue_lock:
+                entry.stopped = False
+                old_seq = entry.seq_task
+                if old_seq is not None and not old_seq.done():
+                    old_seq.cancel()
+                entry.seq_task = None
+                old_dl = entry.dl_task
+                if old_dl is not None and not old_dl.done():
+                    old_dl.cancel()
+                entry.dl_queue = None
+                entry.dl_task = None
+                while not entry.ack_queue.empty():
+                    try:
+                        entry.ack_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                entry.event.set()
+                entry.seq_task = asyncio.create_task(
+                    self._device_loop(device_id, entry.generation)
+                )
+
+            # 有界关闭被顶替的旧连接（正常毫秒级完成；僵尸 peer 超时即放行）
+            if old_ws is not None:
+                await self._close_old_connection(device_id, old_ws)
+        else:
+            # 非抢占注册：仅确保 PbSeq 队列协程存活
+            async with self._queue_lock:
+                entry.stopped = False
+                if entry.seq_task is None or entry.seq_task.done():
+                    entry.seq_task = asyncio.create_task(
+                        self._device_loop(device_id, entry.generation)
+                    )
 
         logger.info(
             "[DeviceWsService] %s device_id=%s 设备数=%d",
@@ -275,7 +311,11 @@ class DeviceWsService(metaclass=SingletonMeta):
         )
 
     async def unregister(self, device_id: str, ws) -> None:
-        """注销设备连接。立即清理所有队列。"""
+        """注销设备连接。幂等：仅当 ``ws`` 仍是当前连接时清理；worker 退役整体有界。
+
+        注意：被新连接顶替的旧连接走 ``register`` 内的换代路径，此处身份校验不通过
+        直接返回，避免旧连接的 teardown 反手停掉新注册的队列协程。
+        """
         if not device_id:
             return
         async with self._lock:
@@ -286,18 +326,22 @@ class DeviceWsService(metaclass=SingletonMeta):
             entry.online = False
             entry.last_seen_ts = time.time()
 
-        # 停止 downlink worker
-        await self._stop_dl_worker(entry)
-        # 停止 PbSeq 队列协程
-        async with self._queue_lock:
-            await self._stop_device(entry)
+        await self._retire_workers(entry)
 
     async def _close_old_connection(self, device_id: str, old_ws) -> None:
-        """关闭同设备的旧连接。"""
+        """有界关闭被顶替的旧连接（worker 已由 register 换代，这里只关 ws）。"""
         logger.info("[DeviceWsService] 关闭旧连接 device_id=%s", device_id)
-        await self.unregister(device_id, old_ws)
         try:
-            await old_ws.close(code=1000, reason="superseded by new connection")
+            await asyncio.wait_for(
+                old_ws.close(code=1000, reason="superseded by new connection"),
+                timeout=_SUPERSEDE_CLOSE_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "[DeviceWsService] 旧连接 close 超时(%.1fs) device_id=%s —— 新连接已接管，交由连接自身收敛",
+                _SUPERSEDE_CLOSE_TIMEOUT,
+                device_id,
+            )
         except Exception:
             logger.debug("[DeviceWsService] 旧连接 close 异常 device_id=%s", device_id, exc_info=True)
 
@@ -395,13 +439,17 @@ class DeviceWsService(metaclass=SingletonMeta):
         logger.debug("[_enqueue] %s enqueue (after running) %s", dev, new_info)
         return 1
 
-    async def _device_loop(self, device_id: str):
-        """每个设备的 PbSeq 队列协程：取 PbSeq → 逐 block 发送 → 等 ACK。"""
+    async def _device_loop(self, device_id: str, generation: int = 0):
+        """每个设备的 PbSeq 队列协程：取 PbSeq → 逐 block 发送 → 等 ACK。
+
+        ``generation`` 为该 worker 服务的连接代数：换代后被顶替的旧 worker 即使未
+        及时退出，也会在下一个发送点因代数不匹配主动退出，且退出时不得回写共享状态。
+        """
         entry = self._devices.get(device_id)
         if not entry:
             return
         try:
-            while not entry.stopped:
+            while not entry.stopped and entry.generation == generation:
                 pb_seq = await self._dequeue(entry, timeout=_PB_IDLE_SEC)
                 if pb_seq is None:
                     break
@@ -429,12 +477,13 @@ class DeviceWsService(metaclass=SingletonMeta):
                     seq_fmt = pb_seq.fmt
                     seq_ch = pb_seq.ch
                     i = 0
-                    while i < n and not entry.stopped:
+                    while i < n and not entry.stopped and entry.generation == generation:
                         batch_end = min(i + _WINDOW_SIZE, n)
                         for bi in range(i, batch_end):
                             if not await self._do_send_to_device(
                                 device_id, entries[bi],
                                 level=seq_level, sr=seq_sr, fmt=seq_fmt, ch=seq_ch,
+                                generation=generation,
                             ):
                                 return
                         is_last_window = batch_end >= n
@@ -452,7 +501,7 @@ class DeviceWsService(metaclass=SingletonMeta):
                             )
                         if ack_type == "pb_cancel":
                             cancel_block = PbBlock(type=PbType.CANCEL, req=req, idx=0)
-                            await self._do_send_to_device(device_id, cancel_block)
+                            await self._do_send_to_device(device_id, cancel_block, generation=generation)
                             break
                         i = batch_end
                 finally:
@@ -463,9 +512,13 @@ class DeviceWsService(metaclass=SingletonMeta):
         except Exception as e:
             logger.exception("[DeviceWsService] Device loop error for %s: %s", device_id, e)
         finally:
-            entry.stopped = True
-            entry.sending_seq = None
-            entry.event.set()
+            # 只有自己仍是该设备当前代 worker 才回写共享状态；
+            # 被顶替的旧代 worker 退出时不得污染新代状态（曾因此把新 worker 的
+            # entry.stopped 置 True，导致换代后队列协程立刻静默退出）
+            if entry.generation == generation:
+                entry.stopped = True
+                entry.sending_seq = None
+                entry.event.set()
 
     async def _dequeue(self, entry: _DeviceEntry, timeout: float = 0) -> PbSeq | None:
         while True:
@@ -511,20 +564,31 @@ class DeviceWsService(metaclass=SingletonMeta):
     async def _do_send_to_device(
         self, device_id: str, block: PbBlock,
         *, level: int = 1, sr: int = 0, fmt: str = "", ch: int = 0,
+        generation: int | None = None,
     ) -> bool:
-        """PbBlock → wire JSON → pb downlink 队列 → ws.send。"""
+        """PbBlock → wire JSON → pb downlink 队列 → ws.send。
+
+        ``generation``：调用方服务的连接代数；与当前代数不一致（被顶替/换代）时
+        立即放弃，返回 False 让旧代队列协程退出，杜绝旧代任务向新连接发帧。
+        """
         t0 = time.monotonic()
         ws = None
         async with self._lock:
             entry = self._devices.get(device_id)
             if entry is not None:
                 ws = entry.ws
+                if generation is not None and entry.generation != generation:
+                    logger.debug(
+                        "[_do_send] %s req=%s 代数过期 gen=%d cur=%d 放弃",
+                        device_id, block.req, generation, entry.generation,
+                    )
+                    return False
         if ws is None:
             return False
         payload = block.to_wire(level=level, sr=sr, fmt=fmt, ch=ch)
         wire = device_pb_json_msg(payload)
         _log_pb_tx_wire(device_id, payload, wire, pcm_bytes=sum(len(b) for b in block.binaries))
-        await self._enqueue_dl(entry, wire, list(block.binaries) if block.binaries else None)
+        await self._enqueue_dl(entry, wire, list(block.binaries) if block.binaries else None, generation=generation)
         entry.last_pb_send_mono = time.monotonic()
         elapsed = (time.monotonic() - t0) * 1000
         if elapsed > 50:
@@ -534,27 +598,49 @@ class DeviceWsService(metaclass=SingletonMeta):
             )
         return True
 
-    async def _enqueue_dl(self, entry: _DeviceEntry, wire: str, binaries: list[bytes] | None = None, pcm: bytes | None = None):
+    async def _enqueue_dl(
+        self,
+        entry: _DeviceEntry,
+        wire: str,
+        binaries: list[bytes] | None = None,
+        pcm: bytes | None = None,
+        *,
+        generation: int | None = None,
+    ):
         """将 pb 帧排入 downlink 队列，阻塞到发送完成。"""
-        if entry.dl_queue is None:
-            entry.dl_queue = asyncio.Queue()
-        if entry.dl_task is None or entry.dl_task.done():
-            entry.dl_task = asyncio.create_task(self._dl_worker(entry))
+        async with self._queue_lock:
+            q = entry.dl_queue
+            if q is None:
+                q = entry.dl_queue = asyncio.Queue()
+            if entry.dl_task is None or entry.dl_task.done():
+                # worker 显式携带队列对象：换代时 entry.dl_queue 会被整体替换，
+                # 旧 worker 只消费自己绑定的旧队列，不因 entry 字段变化而错乱
+                entry.dl_task = asyncio.create_task(self._dl_worker(entry, q))
         bins = list(binaries or [])
         if pcm and (not bins or bins[0] is not pcm):
             bins = [pcm] + bins
-        job = _PbDownlinkJob(wire=wire, binaries=bins)
-        await entry.dl_queue.put(job)
+        job = _PbDownlinkJob(wire=wire, binaries=bins, generation=generation)
+        await q.put(job)
         await job.done.wait()
 
-    async def _dl_worker(self, entry: _DeviceEntry):
-        """单设备 downlink worker：从队列取 job，打包帧 + 校验 + 串行 ws.send。"""
-        q = entry.dl_queue
+    async def _dl_worker(self, entry: _DeviceEntry, q: asyncio.Queue | None = None):
+        """单设备 downlink worker：从队列取 job，打包帧 + 校验 + 串行 ws.send。
+
+        只消费创建时绑定的队列（换代后 entry.dl_queue 被替换，旧 worker 排空即退）；
+        发送前校验 job 代数，过期 job 丢弃，绝不对新代连接发送旧代内容。
+        """
+        q = q if q is not None else entry.dl_queue
         while True:
             job: _PbDownlinkJob | None = await q.get()
             try:
                 if job is None:
                     break
+                if job.generation is not None and job.generation != entry.generation:
+                    logger.debug(
+                        "[pb TX] 代数过期 job 丢弃 device_id=%s gen=%d cur=%d",
+                        entry.device_id, job.generation, entry.generation,
+                    )
+                    continue
                 ws = entry.ws
                 if ws is None:
                     continue
@@ -596,41 +682,52 @@ class DeviceWsService(metaclass=SingletonMeta):
                 except ValueError:
                     pass
 
-    async def _stop_dl_worker(self, entry: _DeviceEntry):
-        """停止设备的 downlink worker。"""
-        if entry.dl_task is None or entry.dl_queue is None:
-            return
-        try:
-            await entry.dl_queue.put(None)
-        except Exception:
-            pass
-        try:
-            await asyncio.wait_for(entry.dl_task, timeout=5.0)
-        except (TimeoutError, asyncio.CancelledError, Exception):
-            if not entry.dl_task.done():
-                entry.dl_task.cancel()
-                try:
-                    await entry.dl_task
-                except Exception:
-                    pass
-        entry.dl_task = None
-        entry.dl_queue = None
-
     # ======================================================================
     # PbSeq 队列生命周期
     # ======================================================================
 
-    async def _stop_device(self, entry: _DeviceEntry):
-        """停止设备 PbSeq 队列协程。调用方须持有 self._queue_lock。"""
-        entry.stopped = True
-        if entry.seq_task and not entry.seq_task.done():
-            entry.seq_task.cancel()
+    async def _retire_workers(self, entry: _DeviceEntry) -> None:
+        """退役 entry 的全部 worker（seq/dl）：先同步摘除并取消（持锁、无 await），
+        再在锁外**有界**等待退出。整体 ≤ ``_RETIRE_TIMEOUT``，超时只告警不阻塞——
+        滞留的旧代任务由 generation 门控保证无害（无法发帧、退出时不写共享状态）。
+
+        曾因「持 _queue_lock 无限 await seq_task」导致连接接管永久卡死，此处是硬约束：
+        绝不在持有 _queue_lock/_lock 期间等待任何任务结束。
+        """
+        tasks: list[asyncio.Task] = []
+        async with self._queue_lock:
+            entry.stopped = True
+            if entry.seq_task is not None:
+                if entry.seq_task.done():
+                    entry.seq_task = None
+                else:
+                    tasks.append(entry.seq_task)
+                    entry.seq_task = None
+                    entry.seq_task.cancel()
+            if entry.dl_task is not None:
+                if entry.dl_task.done():
+                    entry.dl_task = None
+                else:
+                    tasks.append(entry.dl_task)
+                    entry.dl_task = None
+                    entry.dl_task.cancel()
+            entry.dl_queue = None
+            while not entry.ack_queue.empty():
+                try:
+                    entry.ack_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            entry.event.set()
+        if tasks:
             try:
-                await entry.seq_task
+                _done, pending = await asyncio.wait(tasks, timeout=_RETIRE_TIMEOUT)
             except asyncio.CancelledError:
-                pass
-        await entry.ack_queue.put({})
-        entry.event.set()
+                return  # 调用方自身被取消（如进程退出），worker 已摘除，无需善后
+            for t in pending:
+                logger.warning(
+                    "[DeviceWsService] worker 退役超时(%.1fs) device_id=%s task=%s —— 已摘除，由代数门控隔离",
+                    _RETIRE_TIMEOUT, entry.device_id, t.get_name(),
+                )
 
     async def _cleanup_loop(self):
         """定期清理空闲超时的设备队列协程。"""
@@ -643,9 +740,9 @@ class DeviceWsService(metaclass=SingletonMeta):
                     for entry in self._devices.values():
                         if entry.seq_task and not entry.seq_task.done() and (now - entry.last_seen_ts) > _IDLE_TIMEOUT:
                             to_stop.append(entry)
-                    for entry in to_stop:
-                        await self._stop_device(entry)
-                        logger.info("[DeviceWsService] Cleanup idle device: %s", entry.device_id)
+                for entry in to_stop:
+                    await self._retire_workers(entry)
+                    logger.info("[DeviceWsService] Cleanup idle device: %s", entry.device_id)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -982,6 +1079,42 @@ class DeviceWsService(metaclass=SingletonMeta):
                 await asyncio.wait_for(asyncio.shield(vpr_task), timeout=vpr_wait_budget_s)
             except Exception:
                 pass
+
+        # ── 对话注意力门控（闲聊过滤）：相机最近画面无人 + 本句声纹判定不是认识的
+        # 人 → 疑似周围人在闲聊，跳过 LLM/TTS 流程。声纹只在引擎启用（起了识别
+        # 任务）时采信；引擎无结论一律放行（避免故障期机器人「变哑」）。
+        from deskbot_server.service.application.asr_attention_gate import decide_round
+        from deskbot_server.service.application.voice_snapshot_cache import get_voice_snapshot
+
+        vpr_engine_on = vpr_task is not None
+        verdict = await decide_round(
+            self,
+            device_id,
+            vpr_engine_on=vpr_engine_on,
+            voice_snapshot=(get_voice_snapshot(device_id) if vpr_engine_on else None),
+        )
+        if not verdict.engage:
+            logger.info(
+                "[ASR] 忽略疑似闲聊 device_id=%s req=%s audio_ms=%d asr_ms=%.0f text=%r reason=%s note=%s",
+                device_id, request_id, seg_duration_ms, asr_ms, text, verdict.reason, verdict.note,
+            )
+            # 静默不理会：只给页面订阅者留一条忽略标记（asr_done 已在上方发出）
+            await _emit_stage(
+                websocket,
+                device_id,
+                request_id,
+                "asr_ignored",
+                send_client=False,
+                event_fields={
+                    "asr_text": text,
+                    "asr_ms": int(asr_ms),
+                    "asr_model": asr_model,
+                    "ignore_reason": verdict.reason,
+                    "note": verdict.note,
+                    "source": "asr",
+                },
+            )
+            return
 
         try:
             flow = await run_ws_chat_turn(
