@@ -20,7 +20,7 @@ class SileroVadConfig:
     model_path: str
     threshold: float = 0.5
     threshold_low: float = 0.2
-    min_silence_ms: int = 500
+    min_silence_ms: int = 200
     min_speech_ms: int = 250
     pre_speech_ms: int = 300
     frame_window_threshold: int = 3

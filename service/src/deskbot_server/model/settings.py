@@ -56,7 +56,7 @@ class VadSettings:
     mode: int = 2
     frame_ms: int = 30
     min_speech_ms: int = 250
-    max_silence_ms: int = 500
+    max_silence_ms: int = 200
     pre_speech_ms: int = 300
     silero_model_path: str = ""
     silero_threshold: float = 0.5
@@ -179,7 +179,7 @@ class AppSettings:
                 mode=int(vad.get("mode", 2)),
                 frame_ms=int(vad.get("frame_ms", 30)),
                 min_speech_ms=int(vad.get("min_speech_ms", 300)),
-                max_silence_ms=int(vad.get("max_silence_ms", 500)),
+                max_silence_ms=int(vad.get("max_silence_ms", 200)),
                 pre_speech_ms=int(vad.get("pre_speech_ms", 300)),
                 silero_model_path=str(vad.get("silero_model_path", "")),
                 silero_threshold=float(vad.get("silero_threshold", 0.5)),

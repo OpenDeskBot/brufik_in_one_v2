@@ -20,7 +20,7 @@ class _StubPipeline:
 
 def _session() -> ConnectionSession:
     cfg = AudioConfig(
-        input_codec="opus", sample_rate=16000, channels=1, min_speech_ms=250, max_silence_ms=500, pre_speech_ms=300
+        input_codec="opus", sample_rate=16000, channels=1, min_speech_ms=250, max_silence_ms=200, pre_speech_ms=300
     )
     session = ConnectionSession(_StubPipeline(), cfg)
     model_path = str(Path(__file__).resolve().parents[1] / "models" / "silero_vad" / "silero_vad.onnx")
