@@ -19,7 +19,7 @@
     直接调用当前生效的大模型配置（优先设备级模型；系统默认使用火山方舟，API Key 来自
     <code>ARK_API_KEY</code> / <code>VOLCENGINE_API_KEY</code> / <code>LLM_API_KEY</code>）；纯文本对话，不走 ASR/TTS，
     用于快速验证各设备独立的 system prompt 与模型回答效果。模型应返回
-    <code>{"need_reply","tts","gesture":["nod_head"],"expression":["happy"],"tools":[]}</code> 格式 JSON
+    <code>{"need_reply","tts","gesture":["nod_head"],"expression":["happy"]}</code> 格式 JSON
     （旧字段名 moves/anims 仍兼容）。
   </p>
   {% raw %}
@@ -92,10 +92,6 @@
                 <div v-if="t.anims && t.anims.length" class="actions-row">
                   <span class="lbl">表情 expression</span>
                   <span v-for="(a, ai) in t.anims" :key="'a'+ai" class="action-chip anim">{{ chipText(a, 'anim') }}</span>
-                </div>
-                <div v-if="t.tools && t.tools.length" class="actions-row">
-                  <span class="lbl">tools</span>
-                  <span v-for="(tool, ti) in t.tools" :key="'t'+ti" class="action-chip">{{ tool.tool || tool.name }}</span>
                 </div>
                 <details v-if="t.raw && (t.raw !== t.assistantText || !t.jsonOk)" class="raw-block">
                   <summary>
@@ -339,7 +335,6 @@
             assistantText: "",
             moves: [],
             anims: [],
-            tools: [],
             raw: "",
             jsonOk: false,
             pending: true,
@@ -369,7 +364,6 @@
               turn.assistantText = data.reply || "";
               turn.moves = Array.isArray(data.moves) ? data.moves : [];
               turn.anims = Array.isArray(data.anims) ? data.anims : [];
-              turn.tools = Array.isArray(data.tools) ? data.tools : [];
               turn.raw = data.raw || "";
               turn.jsonOk = !!data.json_ok;
               turn.elapsedMs = data.elapsed_ms;

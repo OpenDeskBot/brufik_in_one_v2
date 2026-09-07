@@ -92,14 +92,6 @@ def test_speak_turn_debounce_per_device(env):
 # ── 删除面 ─────────────────────────────────────────────
 
 
-def test_tools_appendix_no_longer_advertises_camera_follow():
-    from deskbot_server.infrastructure.llm.utils import llm_tools_prompt_appendix
-
-    text = llm_tools_prompt_appendix()
-    assert "set_camera_follow" not in text
-    assert "camera_follow" not in text
-
-
 def test_runner_rejects_camera_follow_as_unknown():
     from deskbot_server.service.application.llm_tool_runner import execute_llm_tools
 

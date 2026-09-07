@@ -103,14 +103,11 @@ def _setup_bound(env, device_id: str = "dev1", quest_id: str | None = "demo"):
 def test_appendix_unbound_empty(env):
     from deskbot_server.infrastructure.llm.utils import (
         llm_quest_tasks_prompt_appendix,
-        llm_quest_tools_prompt_appendix,
     )
 
     assert llm_quest_tasks_prompt_appendix(device_id=None) == ""
-    assert llm_quest_tools_prompt_appendix(device_id=None) == ""
     _bind_device("dev1", None)
     assert llm_quest_tasks_prompt_appendix(device_id="dev1") == ""
-    assert llm_quest_tools_prompt_appendix(device_id="dev1") == ""
     # 无 devices 行
     assert llm_quest_tasks_prompt_appendix(device_id="nobody") == ""
 
@@ -126,23 +123,6 @@ def test_tasks_appendix_contains_running(env):
     assert "当前剧情任务" in ax
     assert "g_greet" in ax and "主动向用户问好" in ax
     assert "进度" not in ax  # 不展示分数进度
-
-
-def test_tools_appendix_contains_contracts(env):
-    from deskbot_server.infrastructure.llm.utils import llm_quest_tools_prompt_appendix
-
-    svc = _setup_bound(env)
-    ax = llm_quest_tools_prompt_appendix(device_id="dev1")
-    assert "update_task_result" in ax
-    assert "update_task_strategy" in ax
-    # contribute_score 不向 LLM 广告（加分改为后台判定，不由模型自评）
-    assert "contribute_score" not in ax
-    assert "g_greet" in ax  # 可用任务 id
-    # 全部置终态后 → 无可用任务 → 空串（不广告不可用工具）
-    # 注：g_greet 成功会激活 g_learn_name（+10 达标），需连它也判定掉
-    svc.update_task_result("dev1", "demo", "g_greet", "success", "用户回应了问候")
-    svc.update_task_result("dev1", "demo", "g_learn_name", "success", "用户告诉了我名字")
-    assert llm_quest_tools_prompt_appendix(device_id="dev1") == ""
 
 
 def test_build_llm_system_prompt_injects_quest_sections(env):

@@ -29,6 +29,29 @@ def test_begin_clears_previous_result():
     assert cur["score"] is None
 
 
+def test_elapsed_ms_recorded_on_finish():
+    """begin→finish 应记录识别耗时（ms，≥0）；identifying 阶段为 None。"""
+    seq = snap.begin_identification("dev-ms", "r1")
+    cur = snap.get_voice_snapshot("dev-ms")
+    assert cur["elapsed_ms"] is None  # 识别中不落耗时
+    assert "_t0_mono" not in cur  # 内部计时起点不外泄
+
+    snap.finish_identification("dev-ms", seq, state=snap.STATE_FOUND, name="小明", score=0.8)
+    cur = snap.get_voice_snapshot("dev-ms")
+    assert cur["state"] == snap.STATE_FOUND
+    assert isinstance(cur["elapsed_ms"], int)
+    assert cur["elapsed_ms"] >= 0
+    assert "_t0_mono" not in cur
+
+
+def test_elapsed_ms_none_on_stale_finish():
+    """过期 seq 的 finish 不写入 → 快照耗时仍为 None（identifying）。"""
+    seq = snap.begin_identification("dev-stale", "r1")
+    snap.begin_identification("dev-stale", "r2")
+    assert not snap.finish_identification("dev-stale", seq, state=snap.STATE_FOUND, name="小明", score=0.9)
+    assert snap.get_voice_snapshot("dev-stale")["elapsed_ms"] is None
+
+
 def test_finish_only_latest_seq_writes():
     seq1 = snap.begin_identification("dev1", "r1")
     seq2 = snap.begin_identification("dev1", "r2")

@@ -75,7 +75,7 @@ def _wrap_plain_text_llm_answer(text: str) -> str | None:
     if plain.startswith("{") or plain.startswith("["):
         return None
     return json.dumps(
-        {"need_reply": True, "tts": plain, "gesture": [], "expression": [], "tools": []}, ensure_ascii=False
+        {"need_reply": True, "tts": plain, "gesture": [], "expression": []}, ensure_ascii=False
     )
 
 
@@ -128,6 +128,7 @@ class OpenAiLlmAdapter:
         on_tts_ready: Callable[[str], Awaitable[None]] | None = None,
         on_system_prompt: Callable[[str], None] | None = None,
         user_message_override: str | None = None,
+        on_raw_response: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
         async with _device_llm_lock(device_id):
             return await self._complete_locked(
@@ -139,6 +140,7 @@ class OpenAiLlmAdapter:
                 on_tts_ready=on_tts_ready,
                 on_system_prompt=on_system_prompt,
                 user_message_override=user_message_override,
+                on_raw_response=on_raw_response,
             )
 
     async def llm_tool_round(
@@ -274,6 +276,7 @@ class OpenAiLlmAdapter:
         on_tts_ready: Callable[[str], Awaitable[None]] | None = None,
         on_system_prompt: Callable[[str], None] | None = None,
         user_message_override: str | None = None,
+        on_raw_response: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
         llm_cfg = resolve_llm_config(device_id)
         local_engine = is_local_llm_url(llm_cfg.api_base)
@@ -333,7 +336,7 @@ class OpenAiLlmAdapter:
             attempts = 0
             while True:
                 try:
-                    content, _meta = await chat_acompletion(
+                    content, meta = await chat_acompletion(
                         msgs,
                         device_id=device_id,
                         temperature=0.7,
@@ -342,6 +345,13 @@ class OpenAiLlmAdapter:
                         on_tts_ready=on_tts_ready if stream_tts else None,
                         first_token_timeout=first_token_timeout,
                     )
+                    # 非流式：把引擎原始返回体回传给调用方（实验台逐轮展示；流式无原始体则跳过）
+                    raw = meta.get("raw_response") if isinstance(meta, dict) else None
+                    if on_raw_response is not None and isinstance(raw, dict):
+                        try:
+                            on_raw_response(raw)
+                        except Exception:
+                            logger.debug("[LLM] on_raw_response 回调异常（忽略）", exc_info=True)
                     return content
                 except RuntimeError as exc:
                     if (
@@ -391,7 +401,7 @@ class OpenAiLlmAdapter:
                         "role": "user",
                         "content": (
                             "上轮输出不是合法 JSON。请仅输出一个 JSON 对象（不要 markdown 代码围栏、不要解释），"
-                            "格式含 need_reply、tts、gesture、expression、tools 等字段。"
+                            "格式含 need_reply、tts、gesture、expression 等字段。"
                         ),
                     },
                 ]
@@ -399,8 +409,6 @@ class OpenAiLlmAdapter:
                     list(messages) + list(retry_tail), stream_tts=False, first_token_timeout=0, tail=retry_tail
                 )
                 parsed = parse_llm_reply(answer)
-        elif parsed.get("tools") and not (parsed.get("reply") or "").strip():
-            logger.info("[LLM] tools 轮无 tts，跳过过渡语重试 device_id=%s tools=%s", device_id, parsed.get("tools"))
         if not use_stream_tts:
             await _prefetch_tts(parsed)
         return answer

@@ -258,15 +258,20 @@ def temp_env(monkeypatch, tmp_path):
 
 
 class _FakeChat:
-    """直驱 run_chat_turn 的最小 Chat：返回固定 JSON（不做 TTS/pb）。"""
+    """直驱 run_chat_turn 的最小 Chat：单轮返回固定 JSON envelope（不做 TTS/pb）。
+
+    run_chat_turn 恒走原生 function calling（llm_tool_round，无工具调用即 content=最终 envelope）。
+    """
 
     def __init__(self, llm_json: str) -> None:
         self.llm_json = llm_json
         self.tts_calls = 0
         self.settings = SimpleNamespace()
 
-    async def llm(self, text, **kw):
-        return self.llm_json
+    async def llm_tool_round(self, text, **kw):
+        from deskbot_server.infrastructure.llm.openai_compat import LlmToolRoundResult
+
+        return LlmToolRoundResult(content=self.llm_json, tool_calls=[], meta={})
 
 
 def _run_turn(monkeypatch, chat, user_text, *, device_id="dev_chat", known_users=("小明",)):
@@ -276,7 +281,6 @@ def _run_turn(monkeypatch, chat, user_text, *, device_id="dev_chat", known_users
     """
     import deskbot_server.service.application.chat_flow as cf
 
-    monkeypatch.setattr(cf, "native_tools_enabled", lambda dev: False)
     monkeypatch.setattr(cf, "recognized_known_users", lambda dev: list(known_users))
 
     class _DL:
@@ -301,7 +305,7 @@ def _run_turn(monkeypatch, chat, user_text, *, device_id="dev_chat", known_users
 
 def test_social_round_meta_report_silenced(temp_env, monkeypatch):
     """社交轮 LLM 输出 meta 汇报语 → 兜底静默（不口播）。"""
-    chat = _FakeChat(json.dumps({"need_reply": True, "tts": "已向小明问好", "tools": []}, ensure_ascii=False))
+    chat = _FakeChat(json.dumps({"need_reply": True, "tts": "已向小明问好", }, ensure_ascii=False))
     result, dl = _run_turn(monkeypatch, chat, "[系统主动问候] 检测到认识的人（小明）在面前")
     assert result.need_reply is False  # meta 文案不照字朗读
     assert "tts_start" not in dl.stages
@@ -309,7 +313,7 @@ def test_social_round_meta_report_silenced(temp_env, monkeypatch):
 
 def test_social_round_real_greeting_kept(temp_env, monkeypatch):
     """社交轮正常问候语 → need_reply 保持 true（真实口播路径需真 TTS，此处只验判定）。"""
-    chat = _FakeChat(json.dumps({"need_reply": True, "tts": "小明，早上好呀！", "tools": []}, ensure_ascii=False))
+    chat = _FakeChat(json.dumps({"need_reply": True, "tts": "小明，早上好呀！", }, ensure_ascii=False))
     result, _dl = _run_turn(monkeypatch, chat, "[系统主动问候] 检测到认识的人（小明）在面前")
     assert result.need_reply is True
     assert result.llm_text == "小明，早上好呀！"
@@ -317,7 +321,7 @@ def test_social_round_real_greeting_kept(temp_env, monkeypatch):
 
 def test_user_round_stamps_last_talk(temp_env, monkeypatch):
     """用户发起轮识别出已知用户 → 成功后自动打点 last_talk。"""
-    chat = _FakeChat(json.dumps({"need_reply": False, "tts": "", "tools": []}, ensure_ascii=False))
+    chat = _FakeChat(json.dumps({"need_reply": False, "tts": "", }, ensure_ascii=False))
     result, _dl = _run_turn(monkeypatch, chat, "早上好呀", known_users=("小明",))
     assert result.status == "ok"
     p = temp_env / "dev_chat" / "user_last_talk_小明.txt"
@@ -331,6 +335,6 @@ def test_system_rounds_do_not_stamp(temp_env, monkeypatch):
     from deskbot_server.service.application import chat_flow as cf
 
     for prefix in ("[系统定时任务]", "[系统剧情推进]", "[系统主动问候]"):
-        chat = _FakeChat(json.dumps({"need_reply": False, "tts": "", "tools": []}, ensure_ascii=False))
+        chat = _FakeChat(json.dumps({"need_reply": False, "tts": "", }, ensure_ascii=False))
         _run_turn(monkeypatch, chat, f"{prefix} 试试", known_users=("小明",))
         assert not (temp_env / "dev_chat" / "user_last_talk_小明.txt").exists(), prefix

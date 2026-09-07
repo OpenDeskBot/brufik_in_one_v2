@@ -132,37 +132,6 @@ def resolve_system_llm_config(cfg: dict | None = None) -> ResolvedLlmConfig:
     )
 
 
-def _coerce_bool_flag(raw: Any) -> bool:
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, (int, float)):
-        return raw != 0
-    s = str(raw or "").strip().lower()
-    return s in ("1", "true", "yes", "on")
-
-
-def native_tools_enabled(device_id: str | None = None) -> bool:
-    """原生 function calling 开关。
-
-    设备级 ``devices.llm_param.native_tools`` 优先；缺省回退 config.yaml
-    ``llm.native_tools``（默认 False——本地小模型 tool-call 未验证前保持关闭）。
-    """
-    did = str(device_id or "").strip()
-    if did:
-        try:
-            from deskbot_server.dao.device_mapper import get_llm_param
-
-            raw = get_llm_param(did).get("native_tools")
-        except Exception:
-            raw = None
-        if raw is not None:
-            return _coerce_bool_flag(raw)
-    try:
-        return _coerce_bool_flag((load_config().get("llm") or {}).get("native_tools"))
-    except Exception:
-        return False
-
-
 def resolve_device_llm_provider(device_id: str | None) -> str | None:
     """设备级 LLM provider（devices.llm_provider，白名单校验）。
 
@@ -985,6 +954,9 @@ async def chat_acompletion(
         "display_name": cfg.display_name,
         "usage": usage_dict,
     }
+    # 非流式：携带引擎原始返回体（实验台逐轮展示「LLM 原始格式」）；SSE 流式不重建
+    if not use_stream and isinstance(response, dict):
+        meta["raw_response"] = response
     return content, meta
 
 
@@ -1021,6 +993,8 @@ async def tool_acompletion(
         "source": cfg.source,
         "display_name": cfg.display_name,
         "usage": _usage_from_response(response, protocol=cfg.protocol),
+        # 引擎原始返回体（实验台逐轮展示「LLM 原始格式」）
+        "raw_response": response,
     }
     return content, calls, meta
 

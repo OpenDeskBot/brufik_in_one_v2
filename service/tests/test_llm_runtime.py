@@ -52,7 +52,7 @@ def test_chat_completion_stream_invokes_tts_extractor(monkeypatch):
 
     def fake_stream(messages, cfg, *, temperature, json_mode, on_delta=None, timeout=60):
         assert json_mode is True
-        chunks = ['{"tts":"', "你好", '","tools":[]}']
+        chunks = ['{"tts":"', "你好", '"}']
         for c in chunks:
             seen_deltas.append(c)
             if on_delta is not None:
@@ -80,7 +80,7 @@ def test_chat_completion_stream_invokes_tts_extractor(monkeypatch):
     import asyncio
 
     content, meta = asyncio.run(_run())
-    assert content == '{"tts":"你好","tools":[]}'
+    assert content == '{"tts":"你好"}'
     assert tts_seen == ["你好"]
     assert meta["usage"]["total_tokens"] == 3
 

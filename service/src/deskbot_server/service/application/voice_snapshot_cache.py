@@ -11,6 +11,9 @@
 快照终态：found（匹配到档案）/ unknown（成功出 embedding 但未匹配，或音频过短 422）/
 degraded（引擎不可达/超时/模型未就绪）。每设备只保留最新一句。
 
+``elapsed_ms``：本次识别耗时（begin→finish 的 monotonic 间隔，整数 ms），
+供实验台「声纹识别」气泡展示；begin 后为 None，仅 finish 写入终态时落值。
+
 注册样本槽：每次成功抽出 embedding（无论 found/unknown）都存入「最近声音样本」
 （每设备单槽 + 时间戳），供 register_voiceprint / 后台注册使用（新声音首次注册依赖它）。
 """
@@ -50,6 +53,9 @@ def begin_identification(device_id: str, request_id: str | None = None) -> int:
             "name": None,
             "score": None,
             "ts": time.time(),
+            "elapsed_ms": None,
+            # 内部计时起点（识别耗时 = finish 时与此刻的 monotonic 间隔）
+            "_t0_mono": time.monotonic(),
             "request_id": str(request_id or ""),
         }
     return seq
@@ -69,6 +75,7 @@ def finish_identification(
         cur = _snapshots.get(device_id)
         if cur is None or int(cur.get("seq") or -1) != int(seq):
             return False  # 已过期：更新 utterance 已 begin，本结果丢弃（防串句错名）
+        t0 = cur.pop("_t0_mono", None)
         cur["state"] = state
         cur["name"] = str(name) if name else None
         try:
@@ -76,6 +83,7 @@ def finish_identification(
         except (TypeError, ValueError):
             cur["score"] = None
         cur["ts"] = time.time()
+        cur["elapsed_ms"] = int(round((time.monotonic() - t0) * 1000)) if t0 is not None else None
         return True
 
 
@@ -86,7 +94,11 @@ def get_voice_snapshot(device_id: str) -> dict[str, Any] | None:
         return None
     with _lock:
         mem = _snapshots.get(device_id)
-    return dict(mem) if mem else None
+    if not mem:
+        return None
+    out = dict(mem)
+    out.pop("_t0_mono", None)  # 内部计时起点不外泄
+    return out
 
 
 def clear_device(device_id: str) -> None:

@@ -416,52 +416,69 @@ def _seed_snapshot(state: str, *, name: str | None = None, score: float | None =
     snap.finish_identification(DV, seq, state=state, name=name, score=score)
 
 
-def test_build_llm_user_message_includes_voice_section_when_found():
+def test_build_llm_user_message_asr_found():
+    """语音轮（from_asr）：正文行括号携带 ASR 来源 + 声纹身份，[图像识别] 块内不再有声纹段。"""
+    _seed_snapshot(snap.STATE_FOUND, name="小明", score=0.72)
+    msg = build_llm_user_message("你好", device_id=DV, from_asr=True)
+    assert "用户正文（语音转写，声纹判定：小明, 说话人识别置信度=0.72）：你好" in msg
+    assert "声音识别:" not in msg  # 声纹段已移出感知块
+
+    voice_section = msg.split("用户正文")[0]
+    assert "声纹判定" not in voice_section
+
+
+def test_build_llm_user_message_unknown_shows_stranger():
+    """语音轮 + 明确陌生（unmatched）→ 正文括号显示「陌生人」。"""
+    _seed_snapshot(snap.STATE_UNKNOWN)
+    msg = build_llm_user_message("你好", device_id=DV, from_asr=True)
+    assert "用户正文（语音转写，声纹判定：陌生人）：你好" in msg
+
+
+def test_build_llm_user_message_no_conclusion_marks_state():
+    """识别中 / 引擎降级 → 明示状态而非冒充陌生人；无快照 → 仅 ASR 来源注记。"""
+    snap.clear_device(DV)
+    msg = build_llm_user_message("你好", device_id=DV, from_asr=True)
+    assert "用户正文（语音转写）：你好" in msg
+
+    snap.begin_identification(DV, "r1")  # identifying
+    msg = build_llm_user_message("你好", device_id=DV, from_asr=True)
+    assert "用户正文（语音转写，声纹判定中）：你好" in msg
+
+    _seed_snapshot(snap.STATE_DEGRADED)
+    msg = build_llm_user_message("你好", device_id=DV, from_asr=True)
+    assert "用户正文（语音转写，声纹识别不可用）：你好" in msg
+    snap.clear_device(DV)
+
+
+def test_build_llm_user_message_text_turn_keeps_plain():
+    """文字轮（from_asr=False，网页输入/定时等直接文本）：不标语音转写、不带声纹注记
+    ——上一句语音的声纹判定不得错配到本轮直接输入的文字。"""
     _seed_snapshot(snap.STATE_FOUND, name="小明", score=0.72)
     msg = build_llm_user_message("你好", device_id=DV)
-    assert "声音识别:" in msg
-    assert "name=小明" in msg
-    assert "说话人识别置信度=0.72" in msg
+    assert "用户正文: 你好" in msg
+    assert "语音转写" not in msg
+    assert "声纹判定" not in msg
 
 
-def test_build_llm_user_message_unknown_section():
-    _seed_snapshot(snap.STATE_UNKNOWN)
-    msg = build_llm_user_message("你好", device_id=DV)
-    assert "声音识别:" in msg
-    assert "未识别出已知说话人" in msg
+def test_format_voice_speaker_note(monkeypatch):
+    from deskbot_server.infrastructure.llm.utils import format_voice_speaker_note
 
-
-def test_build_llm_user_message_unchanged_when_no_judgement():
-    """无快照 / identifying / degraded → 不追加声音识别段（默认消息格式零变化）。"""
-    snap.clear_device(DV)
-    baseline = build_llm_user_message("你好", device_id=DV)
-    assert "声音识别:" not in baseline
-
-    snap.begin_identification(DV, "r1")  # identifying：不给结论
-    msg = build_llm_user_message("你好", device_id=DV)
-    assert "声音识别:" not in msg
-    assert msg == baseline
-
-    _seed_snapshot(snap.STATE_DEGRADED)
-    msg = build_llm_user_message("你好", device_id=DV)
-    assert "声音识别:" not in msg
-    assert msg == baseline
-    snap.clear_device(DV)
-
-
-def test_format_sight_voice_text(monkeypatch):
-    from deskbot_server.infrastructure.llm.utils import format_sight_voice_text
-
-    assert format_sight_voice_text(None) is None
-    assert format_sight_voice_text("") is None
-    assert format_sight_voice_text("no-record-dev") is None
+    assert format_voice_speaker_note(None) is None
+    assert format_voice_speaker_note("") is None
+    assert format_voice_speaker_note("no-record-dev") is None
 
     _seed_snapshot(snap.STATE_FOUND, name="小红", score=0.55)
-    assert format_sight_voice_text(DV) == "声音识别:\n  name=小红, 说话人识别置信度=0.55"
+    assert format_voice_speaker_note(DV) == "声纹判定：小红, 说话人识别置信度=0.55"
 
     _seed_snapshot(snap.STATE_UNKNOWN)
-    assert format_sight_voice_text(DV) == "声音识别:\n  (未识别出已知说话人)"
+    assert format_voice_speaker_note(DV) == "声纹判定：陌生人"
+
+    snap.begin_identification(DV, "r2")  # identifying → 判定中，不是陌生人
+    assert format_voice_speaker_note(DV) == "声纹判定中"
+    snap.clear_device(DV)
+    _seed_snapshot(snap.STATE_UNKNOWN)
+    assert format_voice_speaker_note(DV) == "声纹判定：陌生人"
 
     _seed_snapshot(snap.STATE_DEGRADED)
-    assert format_sight_voice_text(DV) is None
+    assert format_voice_speaker_note(DV) == "声纹识别不可用"
     snap.clear_device(DV)

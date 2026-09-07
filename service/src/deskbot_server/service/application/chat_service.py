@@ -53,6 +53,7 @@ class ChatService:
         on_tts_ready: Callable[[str], Awaitable[None]] | None = None,
         on_system_prompt: Callable[[str], None] | None = None,
         user_message_override: str | None = None,
+        on_raw_response: Callable[[dict], None] | None = None,
     ) -> str:
         return await self._llm.complete(
             text,
@@ -63,6 +64,7 @@ class ChatService:
             on_tts_ready=on_tts_ready,
             on_system_prompt=on_system_prompt,
             user_message_override=user_message_override,
+            on_raw_response=on_raw_response,
         )
 
     async def llm_tool_round(

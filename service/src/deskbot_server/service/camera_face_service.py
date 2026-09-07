@@ -443,7 +443,8 @@ class CameraFaceService(metaclass=SingletonMeta):
         try:
             tracker = self._tracker_for(device_id)
             tagged = tracker.assign_ids(list(faces or []))
-            update_device_faces(device_id, tagged)
+            # 随帧记录识别耗时（实验台「视觉」气泡展示；含无人脸帧）
+            update_device_faces(device_id, tagged, detect_ms=int(round(infer_ms)) if infer_ms > 0 else None)
             detect = analyze_face_detections(tagged)
         except Exception as exc:
             logger.warning("[%s] 人脸后处理失败 device_id=%s: %s", log_channel, device_id, exc)

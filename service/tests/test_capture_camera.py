@@ -38,6 +38,6 @@ def test_capture_camera_for_device_async_via_video_subscribe():
 
 def test_parse_llm_reply_ignores_cam_fps():
     """cam_fps 全链路已移除（ROM+服务端）：LLM 信封字段不再解析下发。"""
-    parsed = parse_llm_reply('{"tts":"好","cam_fps":5,"tools":[]}')
+    parsed = parse_llm_reply('{"tts":"好","cam_fps":5}')
     assert parsed["json_ok"] is True
     assert "cam_fps" not in parsed

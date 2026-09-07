@@ -110,8 +110,8 @@ def test_extract_face_sight_lines_from_assembled_message():
 
     message = (
         "[图像识别:\n"
-        "   faceid=2, 人脸置信度=0.91, name=妈妈, 人物识别置信度=0.72, 脸中心位置=(160,120)\n"
-        "   faceid=3, 人脸置信度=0.80, name=未知, 人物识别置信度=0.10, 脸中心位置=(200,150)\n"
+        "   faceid=2, 人脸置信度=0.91, name=妈妈, 人物识别置信度=0.72\n"
+        "   faceid=3, 人脸置信度=0.80, name=未知, 人物识别置信度=0.10\n"
         "]\n"
         "\n"
         "用户正文: 你好"
@@ -151,8 +151,8 @@ def test_publish_chat_turn_carries_new_fields(temp_db, fresh_store):
     turn = ChatTurnResult(
         llm_text="你好呀",
         llm_calls=[
-            {"n": 1, "model": "qwen3.8-2b", "ms": 1200, "text": '{"tts":"你好","tools":[]}', "truncated": False},
-            {"n": 2, "model": "qwen3.8-2b", "ms": 800, "text": '{"tts":"你好呀","tools":[]}', "truncated": False},
+            {"n": 1, "model": "qwen3.8-2b", "ms": 1200, "text": '{"tts":"你好"}', "truncated": False},
+            {"n": 2, "model": "qwen3.8-2b", "ms": 800, "text": '{"tts":"你好呀"}', "truncated": False},
         ],
         system_prompt="你是小歪，桌面机器人。\n[附录] 可用动作表情……",
         face_sight="图像识别:\n  faceid=2, 人脸置信度=0.91, name=妈妈, 人物识别置信度=0.72",

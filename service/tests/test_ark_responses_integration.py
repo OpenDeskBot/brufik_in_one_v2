@@ -91,7 +91,7 @@ def test_live_ark_responses_stream_tts_prefetch():
 
     async def _run():
         return await chat_acompletion(
-            [{"role": "user", "content": '只输出 JSON：{"tts":"流式通过","tools":[]}'}],
+            [{"role": "user", "content": '只输出 JSON：{"tts":"流式通过"}'}],
             config=cfg,
             json_mode=True,
             on_tts_ready=on_tts,

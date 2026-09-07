@@ -154,40 +154,6 @@ def llm_memory_prompt_appendix(device_id: str | None = None) -> str:
     return "长期记忆（可用 memory_delete 删除，id 见方括号）：\n" + "\n".join(lines)
 
 
-def llm_tools_prompt_appendix() -> str:
-    """LLM 可返回的 tools 数组说明。"""
-    return (
-        "可用工具（可选 ``tools`` 数组；需要工具时 ``tools`` 非空、``tts`` 可留空，"
-        "服务端执行后会再次调用你；最终回复时 ``tools`` 写 [] 并填写 ``tts``。"
-        "用户已说话时优先在 ``tts`` 里正常回答；不要只返回 tools 而省略完整 JSON 对象）：\n"
-        '  - register_face: {"tool":"register_face","name":"姓名","face_id":1} 把当前画面 face_id 的人脸注册/更新到档案。'
-        "face_id 见每轮 user 消息「图像识别」；仅一张脸时可省略；多人须指定 face_id 或先向用户澄清。\n"
-        '  - register_voiceprint: {"tool":"register_voiceprint","name":"姓名"} 记住刚说话的人的声音（注册样本来自最近一次对话语音）。'
-        "用户说「记住我的声音/我叫xx」时必须调用；若返回样本不足的提示，请引导用户先对机器人说一句完整的话再重新注册。\n"
-        '  - memory_add: {"tool":"memory_add","text":"要记住的内容"} 新增长期记忆；'
-        'memory_delete: {"tool":"memory_delete","id":"记忆id"} 删除（id 见 system 中长期记忆方括号）。\n'
-        "  - schedule_task: cron 定时任务增删改查（北京时间东八区）。**用户要求定时/提醒时必须调用，禁止仅口头答应。**\n"
-        "    创建：{\"tool\":\"schedule_task\",\"action\":\"create\",\"task\":\"提醒喝水\","
-        "\"cron\":\"0 8 * * *\",\"task_kind\":\"recurring\"}\n"
-        "    · cron 为「分 时 日 月 周」五段：明天9点 → \"0 9 <明日日期> <明日月份> *\"；每天8点 → \"0 8 * * *\"\n"
-        "    · task_kind: once 一次性 / recurring 周期性；相对延迟用 delay_minutes 数字（「两分钟」→ 2），与 cron 二选一\n"
-        "    · 查询：{\"action\":\"list\"}；读取：{\"action\":\"get\",\"id\":\"…\"}；"
-        "修改：{\"action\":\"update\",\"id\":\"…\",\"cron\":\"…\",\"task\":\"…\",\"enabled\":true}；"
-        "删除：{\"action\":\"delete\",\"id\":\"…\"}。创建无需 session_id（自动绑定）。\n"
-        "    成功示例：第一轮 {\"tools\":[...创建...],\"tts\":\"\"} → 第二轮 {\"tools\":[],\"tts\":\"好，两分钟后提醒你喝水。\"}\n"
-        '  - webfetch: {"tool":"webfetch","url":"https://…"} 抓取网页文本；'
-        'websearch: {"tool":"websearch","query":"搜索词"} 网络搜索摘要\n'
-        '  - read: {"tool":"read","path":"notes.txt"} / write: {"tool":"write","path":"notes.txt","content":"…"} '
-        "读写本设备 tmp 目录（路径仅限 data/device/{device_id}/tmp/，禁止 .. 与绝对路径）。\n"
-        "  - session: 查询当前与最近对话 session（10 分钟无对话自动开新 session）\n"
-        '    当前：{"action":"current"}；列表：{"action":"list","limit":10}；详情：{"action":"get","session_id":"…"}（省略 id 读当前）\n'
-        '  - update_user_info: {"tool":"update_user_info","user_name":"姓名","chat_message":"新披露的事实短句"} '
-        "用户当面告知姓名/性别/年龄/家庭/住址/爱好等个人信息时调用，按人归档；随口闲聊不要存。\n"
-        '  - update_daily_task: {"tool":"update_daily_task","user_name":"姓名","message":"我跟小明说了早上好"} '
-        "主动问候/关心/表达思念开口前先记账到当日任务记录；message 用第一人称一句话，不用自带时间，服务端自动补。\n"
-    )
-
-
 def llm_quest_tasks_prompt_appendix(*, device_id: str | None = None) -> str:
     """「当前剧情任务」附录：绑定剧本（devices.quest_id）的 running 任务列表。
 
@@ -209,35 +175,6 @@ def llm_quest_tasks_prompt_appendix(*, device_id: str | None = None) -> str:
         lines.append(f"    成功条件：{t['success_condition']}｜失败条件：{t['failure_condition']}")
     return "\n".join(lines)
 
-
-def llm_quest_tools_prompt_appendix(*, device_id: str | None = None) -> str:
-    """「剧情任务工具」附录：get_tool_calls 契约格式化。
-
-    无可用任务 id（未绑定 / 剧本无 running）→ 空串：
-    不向 LLM 广告不可用工具，避免诱导编造 task_id。
-    """
-    if not device_id:
-        return ""
-    from deskbot_server.service.quest_service import QuestService
-
-    calls = QuestService().get_tool_calls(str(device_id))
-    if not calls or not any(c.get("available_task_ids") for c in calls):
-        return ""
-    lines = [f"剧情任务工具（可用任务 id：{', '.join(calls[0]['available_task_ids'])}）："]
-    for c in calls:
-        lines.append(f"  - {c['name']}：{c['description']}")
-        for pname, pdesc in (c.get("parameters") or {}).items():
-            lines.append(f"      {pname}：{pdesc}")
-    return "\n".join(lines)
-
-
-def llm_static_context_prompt_appendix(device_id: str | None = None) -> str:
-    """长期记忆 + 工具说明（图像/声音识别见每轮 user 消息）。"""
-    parts = [llm_memory_prompt_appendix(device_id), llm_tools_prompt_appendix()]
-    return "\n\n".join(p for p in parts if p)
-
-
-# ───────────────────── 用户社交情境（识别到已知的人时按人注入） ─────────────────────
 
 # 单轮 system prompt 最多注入的已知用户数 / 整段社交附录总字符上限
 USER_SOCIAL_MAX_USERS = 3
@@ -361,19 +298,6 @@ def llm_user_last_talk_prompt_appendix(*, device_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def _nose_xy(face: dict[str, Any]) -> tuple[float, float, int, int] | None:
-    w = int(face.get("image_w") or 0) or 320
-    h = int(face.get("image_h") or 0) or 240
-    for p in face.get("landmarks") or []:
-        if not isinstance(p, dict) or p.get("name") != "nose":
-            continue
-        try:
-            return float(p["x"]), float(p["y"]), w, h
-        except (TypeError, ValueError, KeyError):
-            continue
-    return None
-
-
 def _format_face_line(face: dict[str, Any]) -> str:
     fid = face.get("face_id")
     parts: list[str] = [f"faceid={fid if fid is not None else '?'}"]
@@ -391,12 +315,6 @@ def _format_face_line(face: dict[str, Any]) -> str:
             parts.append(f"人物识别置信度={float(identity_score):.2f}")
         except (TypeError, ValueError):
             pass
-    nose = _nose_xy(face)
-    if nose is not None:
-        nx, ny = int(round(nose[0])), int(round(nose[1]))
-        parts.append(f"脸中心位置=({nx},{ny})")
-    else:
-        parts.append("脸中心位置=未知")
     return ", ".join(parts)
 
 
@@ -415,27 +333,20 @@ def _sorted_faces_for_message(device_id: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _format_voice_line(name: str, score: float | None) -> str:
-    parts: list[str] = [f"name={name}"]
-    if score is not None:
-        try:
-            parts.append(f"说话人识别置信度={float(score):.2f}")
-        except (TypeError, ValueError):
-            pass
-    return ", ".join(parts)
+def format_voice_speaker_note(device_id: str | None) -> str | None:
+    """当前设备「最近一次 VAD」声纹判定的说话人注记（与喂给 LLM 的正文括号同源）。
 
-
-def format_sight_voice_text(device_id: str | None) -> str | None:
-    """当前设备「最近一次 VAD」声纹判定的调试文本（与喂给 LLM 的识别行一致）。
-
-    found → ``声音识别:\\n  name=…, 说话人识别置信度=…``；unknown →
-    ``声音识别:\\n  (未识别出已知说话人)``；识别中/引擎降级/未开启/无设备 → None。
-    供实验台用户气泡展示本轮「听到谁在说话」的识别结果。
+    found → ``声纹判定：{name}, 说话人识别置信度=…``；unknown（确实陌生）→
+    ``声纹判定：陌生人``；identifying → ``声纹判定中``；degraded → ``声纹识别不可用``；
+    无快照（引擎关闭/从未判定）/无设备 → None。
+    供实验台用户气泡展示本轮「听到谁在说话」，同时是 user 正文括号注记的唯一来源——
+    识别中与引擎降级≠陌生人，明示状态而不编造身份。
     """
     dev = str(device_id or "").strip()
     if not dev:
         return None
     from deskbot_server.service.application.voice_snapshot_cache import (
+        STATE_DEGRADED,
         STATE_FOUND,
         STATE_UNKNOWN,
         get_voice_snapshot,
@@ -447,14 +358,37 @@ def format_sight_voice_text(device_id: str | None) -> str | None:
     state = snap.get("state")
     if state == STATE_FOUND:
         name = str(snap.get("name") or "").strip() or "未知"
-        return "声音识别:\n  " + _format_voice_line(name, snap.get("score"))
+        score = snap.get("score")
+        try:
+            score_text = f", 说话人识别置信度={float(score):.2f}" if score is not None else ""
+        except (TypeError, ValueError):
+            score_text = ""
+        return f"声纹判定：{name}{score_text}"
     if state == STATE_UNKNOWN:
-        return "声音识别:\n  (未识别出已知说话人)"
-    return None  # identifying / degraded：本轮不给结论
+        return "声纹判定：陌生人"
+    if state == STATE_DEGRADED:
+        return "声纹识别不可用"
+    return "声纹判定中"  # identifying：判定进行中，尚不知身份
 
 
-def build_llm_user_message(user_text: str, *, device_id: str | None = None, device_context: str | None = None) -> str:
-    """按约定格式组装 LLM ``user`` 消息正文（图像识别 + 声音识别 + 用户正文）。
+def build_llm_user_message(
+    user_text: str,
+    *,
+    device_id: str | None = None,
+    device_context: str | None = None,
+    from_asr: bool = False,
+) -> str:
+    """按约定格式组装 LLM ``user`` 消息正文（图像识别块 + 用户正文行）。
+
+    - ``[图像识别:…]`` 块列出画面中的人脸（说话人以用户正文括号注记为准，
+      画面人物≠说话人）；
+    - ``from_asr=True``（语音轮）：用户正文由 ASR 转写而来而非直接文字，
+      正文行括号内固定标注来源，并把**声纹判定身份**绑到同一行
+      （例：``用户正文（语音转写，声纹判定：小明, 说话人识别置信度=0.87）：你好``），
+      让 agent 以声纹身份（真正说话人）优先于图像识别身份；判定中/引擎
+      不可用同样明示，不编造「陌生人」；
+    - ``from_asr=False``（网页文字/定时等直接文本）：不标语音转写、不带
+      声纹注记——上一条语音的判定结果不能错配到本轮直接输入的文字。
 
     ``device_context``（pb_ack 舵机角度）已不再注入：对话上下文只保留
     视觉/声纹两个感知段，不再给机器人传感器读数（为保持调用签名兼容仍接收）。
@@ -471,12 +405,6 @@ def build_llm_user_message(user_text: str, *, device_id: str | None = None, devi
             lines.append("   (未检测到人脸)")
     else:
         lines.append("   (无设备)")
-    voice_text = format_sight_voice_text(dev) if dev else None
-    if voice_text:
-        head, _, rest = voice_text.partition("\n")
-        lines.append(head)
-        if rest:
-            lines.append("   " + rest.lstrip())
     lines.append("]")
     body = (user_text or "").strip()
     if not body:
@@ -488,7 +416,13 @@ def build_llm_user_message(user_text: str, *, device_id: str | None = None, devi
             "勿编造「正在看你」或仅回复「看不到人」而忽略用户问题。）"
         )
     lines.append("")
-    lines.append(f"用户正文: {body}")
+    if from_asr:
+        # 语音轮：正文行括号标注「ASR 转写来源 + 声纹说话人身份」（与实验台同源）
+        note = format_voice_speaker_note(dev) if dev else None
+        note_text = "语音转写" + (f"，{note}" if note else "")
+        lines.append(f"用户正文（{note_text}）：{body}")
+    else:
+        lines.append(f"用户正文: {body}")
     return "\n".join(lines)
 
 
@@ -507,7 +441,7 @@ def llm_native_tools_directive(tool_names: list[str]) -> str:
     return (
         f"可用工具（原生 function calling）：本轮提供 {names}。"
         "需要时请直接发起函数调用；不需要或已完成时，仍按上方模板输出最终 JSON"
-        "（need_reply/tts/gesture/expression，tools 写 []）。不要再把工具写成 tools 数组文本。"
+        "（need_reply/tts/gesture/expression）。不要自行把工具调用写进 JSON 文本。"
     )
 
 
@@ -557,16 +491,6 @@ def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None, n
         time_tail += "\n" + lt
     base += "\n\n" + time_tail
     return base
-
-
-def llm_face_context_prompt_appendix(device_id: str | None = None) -> str:
-    """兼容旧调用名；人脸已移至 user 消息，此处仅记忆与工具。"""
-    return llm_static_context_prompt_appendix(device_id)
-
-
-def llm_recognized_faces_prompt_appendix(device_id: str | None = None) -> str:
-    """兼容旧调用名。"""
-    return llm_static_context_prompt_appendix(device_id)
 
 
 _LLM_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", re.IGNORECASE)
@@ -708,86 +632,13 @@ def _parse_llm_anim_items(raw: Any) -> list[Any]:
     return out
 
 
-def _parse_llm_tool_items(raw: Any) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    if isinstance(raw, dict):
-        raw = [raw]
-    if not isinstance(raw, (list, tuple)):
-        return out
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        # OpenAI 嵌套 function-call 形状：{"type":"function","function":{"name","arguments"}}。
-        # 部分模型在文本 JSON 通道里也会输出这种形状——解包并把 arguments 并入平铺键，
-        # 与执行器（execute_llm_tools 读平铺键）对齐；arguments 为 JSON 字符串时解析。
-        fn = item.get("function")
-        if isinstance(fn, dict):
-            row = dict(item)
-            row.pop("function", None)
-            row.pop("type", None)
-            row.pop("id", None)
-            tool = str(fn.get("name") or "").strip()
-            if not tool:
-                continue
-            row["tool"] = tool
-            args = fn.get("arguments")
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except (TypeError, ValueError):
-                    args = None
-            if isinstance(args, dict):
-                for k, v in args.items():
-                    row.setdefault(str(k), v)
-            out.append(row)
-            continue
-        tool = str(item.get("tool") or item.get("name") or "").strip()
-        if not tool:
-            continue
-        row = dict(item)
-        row["tool"] = tool
-        out.append(row)
-    return out
-
-
-def _coerce_llm_reply_object(obj: Any) -> dict[str, Any] | None:
-    """把 LLM 误输出的「仅 tools 数组 / 单条 tool 对象」规范为完整 JSON 对象。"""
-    if isinstance(obj, list):
-        tools = _parse_llm_tool_items(obj)
-        if tools:
-            return {"tools": tools, "tts": "", "need_reply": True}
-        return None
-    if not isinstance(obj, dict):
-        return None
-    if (obj.get("tool") or obj.get("name")) and "tools" not in obj:
-        tools = _parse_llm_tool_items([obj])
-        if tools:
-            out: dict[str, Any] = {"tools": tools}
-            for key in (
-                "need_reply",
-                "tts",
-                "reply",
-                "moves",
-                "anims",
-                "gesture",
-                "expression",
-                "volume",
-                "scenes",
-                "servo",
-            ):
-                if key in obj:
-                    out[key] = obj[key]
-            out.setdefault("tts", "")
-            return out
-    return obj
-
-
 def parse_llm_reply(raw: str) -> dict:
     """把 LLM 输出尝试解析为约定 JSON。
 
-    格式 ``{"need_reply", "tts", "volume?", "gesture", "expression", "tools": [...]}``；
+    格式 ``{"need_reply", "tts", "volume?", "gesture", "expression"}``；
     兼容旧名 ``moves`` / ``anims`` 与旧版 ``servo`` / ``scenes`` / ``reply`` 字段
     （新名存在时优先）。解析结果统一归一为内部键 ``moves`` / ``anims``。
+    工具调用只走原生 function calling（API tools 参数），envelope 内不再有 ``tools`` 键。
 
     失败时把整段文本当作 ``reply`` 返回，**不抛异常**。
     """
@@ -808,22 +659,13 @@ def parse_llm_reply(raw: str) -> dict:
         except ValueError:
             pass
 
-        try:
-            i = text.index("[")
-            j = text.rindex("]")
-            if j > i:
-                candidates.append(text[i : j + 1])
-        except ValueError:
-            pass
-
     for cand in candidates:
         try:
             obj = json.loads(cand)
         except (TypeError, ValueError):
             continue
-        coerced = _coerce_llm_reply_object(obj)
-        if isinstance(coerced, dict):
-            parsed = coerced
+        if isinstance(obj, dict):
+            parsed = obj
             break
 
     servo_out: list[Any] = []
@@ -841,7 +683,6 @@ def parse_llm_reply(raw: str) -> dict:
         # LLM 侧字段名：gesture / expression；兼容旧名 moves / anims（同时出现时旧名忽略）
         moves_out = _parse_llm_move_items(parsed.get("gesture", parsed.get("moves")))
         anims_out = _parse_llm_anim_items(parsed.get("expression", parsed.get("anims")))
-        tools_out = _parse_llm_tool_items(parsed.get("tools"))
         reply_tts = parsed.get("tts")
         reply_legacy = parsed.get("reply")
         reply: str
@@ -867,7 +708,6 @@ def parse_llm_reply(raw: str) -> dict:
             "reply": reply,
             "moves": moves_out,
             "anims": anims_out,
-            "tools": tools_out,
             "scenes": scenes_out,
             "servo": servo_out,
             "volume": vol,
@@ -880,7 +720,6 @@ def parse_llm_reply(raw: str) -> dict:
         "reply": text,
         "moves": [],
         "anims": [],
-        "tools": [],
         "scenes": [],
         "servo": [],
         "volume": None,
@@ -895,18 +734,13 @@ __all__ = [
     "build_llm_system_prompt",
     "estimate_text_tokens",
     "build_llm_user_message",
-    "llm_face_context_prompt_appendix",
     "llm_memory_prompt_appendix",
     "llm_pb_anims_prompt_appendix",
     "llm_pb_moves_prompt_appendix",
     "llm_pb_plan_prompt_appendix",
     "llm_pb_scenes_prompt_appendix",
     "llm_quest_tasks_prompt_appendix",
-    "llm_quest_tools_prompt_appendix",
-    "llm_recognized_faces_prompt_appendix",
     "llm_social_active_tasks_prompt_appendix",
-    "llm_static_context_prompt_appendix",
-    "llm_tools_prompt_appendix",
     "llm_user_last_talk_prompt_appendix",
     "llm_user_social_context_prompt_appendix",
     "parse_llm_reply",

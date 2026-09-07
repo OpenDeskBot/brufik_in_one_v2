@@ -13,14 +13,6 @@ from deskbot_server.pb.llm_plan import (
 )
 
 
-def test_parse_llm_reply_tool_only_array():
-    raw = '[{"tool":"set_camera_follow","mode":"follow"}]'
-    parsed = parse_llm_reply(raw)
-    assert parsed["json_ok"] is True
-    assert parsed["tools"] == [{"tool": "set_camera_follow", "mode": "follow"}]
-    assert parsed["reply"] == ""
-
-
 def test_parse_llm_reply_moves_anims():
     raw = (
         '{"need_reply": true, "tts": "你好", '
@@ -206,15 +198,6 @@ def test_merge_llm_plan_anim_rows_keeps_phoneme_mouth():
     assert merged[0]["anim"][0]["elements"]["eye_l"] == plan_el["eye_l"]
 
 
-def test_llm_face_context_prompt_appendix():
-    from deskbot_server.infrastructure.llm.utils import llm_static_context_prompt_appendix
-
-    text = llm_static_context_prompt_appendix("test_device_faces_prompt")
-    assert "register_face" in text
-    assert "长期记忆" in text
-    assert "face_id=" not in text
-
-
 def test_build_llm_user_message():
     from deskbot_server.infrastructure.llm.utils import build_llm_user_message
     from deskbot_server.service.application.face_snapshot_cache import update_device_faces
@@ -245,17 +228,21 @@ def test_build_llm_user_message():
     assert msg.startswith("[图像识别:")
     assert "faceid=1" in msg
     assert "name=小明" in msg
-    assert "脸中心位置=(200,140)" in msg
+    # 脸中心位置已从识别行移除（用户正文/实验台气泡同源展示不含坐标）
+    assert "脸中心位置" not in msg
     assert "用户正文: 你好" in msg
 
     silent = build_llm_user_message("", device_id=dev, device_context=ack)
     assert "用户正文: [未说话]" in silent
 
 
-def test_parse_llm_tools():
+def test_parse_llm_reply_ignores_tools_key():
+    """envelope 不再含 tools：模型幻觉输出的 tools 键被当作未知键忽略（不执行任何工具）。"""
     raw = '{"tts":"好","tools":[{"tool":"memory_add","text":"喜欢猫"}]}'
     parsed = parse_llm_reply(raw)
-    assert parsed["tools"] == [{"tool": "memory_add", "text": "喜欢猫"}]
+    assert parsed["json_ok"] is True
+    assert parsed["reply"] == "好"
+    assert "tools" not in parsed
 
 
 def test_parse_llm_reply_volume():

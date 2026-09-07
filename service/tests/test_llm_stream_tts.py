@@ -6,7 +6,7 @@ from deskbot_server.infrastructure.llm.runtime import JsonTtsStreamExtractor, tr
 
 
 def test_try_extract_tts_complete():
-    raw = json.dumps({"need_reply": True, "tts": "你好呀", "tools": []}, ensure_ascii=False)
+    raw = json.dumps({"need_reply": True, "tts": "你好呀"}, ensure_ascii=False)
     value, complete = try_extract_tts_from_partial_json(raw)
     assert complete is True
     assert value == "你好呀"
@@ -20,7 +20,7 @@ def test_try_extract_tts_partial():
 
 
 def test_try_extract_tts_empty_string():
-    value, complete = try_extract_tts_from_partial_json('{"tts":"","tools":[]}')
+    value, complete = try_extract_tts_from_partial_json('{"tts":""}')
     assert complete is True
     assert value == ""
 
@@ -39,7 +39,7 @@ def test_json_tts_stream_extractor_fires_once():
     assert ext.feed('{"tts":"你') is None
     assert ext.feed('好"}') == "你好"
     assert seen == ["你好"]
-    assert ext.feed(',"tools":[]') is None
+    assert ext.feed(',"extra":1}') is None  # 已触发后多余输入不再触发
 
 
 def test_json_tts_stream_extractor_skips_empty():

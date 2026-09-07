@@ -591,7 +591,6 @@ def llm_chat(request: Request, user: RequireUser):
                 "raw": parsed["raw"],
                 "moves": parsed.get("moves") or [],
                 "anims": parsed.get("anims") or [],
-                "tools": parsed.get("tools") or [],
                 "servo": parsed.get("servo") or [],
                 "scenes": parsed.get("scenes") or [],
                 "json_ok": parsed["json_ok"],

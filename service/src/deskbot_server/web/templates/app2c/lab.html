@@ -28,6 +28,7 @@
   .convo-details{margin-top:2px}
   .convo-details summary{cursor:pointer;font-size:11px;font-family:var(--mono);color:var(--accent)}
   .convo-details p{max-height:260px;overflow:auto}
+  .convo-details pre{max-height:320px;overflow:auto;margin:4px 0 0;padding:8px;border:var(--bw) solid var(--line);border-radius:6px;background:var(--panel);white-space:pre-wrap;word-break:break-all;font-family:var(--mono);font-size:11px;line-height:1.5}
   .convo-audio{display:block;width:100%;height:34px;margin:2px 0 4px;border:var(--bw) solid var(--line);border-radius:6px;background:var(--panel2)}
   .convo-face{display:block;max-width:220px;max-height:170px;border:var(--bw) solid var(--line);border-radius:6px;background:#111;margin:2px 0 4px}
   .hist-turn.live{opacity:.92}
@@ -61,7 +62,7 @@
       <div class="lab-head">
         <div>
           <b>实时对话</b>
-          <small>WS 实时订阅 + /api/pipeline_recent 初始加载（窗口 100 条，仅本会话内存保留）。只显示对话轮次；每条消息展示 ASR / LLM / TTS 的模型与耗时，LLM 多次调用逐条列出（输出过长可展开）。用户气泡内含本轮 System Prompt 与机器人看到的画面 / 图像识别 / 声纹识别（均可折叠）；ASR 原声与 TTS 合成音可回放（媒体仅内存保留，过期后自动隐藏）。</small>
+          <small>WS 实时订阅 + /api/pipeline_recent 初始加载（窗口 100 条，仅本会话内存保留）。只显示对话轮次；每条消息展示 ASR / LLM / TTS 的模型与耗时（人脸 / 声纹识别单独显示识别耗时），LLM 多次调用逐条列出（输出过长可展开，每条默认折叠展示引擎原始返回 JSON）。用户气泡内含本轮 System Prompt 与机器人看到的画面 / 图像识别 / 声纹识别（均可折叠）；ASR 原声与 TTS 合成音可回放（媒体仅内存保留，过期后自动隐藏）。</small>
         </div>
         <span class="ws-status" :class="{on: pipeline.status==='connected'}">[[ wsLabelText() ]]</span>
       </div>
@@ -86,6 +87,7 @@
                 <div class="convo-call-head">
                   <span class="convo-chip">🧑 视觉</span>
                   <span v-if="t.face_sight" class="convo-chip dim">图像识别</span>
+                  <span v-if="t.face_ms !== null && t.face_ms !== undefined" class="convo-chip dim">识别耗时 [[ msText(t.face_ms) ]]</span>
                   <span v-if="t.face_img" class="convo-chip dim">最近一帧</span>
                 </div>
                 <img v-if="t.face_img" v-show="!t.imgFail" class="convo-face" :src="mediaSrc(t,'face')" @error="onAudioFail(t,'face')" alt="该轮人脸画面">
@@ -95,6 +97,7 @@
                 <div class="convo-call-head">
                   <span class="convo-chip">🎙 声音</span>
                   <span class="convo-chip dim">声纹识别</span>
+                  <span v-if="t.voice_ms !== null && t.voice_ms !== undefined" class="convo-chip dim">识别耗时 [[ msText(t.voice_ms) ]]</span>
                 </div>
                 <p class="hist-text convo-call-text">[[ t.voice_sight ]]</p>
               </div>
@@ -126,6 +129,10 @@
                       <p class="hist-text">[[ call.text ]]</p>
                     </details>
                   </template>
+                  <details v-if="call.raw" class="convo-details">
+                    <summary>🧾 原始返回（引擎原文 JSON<span v-if="call.raw_truncated"> · 已截断</span>）</summary>
+                    <pre>[[ prettyRaw(call.raw) ]]</pre>
+                  </details>
                 </div>
               </div>
               <div v-if="t.tools && t.tools.length" class="hist-tools">
@@ -308,6 +315,8 @@ createApp({
       if(evt.face_img!==undefined) row.face_img=evt.face_img;
       if(evt.face_sight!==undefined) row.face_sight=evt.face_sight;
       if(evt.voice_sight!==undefined) row.voice_sight=evt.voice_sight;
+      if(evt.face_ms!==undefined) row.face_ms=evt.face_ms;
+      if(evt.voice_ms!==undefined) row.voice_ms=evt.voice_ms;
       if(evt.system_prompt!==undefined) row.system_prompt=evt.system_prompt;
       if(evt.source!==undefined) row.source=evt.source;
       this.convo.rows[rid]=row;
@@ -337,6 +346,8 @@ createApp({
         if(evt.face_img!==undefined) row.face_img=evt.face_img;
         if(evt.face_sight!==undefined) row.face_sight=evt.face_sight;
         if(evt.voice_sight!==undefined) row.voice_sight=evt.voice_sight;
+        if(evt.face_ms!==undefined) row.face_ms=evt.face_ms;
+        if(evt.voice_ms!==undefined) row.voice_ms=evt.voice_ms;
         if(evt.system_prompt!==undefined) row.system_prompt=evt.system_prompt;
         if(evt.source!==undefined) row.source=evt.source;
         if(evt.received_ts) row.received_ts=evt.received_ts;
@@ -362,6 +373,18 @@ createApp({
     llmCallPreview(call){
       const txt=(call && call.text) || '';
       return txt.length>180 ? txt.slice(0,180) : txt;
+    },
+    // 识别耗时固定以 ms 显示（人脸/声纹识别），不套用 fmtMs 的 s 换算
+    msText(v){
+      if(v===null || v===undefined) return '-';
+      return Math.round(Number(v))+'ms';
+    },
+    // 引擎原始返回：合法 JSON 文本则美化缩进展示，否则原样显示
+    prettyRaw(raw){
+      if(!raw) return '';
+      if(typeof raw !== 'string') raw=JSON.stringify(raw, null, 2);
+      try{ return JSON.stringify(JSON.parse(raw), null, 2); }
+      catch(_e){ return raw; }
     },
     mediaSrc(t, kind){
       return this.proxyPath('/api/pipeline_audio', {request_id: t && t.request_id, kind});

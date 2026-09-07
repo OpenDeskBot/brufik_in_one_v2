@@ -987,7 +987,7 @@ class DeviceWsService(metaclass=SingletonMeta):
         request_id = uuid.uuid4().hex[:16]
         sample_rate = uplink_sr or 16000
         # 声纹识别与 ASR 并行：每次 VAD 判定通过即对 utterance 做说话人识别（写快照，
-        # 供本轮 LLM user 消息「声音识别」段读取）；任何装配异常都不阻塞 ASR 轮
+        # 供本轮 LLM user 正文「语音转写，声纹判定：…」括号注记读取）；任何装配异常都不阻塞 ASR 轮
         vpr_task = None
         vpr_wait_budget_s = 0.0
         try:

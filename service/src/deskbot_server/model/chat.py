@@ -14,7 +14,8 @@ class LlmTurnResult:
     tool_results: list[Any] = field(default_factory=list)
     answer: str = ""
     system_prompt: str | None = None
-    # 逐次 LLM 调用明细：{n, model, ms, text, truncated}（工具轮会多次）
+    # 逐次 LLM 调用明细：{n, model, ms, text, truncated, raw}（工具轮会多次；
+    # raw 为该次调用引擎原始返回 JSON 文本，实验台默认折叠展示）
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -44,8 +45,12 @@ class ChatTurnResult:
     system_prompt: str | None = None
     # 本轮语音输入时的图像识别文本（人脸行；仅语音轮有值）
     face_sight: str | None = None
-    # 本轮语音输入时的声纹识别文本（说话人行；仅语音轮有值）
+    # 本轮语音输入时的声纹判定注记（与 user 正文括号注记同源：姓名/陌生人/判定中/不可用；仅语音轮有值）
     voice_sight: str | None = None
+    # 人脸识别耗时（ms，与 face_sight 同帧/同刻采样）；无展示行时为 None
+    face_ms: int | None = None
+    # 声纹识别耗时（ms，与 voice_sight 同一识别终态）；无展示行时为 None
+    voice_ms: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

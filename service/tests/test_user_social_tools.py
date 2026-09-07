@@ -102,25 +102,6 @@ def test_tools_require_device_id():
     assert out[0]["ok"] is False and "device_id" in out[0]["error"]
 
 
-def test_parse_unwraps_openai_nested_function_shape(data_dir):
-    """回归：模型在文本 JSON 里输出 OpenAI 嵌套 function-call 形状（真实事故现场）。"""
-    from deskbot_server.infrastructure.llm.utils import parse_llm_reply
-
-    raw = (
-        '{"need_reply": true, "tts": "好嘞小明，海淀区我记下啦。", "tools": ['
-        '{"type": "function", "function": {"name": "update_user_info", '
-        '"arguments": {"user": "小明", "location": "北京市海淀区"}}}]}'
-    )
-    parsed = parse_llm_reply(raw)
-    assert parsed["json_ok"] is True
-    tools = parsed["tools"]
-    assert len(tools) == 1
-    row = tools[0]
-    assert row["tool"] == "update_user_info"
-    assert row["user"] == "小明" and row["location"] == "北京市海淀区"  # arguments 并入平铺键
-    assert "function" not in row and "type" not in row
-
-
 def test_executor_tolerates_loose_arg_keys(data_dir):
     """模型用散键/近似键调用时仍能归档（user/location/无 chat_message）。"""
     from deskbot_server.service.application.llm_tool_runner import execute_llm_tools

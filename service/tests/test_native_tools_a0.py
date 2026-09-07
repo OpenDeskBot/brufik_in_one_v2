@@ -11,7 +11,6 @@ from deskbot_server.infrastructure.llm.runtime import (
     _messages_to_ark_input,
     _tool_calls_from_ark_response,
     _tool_calls_from_openai_response,
-    native_tools_enabled,
 )
 from deskbot_server.infrastructure.llm.tool_schema import (
     NATIVE_TOOL_NAMES_BATCH1,
@@ -129,47 +128,6 @@ def test_ark_input_maps_function_call_items():
     assert out[0] == {"role": "user", "content": [{"type": "input_text", "text": "记住"}]}
     assert out[1] == {"type": "function_call", "call_id": "c1", "name": "memory_add", "arguments": '{"text": "猫"}'}
     assert out[2] == {"type": "function_call_output", "call_id": "c1", "output": '{"ok": true}'}
-
-
-def test_native_tools_flag_default_off(monkeypatch):
-    monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime.load_config", lambda: {"llm": {}})
-    assert native_tools_enabled() is False
-    assert native_tools_enabled("dev_none") is False
-
-
-def test_native_tools_flag_device_param_wins(tmp_path, monkeypatch):
-    """设备 llm_param.native_tools 优先于 config 回退（真实 DB 链路）。"""
-    import sqlite3
-
-    import deskbot_server.infrastructure.llm.runtime as rt
-
-    db = tmp_path / "flag.db"
-    con = sqlite3.connect(db)
-    con.execute(
-        "CREATE TABLE devices (id TEXT PRIMARY KEY, device_id TEXT, owner_user_id TEXT, "
-        "asr_provider TEXT NOT NULL DEFAULT 'funasr', tts_provider TEXT NOT NULL DEFAULT 'moss-tts-nano', "
-        "llm_provider TEXT NOT NULL DEFAULT '', llm_param TEXT)"
-    )
-    con.execute(
-        "INSERT INTO devices (id, device_id, owner_user_id) VALUES ('d1', 'dev_a', 'u1')"
-    )
-    con.commit()
-    con.close()
-    monkeypatch.setenv("DESKBOT_DB_PATH", str(db))
-
-    # dao 层用真实 sqlite 文件路径，绕过 engine：直接 monkeypatch dao 的 get_llm_param 读取实现太重；
-    # 这里验证开关解析逻辑：设备参数 true → True；false → False；未配置 → config 回退
-    import deskbot_server.dao.device_mapper as dm
-
-    def _param(did):
-        values = {"dev_a": {"native_tools": True}, "dev_b": {"native_tools": False}}
-        return values.get(did, {})
-
-    monkeypatch.setattr(dm, "get_llm_param", _param)
-    monkeypatch.setattr(rt, "load_config", lambda: {"llm": {"native_tools": True}})
-    assert native_tools_enabled("dev_a") is True
-    assert native_tools_enabled("dev_b") is False
-    assert native_tools_enabled("dev_unset") is True  # 设备未配置 → config True
 
 
 def _make_settings():
