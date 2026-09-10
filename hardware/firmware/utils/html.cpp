@@ -324,36 +324,115 @@ const char index_html[] PROGMEM = R"rawliteral(
         emptyEl.classList.add('hidden');
       }
 
-      rows.forEach(row => {
-        const item = document.createElement('div');
-        item.className = 'network' + (row.id === active ? ' on' : '');
-        item.style.cursor = 'default';
-        const text = document.createElement('span');
-        text.innerHTML = '<b>' + row.label + '</b><br><small>' + row.url + '</small>';
-        item.appendChild(text);
+      rows.forEach(row => listEl.appendChild(buildWsServerRow(row, active)));
+    }
 
-        const actions = document.createElement('span');
-        actions.style.display = 'flex';
-        actions.style.gap = '8px';
+    function buildWsServerRow(row, active) {
+      const item = document.createElement('div');
+      item.className = 'network' + (row.id === active ? ' on' : '');
+      item.style.cursor = 'default';
+      const text = document.createElement('span');
+      text.innerHTML = '<b>' + row.label + '</b><br><small>' + row.url + '</small>';
+      item.appendChild(text);
 
-        const useBtn = document.createElement('button');
-        useBtn.type = 'button';
-        useBtn.textContent = row.id === active ? '当前' : '使用';
-        useBtn.disabled = row.id === active;
-        useBtn.onclick = () => selectWsServer(row.id);
-        actions.appendChild(useBtn);
+      const actions = document.createElement('span');
+      actions.style.display = 'flex';
+      actions.style.gap = '8px';
 
-        if (row.id !== 'builtin') {
-          const delBtn = document.createElement('button');
-          delBtn.type = 'button';
-          delBtn.textContent = '删除';
-          delBtn.onclick = () => deleteWsServer(row.id);
-          actions.appendChild(delBtn);
+      const useBtn = document.createElement('button');
+      useBtn.type = 'button';
+      useBtn.textContent = row.id === active ? '当前' : '使用';
+      useBtn.disabled = row.id === active;
+      useBtn.onclick = () => selectWsServer(row.id);
+      actions.appendChild(useBtn);
+
+      if (row.id !== 'builtin') {
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.textContent = '编辑';
+        editBtn.onclick = () => editWsServerRow(item, row);
+        actions.appendChild(editBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.textContent = '删除';
+        delBtn.onclick = () => deleteWsServer(row.id);
+        actions.appendChild(delBtn);
+      }
+
+      item.appendChild(actions);
+      return item;
+    }
+
+    function editWsServerRow(item, row) {
+      item.innerHTML = '';
+      item.className = 'network';
+      item.style.cursor = 'default';
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = row.url;
+      input.style.width = 'auto';
+      input.style.flex = '1';
+      input.style.minWidth = '0';
+      input.style.marginRight = '8px';
+
+      const actions = document.createElement('span');
+      actions.style.display = 'flex';
+      actions.style.gap = '8px';
+
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.className = 'primary';
+      saveBtn.textContent = '保存';
+      saveBtn.onclick = () => updateWsServer(row.id, input.value.trim(), saveBtn, input);
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = '取消';
+      cancelBtn.onclick = () => loadDeviceConfig();
+
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          saveBtn.click();
         }
-
-        item.appendChild(actions);
-        listEl.appendChild(item);
       });
+
+      actions.appendChild(saveBtn);
+      actions.appendChild(cancelBtn);
+      item.appendChild(input);
+      item.appendChild(actions);
+      input.focus();
+      input.select();
+    }
+
+    function updateWsServer(id, url, btn, input) {
+      if (!url) {
+        setConfigMessage('请输入云服务器地址。', 'err');
+        input.focus();
+        return;
+      }
+      btn.disabled = true;
+      fetch('/device-config/ws-servers/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'id=' + encodeURIComponent(id) + '&url=' + encodeURIComponent(url)
+      })
+        .then(r => r.json())
+        .then(data => {
+          btn.disabled = false;
+          if (data.success) {
+            setConfigMessage('云服务器地址已更新，继续启动后生效。', 'ok');
+            loadDeviceConfig();
+          } else {
+            setConfigMessage('更新失败: ' + (data.message || '未知错误'), 'err');
+          }
+        })
+        .catch(err => {
+          btn.disabled = false;
+          setConfigMessage('更新失败: ' + err.message, 'err');
+        });
     }
 
     function addWsServer() {

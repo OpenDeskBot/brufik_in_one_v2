@@ -24,6 +24,29 @@ void send_err(int code, const char* msg) {
             String("{\"success\":false,\"message\":\"") + json_escape(String(msg)) + "\"}");
 }
 
+/** 读取并校验 url 表单参数（去空格 + 长度 + ws:// 协议）；校验失败时已发出错误响应。 */
+bool read_valid_ws_url(String& out) {
+  constexpr size_t kMaxUrlLen = sizeof(NvsWsServerEntry::url) - 1;
+  out = g_wifi_server.arg("url");
+  out.trim();
+  if (out.length() == 0) {
+    send_err(400, "URL 不能为空");
+    return false;
+  }
+  /* NVS 存得下但读回时会被判为非法，表现为静默回退内置服务器，故这里先拦下。 */
+  if (out.length() > kMaxUrlLen) {
+    send_err(400,
+             (String("URL 过长（上限 ") + String((unsigned)kMaxUrlLen) + " 字符）").c_str());
+    return false;
+  }
+  WsProto parsed;
+  if (!parse_ws_proto(out.c_str(), parsed)) {
+    send_err(400, "URL 格式须为 ws:// 或 wss://");
+    return false;
+  }
+  return true;
+}
+
 void ensure_config_ap_running() {
   wifi_build_ap_ssid();
   const wifi_mode_t mode = WiFi.getMode();
@@ -201,15 +224,8 @@ void wifi_portal_setup_http(void) {
   });
 
   g_wifi_server.on("/device-config/ws-servers", HTTP_POST, []() {
-    String url = g_wifi_server.arg("url");
-    url.trim();
-    if (url.length() == 0) {
-      send_err(400, "URL 不能为空");
-      return;
-    }
-    WsProto parsed;
-    if (!parse_ws_proto(url.c_str(), parsed)) {
-      send_err(400, "URL 格式须为 ws:// 或 wss://");
+    String url;
+    if (!read_valid_ws_url(url)) {
       return;
     }
     char new_id[8];
@@ -218,6 +234,24 @@ void wifi_portal_setup_http(void) {
       return;
     }
     send_ok_body("\"id\":\"" + json_escape(String(new_id)) + "\"");
+  });
+
+  g_wifi_server.on("/device-config/ws-servers/update", HTTP_POST, []() {
+    String id = g_wifi_server.arg("id");
+    id.trim();
+    if (id.length() == 0 || id == "builtin") {
+      send_err(400, "内置服务器不可修改");
+      return;
+    }
+    String url;
+    if (!read_valid_ws_url(url)) {
+      return;
+    }
+    if (!nvs_ws_update_custom(id.c_str(), url.c_str())) {
+      send_err(404, "未找到该服务器");
+      return;
+    }
+    send_ok();
   });
 
   g_wifi_server.on("/device-config/ws-servers/select", HTTP_POST, []() {
