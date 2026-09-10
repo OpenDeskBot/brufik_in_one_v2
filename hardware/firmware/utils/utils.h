@@ -73,6 +73,9 @@ struct WsProto {
 /** 解析 ``ws://host[:port][/path]`` 或 ``wss://...`` 到 ``out``。 */
 bool parse_ws_proto(const char* str, WsProto& out);
 
+/** 拼出 ``[path_prefix]/<endpoint>?device_id=&version=``。endpoint 可带或不带前导 ``/``。 */
+String build_device_ws_path(const WsProto& target, const char* endpoint);
+
 /**
  * HTTP(S) GET 整包下载到 PSRAM（失败回落内部已释放）。
  * 成功时 *out_buf 由调用方负责 heap_caps_free（caps=MALLOC_CAP_SPIRAM）。

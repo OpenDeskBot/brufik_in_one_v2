@@ -2,6 +2,7 @@
 
 #include "deskbot_config.h"
 #include "logger.h"
+#include "utils/utils.h"
 /* 仅取 SAMPLE_RATE（16000）常量。 */
 #include "speaker.h"
 
@@ -1125,7 +1126,7 @@ bool audio_frontend_setup() {
    */
 
   TaskHandle_t feed_created = nullptr;
-  const BaseType_t feed_task_rc = xTaskCreatePinnedToCore(
+  const BaseType_t feed_task_rc = utils_task_create_pinned(
       audio_frontend_feed_task,
       "esp_sr_feed",
       8192,
@@ -1141,7 +1142,7 @@ bool audio_frontend_setup() {
   s_feed_task = feed_created;
 
   TaskHandle_t fetch_created = nullptr;
-  const BaseType_t fetch_task_rc = xTaskCreatePinnedToCore(
+  const BaseType_t fetch_task_rc = utils_task_create_pinned(
       audio_frontend_fetch_task,
       "esp_sr_fetch",
       8192,

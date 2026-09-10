@@ -12,11 +12,10 @@
 #error WEBSOCKETS_MAX_DATA_SIZE must be >= 200KiB; set -DWEBSOCKETS_MAX_DATA_SIZE in platformio.ini
 #endif
 
-/** TX 类型：state / audio / camera 经 FIFO 发送。 */
+/** 实时链路 TX 类型：state / audio 经 FIFO 发送。相机使用独立连接。 */
 enum class WsTxType : uint8_t {
   kState = 0,   // pb_ack / boot_connect / audio_cancel
   kAudio = 1,   // Opus batch / flush
-  kCamera = 2,  // JPEG frame (已打包 u32be+json+bin)
 };
 
 /** setup 时从 NVS 解析的服务器地址。 */
@@ -67,8 +66,3 @@ bool ws_transport_drain_tx(void);
 
 bool ws_transport_enqueue_state(const char* json);
 bool ws_transport_enqueue_audio(const char* json, const uint8_t* bin, size_t bin_len);
-/**
- * 入队已打包的 camera 帧（u32be+json+bin）。
- * 接管 packed 所有权：成功由 TX 队列释放；失败立即 free。
- */
-bool ws_transport_enqueue_camera(uint8_t* packed, size_t packed_len);

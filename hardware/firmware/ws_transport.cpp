@@ -38,6 +38,7 @@ static uint32_t s_ws_session = 0;
 static bool s_setup_ok = false;
 static QueueHandle_t s_tx_q = nullptr;
 static TaskHandle_t s_task = nullptr;
+static std::atomic<bool> s_disconnect_requested{false};
 static bool s_boot_connect_sent = false;
 static unsigned long s_connect_attempt_ms = 0;
 static unsigned long s_last_reconnect_ms = 0;
@@ -45,7 +46,7 @@ static uint8_t s_connect_fail_count = 0;
 static constexpr unsigned long RECONNECT_MIN_MS = 500;
 static constexpr unsigned long RECONNECT_MAX_MS = 60000;
 
-static constexpr UBaseType_t kTxDepth = 64;
+static constexpr UBaseType_t kTxDepth = 32;
 /* WebSockets 收发、ArduinoJson 解析都在 ws_transport 任务。 */
 static constexpr uint32_t kTaskStack = 32 * 1024;
 /* 与 mic(6) 同级：持续上行时 drain 不能被 mic encode 饿死。 */
@@ -113,6 +114,9 @@ static bool build_tx_item(WsTxType type, const char* json, const uint8_t* bin, s
 
 static void task_loop_ws_transport(void* /*arg*/) {
   for (;;) {
+    if (s_disconnect_requested.exchange(false, std::memory_order_acq_rel)) {
+      ws_client.disconnect();
+    }
     ws_transport_ensure_connected();
     ws_client.loop();
     const bool sent = ws_transport_drain_tx();
@@ -146,12 +150,7 @@ bool setup_ws_transport(void) {
     (void)nvs_ws_get_custom_url(active, base_url, sizeof(base_url));
   }
   if (base_url[0] != '\0' && parse_ws_proto(base_url, server_ws_proto)) {
-    if (server_ws_proto.path[0] == '\0') {
-      server_ws_path = String("/asr_chat?device_id=") + get_device_id() + "&version=" + VERSION;
-    } else {
-      server_ws_path = String(server_ws_proto.path) + "/asr_chat?device_id=" + get_device_id() +
-                       "&version=" + VERSION;
-    }
+    server_ws_path = build_device_ws_path(server_ws_proto, "/asr_chat");
     log_info("[WS_TRANSPORT] server %s://%s:%u path=%s", server_ws_proto.is_wss ? "wss" : "ws",
              server_ws_proto.host, (unsigned)server_ws_proto.port, server_ws_path.c_str());
   } else {
@@ -333,7 +332,7 @@ bool ws_transport_send(const uint8_t* data, size_t len) {
 
 void ws_transport_on_link_down(const char* why) {
   log_warn("[WS_TRANSPORT] wifi down (%s)", why ? why : "?");
-  ws_client.disconnect();
+  s_disconnect_requested.store(true, std::memory_order_release);
   ws_state.store(static_cast<int>(WsState::kDisconnected), std::memory_order_release);
   s_app_ready.store(false, std::memory_order_release);
   s_connect_attempt_ms = 0;
@@ -374,31 +373,14 @@ bool ws_transport_enqueue_audio(const char* json, const uint8_t* bin, size_t bin
   return enqueue_tx(&item);
 }
 
-bool ws_transport_enqueue_camera(uint8_t* packed, size_t packed_len) {
-  if (!packed || packed_len == 0) {
-    free(packed);
-    return false;
-  }
-  if (!ws_transport_ok() || !ws_transport_ready()) {
-    free(packed);
-    return false;
-  }
-  WsTxItem item{};
-  item.type = WsTxType::kCamera;
-  item.packed = packed;
-  item.packed_len = packed_len;
-  return enqueue_tx(&item);
-}
-
 bool ws_transport_drain_tx(void) {
   if (!ws_transport_ok()) {
     clear_tx_queue();
     return false;
   }
 
-  bool sent_any = false;
   WsTxItem item{};
-  while (xQueueReceive(s_tx_q, &item, 0) == pdTRUE) {
+  if (xQueueReceive(s_tx_q, &item, 0) == pdTRUE) {
     const uint32_t t0 = millis();
     const size_t plen = item.packed_len;
     const bool ok = ws_transport_send(item.packed, plen);
@@ -409,13 +391,10 @@ bool ws_transport_drain_tx(void) {
       if (xQueueSendToFront(s_tx_q, &item, 0) != pdTRUE) {
         ws_tx_free_item(&item);
       }
-      return sent_any;
-    }
-    if (item.type == WsTxType::kCamera) {
-      log_warn("[WS_TX] camera sent len=%u send_ms=%u", (unsigned)plen, (unsigned)send_ms);
+      return false;
     }
     ws_tx_free_item(&item);
-    sent_any = true;
+    return true;
   }
-  return sent_any;
+  return false;
 }

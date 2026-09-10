@@ -9,7 +9,7 @@ bool setup_camera();
 /** 释放相机驱动（幂等）；用于启动诊断后的二次 init。 */
 void camera_deinit();
 
-/** 创建 camera_task：按间隔抓帧并入队 ws_transport TX。 */
+/** 创建 camera_task：按自适应间隔抓帧并提交给独立 camera WS。 */
 void task_setup_camera();
 
 /**

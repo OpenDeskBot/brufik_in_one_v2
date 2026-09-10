@@ -262,6 +262,25 @@ bool parse_ws_proto(const char* str, WsProto& out) {
   return out.host[0] != '\0';
 }
 
+String build_device_ws_path(const WsProto& target, const char* endpoint) {
+  String path(target.path);
+  while (path.endsWith("/")) {
+    path.remove(path.length() - 1);
+  }
+  if (!endpoint || endpoint[0] == '\0') {
+    return String();
+  }
+  if (endpoint[0] != '/') {
+    path += '/';
+  }
+  path += endpoint;
+  path += "?device_id=";
+  path += get_device_id();
+  path += "&version=";
+  path += VERSION;
+  return path;
+}
+
 bool utils_http_get_binary(const char* url, uint8_t** out_buf, size_t* out_len) {
   if (out_buf) {
     *out_buf = nullptr;
@@ -375,6 +394,7 @@ BaseType_t utils_task_create_pinned(TaskFunction_t fn, const char* name, uint32_
       if (out_handle) {
         *out_handle = handle;
       }
+      log_warn("[TASK] %s stack=%uB memory=PSRAM", name, (unsigned)stack_bytes);
       return pdPASS;
     }
   }
@@ -385,6 +405,8 @@ BaseType_t utils_task_create_pinned(TaskFunction_t fn, const char* name, uint32_
     heap_caps_free(tcb);
   }
   /* 回落动态创建（可能仍走内部堆）。 */
+  log_warn("[TASK] %s PSRAM stack unavailable; fallback=internal stack=%uB", name,
+           (unsigned)stack_bytes);
   return xTaskCreatePinnedToCore(fn, name, stack_bytes, arg, prio, out_handle, core_id);
 }
 

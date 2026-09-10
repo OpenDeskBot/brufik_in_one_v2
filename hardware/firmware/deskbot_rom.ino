@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include "display_panel.h"
 #include "camera.h"
+#include "camera_ws_transport.h"
 #include "deskbot_config.h"
 #include "wifi_provision.h"
 #include "display.h"
@@ -22,15 +23,17 @@
 /* loopTask 只做 cmd / wifi maintain / yield；Opus encode 在 mic、decode 在 pb_runtime。
  * 覆盖弱符号 getArduinoLoopTaskStackSize（platformio.ini 另有 -DARDUINO_LOOP_STACK_SIZE）。 */
 size_t getArduinoLoopTaskStackSize() {
-  return 24 * 1024;
+  return 8 * 1024;
 }
 
 static void on_wifi_link_down() {
   ws_transport_on_link_down("wifi lost");
+  camera_ws_transport_on_link_down();
 }
 
 static void on_wifi_link_up() {
   ws_transport_on_link_up();
+  camera_ws_transport_on_link_up();
 }
 
 void setup() {
@@ -123,7 +126,11 @@ void setup() {
   }
 
   if (s_camera_ok) {
-    task_setup_camera();
+    if (setup_camera_ws_transport() && task_setup_camera_ws_transport()) {
+      task_setup_camera();
+    } else {
+      log_error("[BOOT] camera websocket startup failed");
+    }
   } else {
     log_warn("[BOOT] Skipping camera uplink (no camera)");
   }

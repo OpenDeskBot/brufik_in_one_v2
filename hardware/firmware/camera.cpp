@@ -1,17 +1,16 @@
 #include "camera.h"
 
+#include "camera_ws_transport.h"
 #include "deskbot_config.h"
 #include "head.h"
 #include "logger.h"
 #include "speaker.h"
 #include "utils/utils.h"
-#include "ws_transport.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include "esp_camera.h"
 #include "esp_heap_caps.h"
-#include <atomic>
 #include <stdlib.h>
 #include <string.h>
 #include <freertos/FreeRTOS.h>
@@ -59,8 +58,7 @@ static constexpr uint8_t kFbCount = 1;
 static bool s_camera_ok = false;
 static bool s_hw_inited = false;
 static bool s_task_ready = false;
-/* 固定 2 FPS（500ms）：XGA 质量 10 帧体 ~50KB，2fps 仅 ~0.8Mbps，链路余量充足。 */
-static std::atomic<uint32_t> s_interval_ms{500u};
+/* 从 2 FPS 起步；独立 camera WS 根据真实发送耗时在 2/1/0.5/0.25 FPS 间调节。 */
 static uint32_t s_last_capture_ms = 0;
 static uint32_t s_last_fb_null_log_ms = 0;
 static uint32_t s_seq = 0;
@@ -241,9 +239,9 @@ static bool camera_init_hw(void) {
 
 static void task_loop_camera(void* /*arg*/) {
   for (;;) {
-    const uint32_t interval = s_interval_ms.load(std::memory_order_relaxed);
+    const uint32_t interval = camera_ws_capture_interval_ms();
     /* WS 未就绪时不抓不压：避免断线期间 JPEG 编码继续吃内部 heap，拖垮重连。 */
-    if (!ws_transport_ok() || !ws_transport_ready()) {
+    if (!camera_ws_transport_ready()) {
       if (s_ws_was_ready) {
         s_ws_was_ready = false;
         log_warn("[CAMERA] ws down -> upload paused");
@@ -258,7 +256,7 @@ static void task_loop_camera(void* /*arg*/) {
     uint8_t* packed = nullptr;
     size_t packed_len = 0;
     if (camera_try_capture_packed(&packed, &packed_len)) {
-      if (!ws_transport_enqueue_camera(packed, packed_len)) {
+      if (!camera_ws_submit_latest(packed, packed_len)) {
         const uint32_t now = millis();
         if (s_last_enq_fail_log_ms == 0 || (uint32_t)(now - s_last_enq_fail_log_ms) >= 5000u) {
           s_last_enq_fail_log_ms = now;
@@ -310,7 +308,7 @@ void task_setup_camera() {
     return;
   }
   log_warn("[CAMERA] task OK stack=%u prio=%u interval=%ums", (unsigned)kCameraTaskStack,
-           (unsigned)kCameraTaskPrio, (unsigned)s_interval_ms.load(std::memory_order_relaxed));
+           (unsigned)kCameraTaskPrio, (unsigned)camera_ws_capture_interval_ms());
 }
 
 bool camera_try_capture_packed(uint8_t** packed, size_t* packed_len) {
@@ -324,7 +322,7 @@ bool camera_try_capture_packed(uint8_t** packed, size_t* packed_len) {
   }
 
   const uint32_t now = millis();
-  const uint32_t interval = s_interval_ms.load(std::memory_order_relaxed);
+  const uint32_t interval = camera_ws_capture_interval_ms();
   if ((uint32_t)(now - s_last_capture_ms) < interval) {
     return false;
   }
