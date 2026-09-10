@@ -193,6 +193,14 @@ def delete_voice_profile(profile_id: int, *, device_id: str | None = None) -> bo
     return True
 
 
+def delete_device_profiles(device_id: str) -> int:
+    """删除设备全部声纹档案并失效缓存（设备清除数据用）。"""
+    count = int(mapper.delete_by_device(str(device_id)) or 0)
+    if count:
+        _bump_version()
+    return count
+
+
 def update_voice_profile_name(
     profile_id: int, name: str, *, device_id: str | None = None
 ) -> dict[str, Any] | None:

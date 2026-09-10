@@ -17,6 +17,11 @@ _DEVICE_ID_SAFE = re.compile(r"^[A-Za-z0-9._-]+$")
 # 所有设备共用 ``data/global/``，不再复制到设备目录。
 SHARED_CONFIG_NAMES = frozenset({"deskbot-face.json", "camera_face.json", LLM_SYSTEM_FILENAME})
 
+# ``data/`` 下由框架占用的直接子目录：设备目录绝不能与之同名（否则整体删除会波及共享数据）。
+_RESERVED_DATA_DIRNAMES = frozenset({"global", "quest", "services", "test", "device"})
+# 历史遗留的设备数据目录 ``data/device/{device_id}/``（旧版录音/抓拍）。
+LEGACY_DEVICE_DIRNAME = "device"
+
 
 def _normalize_device_id(device_id: str | None) -> str:
     return str(device_id or "").strip()
@@ -37,6 +42,38 @@ def device_data_dir(device_id: str) -> Path:
     if not _DEVICE_ID_SAFE.match(did):
         raise ValueError(f"invalid device_id: {did!r}")
     return DATA_DIR / did
+
+
+def _assert_safe_delete_root(candidate: Path, device_id: str) -> None:
+    """校验 ``candidate`` 可被整体删除：必须是 ``DATA_DIR`` 的直接子目录且非保留名。
+
+    必须走 ``os.path.realpath`` 而非纯词法判断——``DATA_DIR / ".."`` 的 ``.parent``
+    在词法上等于 ``DATA_DIR``，挡不住 ``..``；``.`` 与符号链接同理。
+    """
+    did = _normalize_device_id(device_id)
+    if not did or not did.strip(".") or did in _RESERVED_DATA_DIRNAMES:
+        raise ValueError(f"refusing to delete reserved device_id: {did!r}")
+    root = os.path.realpath(str(DATA_DIR))
+    target = os.path.realpath(str(candidate))
+    if target == root or os.path.dirname(target) != root:
+        raise ValueError(f"refusing to delete outside DATA_DIR: {candidate!r}")
+    if os.path.basename(target) != did:
+        raise ValueError(f"device_id/dir mismatch: {did!r}")
+
+
+def safe_device_data_dir(device_id: str) -> Path:
+    """``device_data_dir`` + 可删除性校验；``shutil.rmtree`` 前必须走这里。"""
+    ddir = device_data_dir(device_id)
+    _assert_safe_delete_root(ddir, device_id)
+    return ddir
+
+
+def legacy_device_data_dir(device_id: str) -> Path:
+    """历史遗留目录 ``data/device/{device_id}/``（旧版 ``audio/``、``capture/fr/``）。"""
+    did = _normalize_device_id(device_id)
+    if not did or not did.strip(".") or not _DEVICE_ID_SAFE.match(did) or did in _RESERVED_DATA_DIRNAMES:
+        raise ValueError(f"invalid device_id: {did!r}")
+    return DATA_DIR / LEGACY_DEVICE_DIRNAME / did
 
 
 def global_llm_system_path() -> Path:

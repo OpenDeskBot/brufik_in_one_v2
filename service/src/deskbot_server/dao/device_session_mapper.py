@@ -146,6 +146,25 @@ def delete_session(id: str) -> int:
     """删除 Session（级联消息由 DB 外键或应用层处理）。"""
 
 
+@execute(
+    """
+    DELETE FROM device_session_message
+    WHERE session_id IN (SELECT id FROM device_session WHERE device_id = :device_id)
+    """
+)
+def delete_messages_by_device(device_id: str) -> int:
+    """删除设备全部 Session 的消息。**必须先于** ``delete_sessions_by_device`` 调用。
+
+    ``device_session_message`` 没有 ``device_id`` 列，靠 ``session_id`` 关联；且
+    ``PRAGMA foreign_keys`` 未开启，顺序反了会静默留下永远查不到的孤儿消息。
+    """
+
+
+@execute("DELETE FROM device_session WHERE device_id = :device_id")
+def delete_sessions_by_device(device_id: str) -> int:
+    """删除设备全部 Session 头（设备清除数据用）。"""
+
+
 # ─────────────────────── Message 查询 ───────────────────────
 
 

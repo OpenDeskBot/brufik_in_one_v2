@@ -25,7 +25,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='theme_2c.css') }}?v=20260902-home-tv-power">
+  <link rel="stylesheet" href="{{ url_for('static', filename='theme_2c.css') }}?v=20260910-clear-device-data">
   {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -114,6 +114,30 @@
   </div>
 </div>
 
+<!-- 顶栏清除设备数据二次确认对话框 -->
+<div class="modal-overlay" id="tbWipeModal" hidden>
+  <div class="modal-panel small">
+    <div class="modal-hd"><b>清除设备数据</b><button type="button" class="close">✕</button></div>
+    <div class="modal-bd">
+      <p class="wipe-lead">将永久删除 <b id="tbWipeId">—</b> 的全部云端数据，且不可恢复：</p>
+      <ul class="wipe-list">
+        <li>长期记忆与对话记录</li>
+        <li>人脸档案与人声纹档案</li>
+        <li>定时提醒任务</li>
+        <li>剧本任务进度</li>
+        <li>米家绑定与授权</li>
+        <li>设备配置文件（舵机/场景等）</li>
+        <li>用量统计</li>
+      </ul>
+      <div class="modal-msg" id="tbWipeMsg"></div>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="btn ghost" id="tbWipeCancel">取消</button>
+      <button type="button" class="btn danger" id="tbWipeOk">确认清除</button>
+    </div>
+  </div>
+</div>
+
 <!-- 顶栏绑定新设备对话框 -->
 <div class="modal-overlay" id="tbBindModal" hidden>
   <div class="modal-panel small">
@@ -147,7 +171,10 @@
     var manageModal=document.getElementById('tbManageModal'), bindModal=document.getElementById('tbBindModal');
     var manageMsg=document.getElementById('tbManageMsg'), bindMsg=document.getElementById('tbBindMsg');
     var bindInput=document.getElementById('tbBindInput'), bindOk=document.getElementById('tbBindOk');
-    var state={devices:[],current:''};
+    var wipeModal=document.getElementById('tbWipeModal'), wipeMsg=document.getElementById('tbWipeMsg');
+    var wipeId=document.getElementById('tbWipeId'), wipeOk=document.getElementById('tbWipeOk');
+    var wipeCancel=document.getElementById('tbWipeCancel');
+    var state={devices:[],current:'',wipeTarget:''};
     var esc=function(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});};
     var short=function(t){ return (t==='—'||!t)?'—':String(t).slice(5,16); }; // YYYY-MM-DD HH:MM:SS → MM-DD HH:MM
 
@@ -190,13 +217,22 @@
           +'<td class="did">'+esc(d.device_id)+'</td>'
           +'<td><span class="led'+(d.online?'':' off')+'"></span>'+(d.online?'在线':'离线')+'</td>'
           +'<td class="st">'+esc(d.last_sync)+'</td>'
-          +'<td><button type="button" class="btn danger" data-del="'+esc(d.device_id)+'">删除</button></td>'
+          +'<td><span class="devrow-actions">'
+          +'<button type="button" class="btn danger" data-del="'+esc(d.device_id)+'">删除</button>'
+          +'<button type="button" class="btn danger" data-wipe="'+esc(d.device_id)+'">清除数据</button>'
+          +'</span></td>'
           +'</tr>';
       }).join('');
       var btns=tbody.querySelectorAll('[data-del]');
       for(var i=0;i<btns.length;i++){
         btns[i].addEventListener('click', function(){
           removeDevice(this.getAttribute('data-del'));
+        });
+      }
+      var wipes=tbody.querySelectorAll('[data-wipe]');
+      for(var i=0;i<wipes.length;i++){
+        wipes[i].addEventListener('click', function(){
+          openWipe(this.getAttribute('data-wipe'));
         });
       }
     }
@@ -226,6 +262,44 @@
         if(manageMsg){ manageMsg.className='modal-msg err'; manageMsg.textContent='网络错误，请重试'; }
       });
     }
+    // 清除数据：站内二次确认（危险操作，默认焦点落在「取消」，且不绑 Enter 提交）
+    function openWipe(id){
+      id=id||''; if(!id) return;
+      state.wipeTarget=id;
+      wipeId.textContent=id;
+      wipeMsg.className='modal-msg'; wipeMsg.textContent='';
+      wipeModal.hidden=false;
+      wipeCancel.focus();
+    }
+    function closeWipe(){
+      wipeModal.hidden=true;
+      wipeMsg.className='modal-msg'; wipeMsg.textContent='';
+      state.wipeTarget='';
+    }
+    function clearDeviceData(){
+      var id=state.wipeTarget; if(!id) return;
+      wipeOk.disabled=true;
+      fetch('/app/api/devices/'+encodeURIComponent(id)+'/data',{method:'DELETE'})
+        .then(function(r){return r.json();}).then(function(d){
+          if(d.ok){
+            closeWipe();
+            var x=d.deleted||{};
+            if(manageMsg){
+              manageMsg.className='modal-msg ok';
+              manageMsg.textContent='已清除 '+id+' 的云端数据（记忆 '+(x.memory|0)
+                +' / 人脸 '+(x.face_profiles|0)+' / 声纹 '+(x.voice_profiles|0)
+                +' / 对话 '+(x.sessions|0)+' 段 '+(x.session_messages|0)+' 条'
+                +' / 提醒 '+(x.scheduled_tasks|0)+' / 剧本 '+(x.quest_instances|0)
+                +' / 用量 '+(x.usage_rows|0)+'）';
+            }
+            load();
+          }else{
+            wipeMsg.className='modal-msg err'; wipeMsg.textContent=d.error||'清除失败';
+          }
+        }).catch(function(){
+          wipeMsg.className='modal-msg err'; wipeMsg.textContent='网络错误，请重试';
+        }).finally(function(){ wipeOk.disabled=false; });
+    }
     function doBind(){
       var id=bindInput.value.trim();
       if(!id){ bindMsg.className='modal-msg err'; bindMsg.textContent='请输入 device_id'; return; }
@@ -252,6 +326,11 @@
     manageBtn.addEventListener('click', function(){ renderManage(); manageModal.hidden=false; });
     manageModal.addEventListener('click', function(e){ if(e.target===manageModal) manageModal.hidden=true; });
     manageModal.querySelector('.close').addEventListener('click', function(){ manageModal.hidden=true; });
+    // 清除数据对话框：遮罩 / ✕ / 取消 关闭（不绑 Esc，与其余对话框一致）
+    wipeModal.addEventListener('click', function(e){ if(e.target===wipeModal) closeWipe(); });
+    wipeModal.querySelector('.close').addEventListener('click', closeWipe);
+    wipeCancel.addEventListener('click', closeWipe);
+    wipeOk.addEventListener('click', clearDeviceData);
     // 绑定对话框
     bindBtn.addEventListener('click', function(){ bindMsg.textContent=''; bindModal.hidden=false; bindInput.focus(); });
     bindModal.addEventListener('click', function(e){ if(e.target===bindModal) bindModal.hidden=true; });

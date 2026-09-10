@@ -90,6 +90,11 @@ def delete_instances(device_id: str, playbook: str) -> int:
     """删除设备在某个剧本下的全部实例（重置用）。"""
 
 
+@execute("DELETE FROM quest_instance WHERE device_id = :device_id")
+def delete_instances_by_device(device_id: str) -> int:
+    """删除设备全部剧本实例（跨 playbook，设备清除数据用）。"""
+
+
 @execute(
     "DELETE FROM quest_instance WHERE device_id = :device_id AND playbook = :playbook AND task_id = :task_id"
 )

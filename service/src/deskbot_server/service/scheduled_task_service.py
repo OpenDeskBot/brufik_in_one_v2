@@ -12,7 +12,7 @@ except ImportError:
     ZoneInfo = None  # type: ignore[misc, assignment]
 
 from croniter import croniter
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from deskbot_server.db.engine import get_session
 from deskbot_server.db.models import ScheduledTask, _new_id
@@ -320,6 +320,21 @@ def update_scheduled_task(
     session.commit()
     session.refresh(row)
     return _task_to_dict(row)
+
+
+def delete_scheduled_tasks_for_device(device_id: str) -> int:
+    """删除设备全部定时任务，返回删除条数（重复调用返回 0）。"""
+    dev = str(device_id or "").strip()
+    if not dev:
+        return 0
+    session = get_session()
+    result = session.execute(delete(ScheduledTask).where(ScheduledTask.device_id == dev))
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return int(result.rowcount or 0)
 
 
 def delete_scheduled_task(task_id: str, *, device_id: str | None = None) -> bool:

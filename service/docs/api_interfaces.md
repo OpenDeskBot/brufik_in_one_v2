@@ -104,6 +104,7 @@
 | POST | `/app/api/devices` | 绑定设备并设为当前设备 | JSON/form: `device_id`, JSON: `display_name` 可选 |
 | POST | `/app/api/devices/select` | 切换当前设备；空 `device_id` 清空选择 | JSON: `device_id` |
 | DELETE | `/app/api/devices/{device_id}` | 解绑设备 | path: `device_id` |
+| DELETE | `/app/api/devices/{device_id}/data` | 清除设备全部云端数据（保留绑定与设备级设置：provider/param/volume/quest_id） | path: `device_id` |
 | GET | `/app/api/scheduled-tasks` | 查询设备定时任务 | query: `device_id` 可选，默认当前设备 |
 | DELETE | `/app/api/scheduled-tasks/{task_id}` | 删除定时任务 | path: `task_id`, query: `device_id` 可选 |
 | GET | `/app/api/face-profiles` | 查询人脸档案摘要 | query: `device_id` 可选 |

@@ -620,6 +620,13 @@ input[type=range]{width:100%;accent-color:var(--accent);height:6px}
 .devtable .led.off{background:var(--faint);animation:none}
 .devtable .btn{padding:5px 10px;font-size:11px}
 .devtable .empty{color:var(--faint);text-align:center;padding:18px}
+/* 一行放「删除」+「清除数据」两个按钮，需自带间距（.devtable .btn 无 gap） */
+.devrow-actions{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+
+/* 清除设备数据二次确认 */
+.wipe-lead{margin:0;font-size:13px;line-height:1.6;color:var(--ink)}
+.wipe-lead b{font-family:var(--mono);word-break:break-all;color:#b42318}
+.wipe-list{margin:10px 0 0;padding-left:18px;color:var(--dim);font-size:12px;line-height:1.75}
 
 /* ===== misc ===== */
 .lead{color:var(--dim);font-size:13px;margin-top:14px}

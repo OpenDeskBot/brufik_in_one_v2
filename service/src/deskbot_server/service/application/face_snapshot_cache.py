@@ -83,6 +83,21 @@ def list_device_faces(device_id: str) -> dict[int, dict[str, Any]]:
     return {int(k): dict(v) for k, v in mem.items()}
 
 
+def clear_device(device_id: str) -> None:
+    """删除设备快照与检测时间戳（设备清除数据时调用）。
+
+    ``_detect_ts`` 是「画面里现在是否有人」的判据，必须一并清除——否则会拿着
+    刚被删掉的档案去判断在场，让机器人对陌生人打招呼。
+    """
+    device_id = str(device_id or "").strip()
+    if not device_id:
+        return
+    with _lock:
+        _snapshots.pop(device_id, None)
+        _detect_ts.pop(device_id, None)
+        _detect_ms.pop(device_id, None)
+
+
 def list_recognized_faces(device_id: str, *, limit: int = 5) -> list[dict[str, Any]]:
     """已匹配到姓名的人脸，按置信度降序，去重后最多 ``limit`` 条。"""
     device_id = str(device_id or "").strip()

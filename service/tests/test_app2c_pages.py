@@ -977,7 +977,8 @@ def test_2c_advanced_keeps_account_forms_visible(temp_db):
     assert "收起配置" not in html
     assert "/api/tts/phoneme_tts" not in html
     assert "/api/paddlespeech/phoneme_tts" not in html
-    assert "用量" not in html
+    # 用量看板导航项不得回归（「用量」二字本身会出现在设备清除数据的确认清单里，故按标签精确匹配）
+    assert "用量看板" not in html
     assert "生成新 Key" not in html
 
 
@@ -1215,3 +1216,42 @@ def test_old_app_pages_removed_but_apis_kept(temp_db):
     assert client.get("/app/api/llm-models?device_id=deskbot_retire").status_code == 404
     # TTS 已设备级化（robot-settings 配置），全局 /app/api/tts/* 端点一并移除
     assert client.get("/app/api/tts/speakers").status_code == 404
+
+
+def test_2c_device_manage_has_clear_data_button_and_confirm_modal(temp_db):
+    """顶栏设备管理弹窗：「删除」右侧有「清除数据」，二次确认弹窗逐条列出删除项。"""
+    from tests._auth_compat import create_user
+    from deskbot_server.web.app import create_app
+
+    create_user("wipe-ui@example.com", "password1234")
+    app = create_app()
+    client = app.test_client()
+    client.post("/login", data={"email": "wipe-ui@example.com", "password": "password1234"})
+
+    html = client.get("/home").text
+
+    # 按钮在「删除」右侧，且走独立的 data-wipe 钩子（同一 <td> 内，先删后清）
+    assert ">清除数据</button>" in html
+    assert 'data-wipe="\'+esc(d.device_id)+\'"' in html
+    del_at = html.index("data-del")
+    wipe_at = html.index("data-wipe")
+    assert del_at < wipe_at, "「清除数据」必须渲染在「删除」右侧"
+
+    # 二次确认弹窗与危险按钮
+    for marker in ("tbWipeModal", "tbWipeId", "tbWipeMsg", "tbWipeCancel", "tbWipeOk", ">确认清除</button>"):
+        assert marker in html, marker
+
+    # 删除项清单
+    for item in (
+        "长期记忆与对话记录",
+        "人脸档案与人声纹档案",
+        "定时提醒任务",
+        "剧本任务进度",
+        "米家绑定与授权",
+        "设备配置文件（舵机/场景等）",
+        "用量统计",
+    ):
+        assert item in html, item
+
+    # 危险操作不绑 Enter 提交，避免误触回车毁数据
+    assert "wipeModal.addEventListener('keydown'" not in html

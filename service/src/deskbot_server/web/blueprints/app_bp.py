@@ -26,6 +26,7 @@ from deskbot_server.service.miot_service import (
     parse_auth_payload,
     sync_homes,
 )
+from deskbot_server.service.device_data_service import clear_device_data
 from deskbot_server.service.miot_service import unbind as miot_unbind
 from deskbot_server.service.quest_service import QuestError, QuestService
 from deskbot_server.service.scheduled_task_service import (
@@ -183,6 +184,36 @@ def api_unbind_device(request: Request, user: RequireUser, device_id: str):
     if get_current_device_id(request) == device_id:
         clear_current_device(request)
     return jsonify({"ok": True})
+
+
+@router.delete("/api/devices/{device_id}/data")
+def api_clear_device_data(request: Request, user: RequireUser, device_id: str):
+    """清空设备全部云端数据（保留绑定与设备设置）。"""
+    if not UserService().validate_device_id(device_id):
+        return jsonify({"ok": False, "error": "device_id 格式无效（允许字母数字 _ . -）"}), 400
+    # 与其它设备接口一致：不区分「不存在」与「非本人」，避免泄漏设备是否存在
+    if not UserService().user_owns_device(user.id, device_id):
+        return jsonify({"ok": False, "error": "设备不属于当前账号"}), 403
+    result = clear_device_data(device_id)
+    if result["errors"]:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "部分数据清除失败：" + result["errors"][0],
+                "device_id": device_id,
+                "deleted": result["deleted"],
+                "errors": result["errors"],
+            }
+        ), 500
+    return jsonify(
+        {
+            "ok": True,
+            "message": f"已清除 {device_id} 的全部云端数据",
+            "device_id": device_id,
+            "deleted": result["deleted"],
+            "files": result["files"],
+        }
+    )
 
 
 @router.post("/api/devices/{device_id}/reset-id")
@@ -603,6 +634,7 @@ ENDPOINTS = {
     "app.api_bind_device": "/app/api/devices",
     "app.api_select_device": "/app/api/devices/select",
     "app.api_unbind_device": "/app/api/devices/{device_id}",
+    "app.api_clear_device_data": "/app/api/devices/{device_id}/data",
     "app.api_set_device_quest": "/app/api/devices/{device_id}/quest",
     "app.api_set_device_llm": "/app/api/devices/{device_id}/llm",
     "app.api_list_scheduled_tasks": "/app/api/scheduled-tasks",
