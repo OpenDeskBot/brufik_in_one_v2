@@ -283,6 +283,9 @@ void wifi_portal_setup_http(void) {
     g_wifi_portal_exit_continue = true;
     g_wifi_done_config = true;
     send_ok();
+    /* 主循环一收到 g_wifi_done_config 就关热点，响应常被掐在发送途中，浏览器只看到
+       failed to fetch；这里延迟返回，让 lwIP 先把响应发出去（页面同时把断连当正常处理）。 */
+    delay(300);
   });
 
   g_wifi_server.onNotFound([]() {

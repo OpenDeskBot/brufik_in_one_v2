@@ -581,6 +581,20 @@ const char index_html[] PROGMEM = R"rawliteral(
         });
     }
 
+    function showContinueBootStarted() {
+      const btn = document.getElementById('continue-boot-btn');
+      btn.disabled = true;
+      btn.textContent = '已继续启动';
+      setConfigMessage('设备正在继续启动，配网热点即将关闭；手机可能提示已断开该网络。请查看设备屏幕上的连接结果。', 'ok');
+    }
+
+    function showContinueBootFailed(text) {
+      const btn = document.getElementById('continue-boot-btn');
+      btn.disabled = false;
+      btn.textContent = '继续启动';
+      setConfigMessage(text, 'err');
+    }
+
     function continueBoot() {
       const btn = document.getElementById('continue-boot-btn');
       btn.disabled = true;
@@ -588,16 +602,16 @@ const char index_html[] PROGMEM = R"rawliteral(
       fetch('/device-config/continue-boot', { method: 'POST' })
         .then(r => r.json())
         .then(data => {
-          if (!data.success) {
-            btn.disabled = false;
-            btn.textContent = '继续启动';
-            setConfigMessage('操作失败: ' + (data.message || '未知错误'), 'err');
+          if (data.success) {
+            showContinueBootStarted();
+          } else {
+            showContinueBootFailed('操作失败: ' + (data.message || '未知错误'));
           }
         })
-        .catch(err => {
-          btn.disabled = false;
-          btn.textContent = '继续启动';
-          setConfigMessage('操作失败: ' + err.message, 'err');
+        .catch(() => {
+          // 设备收到指令后立刻关闭热点，响应常来不及回到浏览器；此时的连接中断
+          // 正是「已开始启动」的正常表现，不能报成失败。
+          showContinueBootStarted();
         });
     }
 
