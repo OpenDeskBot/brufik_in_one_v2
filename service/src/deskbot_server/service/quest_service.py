@@ -1,17 +1,20 @@
-"""剧本任务引擎：剧本管理 + 任务实例状态机 + 分数流转 + LLM 工具函数。
+"""剧本任务引擎：剧本文件管理 + 任务实例状态机 + complete_task 工具函数。
 
 设计契约（与后台模块编辑器一一对应）：
-- 剧本 = JSON 定义文件（data/quest_playbooks/<name>.json），只存"定义"
-  （goal/strategy/激活分数/成功失败条件/on_success/on_failure/pos）
+- 剧本 = JSON 定义文件（data/quest/<name>.json），只存"定义"
+  （id/type/prompt/next_task_ids/pos/created_at/updated_at）
 - 实例 = 每设备每任务的运行态（DB quest_instance 表）
-- 状态机：not_started --(current_score ≥ activation_score)--> running --(AI 判定)--> success/failed
-- 分数流转：任务成功 → on_success 各目标加分；失败 → on_failure 各目标加分；
-  目标当前分数 ≥ 激活分数 时自动激活（not_started → running，写入 started_at）
-- 起点任务：定义里 initial_status=running 的任务在分配剧本时直接进入 running
-- 工具函数（供 LLM tool loop 与后台模拟调用）：
-  update_task_result(device_id, playbook, task_id, status, result)  置成功/失败并传播
-  update_task_strategy(device_id, playbook, task_id, strategy)      AI 按用户反馈更新策略
-- 终态（success/failed）不可再变；分数收入（contribute_score）只对未开始/进行中有效
+- 任务类型：
+  - once（一次性）：完成（complete_task）后置 completed，并激活其 next_task_ids 全部后继
+  - daily（日常）：一旦 running 永续；每次完成向 per-user 的今日 done_list 记账（每用户每日一次）
+  - long_term（长期）：一旦 running 永续；每次实质进展向 per-user 的 user_info 记账（累计）
+- 状态机：not_started --(入口自动激活 / 前置 once 完成)--> running --(once complete)--> completed
+  （completed 只对一次性任务可达且不可再变；日常/长期没有终态）
+- 激活规则：无入边（不被任何任务 next_task_ids 引用）的任务在分配剧本时直接 running；
+  其余 not_started，待前置一次性任务完成时激活
+- 工具函数（供 LLM tool loop 与后台模拟共用）：
+  complete_task(device_id, playbook, task_id, user, reason)
+  once → 置 completed 并激活后继；daily → done_list 记账；long_term → user_info 记账
 """
 
 from __future__ import annotations
@@ -26,30 +29,33 @@ from pathlib import Path
 from typing import Any
 
 from deskbot_server.dao import device_mapper, quest_mapper
+from deskbot_server.dao.user_social_store import (
+    append_quest_daily_line,
+    append_quest_progress_line,
+    validate_user_name,
+)
 from deskbot_server.utils.paths import DATA_DIR
 from deskbot_server.utils.singleton import SingletonMeta
 
 logger = logging.getLogger("deskbot-server")
 
-# ── 任务状态常量 ──────────────────────────────────────────────
+# ── 任务状态常量（三态）──────────────────────────────────────
 STATUS_NOT_STARTED = "not_started"
 STATUS_RUNNING = "running"
-STATUS_FAILED = "failed"
-STATUS_SUCCESS = "success"
-ALL_STATUS = (STATUS_NOT_STARTED, STATUS_RUNNING, STATUS_FAILED, STATUS_SUCCESS)
-TERMINAL_STATUS = (STATUS_FAILED, STATUS_SUCCESS)
+STATUS_COMPLETED = "completed"
+ALL_STATUS = (STATUS_NOT_STARTED, STATUS_RUNNING, STATUS_COMPLETED)
 
-# 任务结果工具只接受 success/failed（对应剧本里的 on_success/on_failure 两条边）
-RESULT_SUCCESS = "success"
-RESULT_FAILED = "failed"
-ALL_RESULTS = (RESULT_SUCCESS, RESULT_FAILED)
+# ── 任务类型 ────────────────────────────────────────────────
+TYPE_ONCE = "once"
+TYPE_DAILY = "daily"
+TYPE_LONG_TERM = "long_term"
+ALL_TYPES = (TYPE_ONCE, TYPE_DAILY, TYPE_LONG_TERM)
+TYPE_LABELS = {TYPE_ONCE: "一次性", TYPE_DAILY: "日常", TYPE_LONG_TERM: "长期"}
+# 展示/推送排序优先级：once 先（可收口），long_term 次，daily 永续任务沉底
+_TYPE_ORDER = {TYPE_ONCE: 0, TYPE_LONG_TERM: 1, TYPE_DAILY: 2}
 
-# 边端口名（成功口/失败口 → 定义里的 on_success/on_failure）
-PORT_SUCCESS = "success"
-PORT_FAILED = "failed"
-
-# 单次分数收入上限（对话贡献分/时间收入的封顶，防单次调用直接打穿激活线）
-MAX_SCORE_PER_CONTRIBUTE = 10
+# system prompt / 主动轮最多列出的进行中任务数
+MAX_PROMPT_TASKS = 3
 
 # devices.quest_id 为空时默认绑定的剧本（须与 data/quest/ 下文件一致）
 DEFAULT_QUEST_ID = "xiaoy"
@@ -93,39 +99,38 @@ def _playbooks_dir() -> Path:
 # ── 定义校验（纯函数）──────────────────────────────────────────
 
 
-def _errs_for_task(task: dict, task_ids: set[str]) -> list[str]:
+def _errs_for_task(task: dict) -> list[str]:
     errs: list[str] = []
     tid = str(task.get("id") or "")
     label = f"任务 {tid or '<无id>'}"
     if not tid or not TASK_ID_RE.match(tid):
         errs.append(f"{label}: id 非法（{tid!r}，需匹配 {TASK_ID_RE.pattern}）")
-    if not str(task.get("goal") or "").strip():
-        errs.append(f"{label}: goal 不能为空")
-    act = task.get("activation_score")
-    if act is None or not isinstance(act, (int, float)) or act < 0:
-        errs.append(f"{label}: activation_score 必须是非负数字（{act!r}）")
-    init = task.get("initial_status") or STATUS_NOT_STARTED
-    if init not in (STATUS_NOT_STARTED, STATUS_RUNNING):
-        errs.append(f"{label}: initial_status 只能是 not_started/running（{init!r}）")
-    for port in ("on_success", "on_failure"):
-        refs = task.get(port)
-        if refs is None:
-            continue
-        if not isinstance(refs, list):
-            errs.append(f"{label}: {port} 必须是列表")
-            continue
+    ttype = task.get("type")
+    if ttype not in ALL_TYPES:
+        errs.append(f"{label}: type 必须是一次性/日常/长期之一（{ttype!r}）")
+    if not str(task.get("prompt") or "").strip():
+        errs.append(f"{label}: prompt 不能为空")
+    nxt = task.get("next_task_ids")
+    if nxt is None:
+        pass  # 缺省由 normalize 补 []；仅当存在但形状错时报错
+    elif not isinstance(nxt, list):
+        errs.append(f"{label}: next_task_ids 必须是字符串数组")
+    else:
         seen: set[str] = set()
-        for ref in refs:
-            if not isinstance(ref, dict) or not str(ref.get("id") or "").strip():
-                errs.append(f"{label}: {port} 里的后继必须含 id")
+        for rid in nxt:
+            rid_s = str(rid).strip() if isinstance(rid, str) else ""
+            if not isinstance(rid, str) or not rid_s:
+                errs.append(f"{label}: next_task_ids 里的后继必须是任务 id 字符串")
                 continue
-            rid = str(ref["id"]).strip()
-            if rid in seen:
-                errs.append(f"{label}: {port} 后继 {rid} 重复")
-            seen.add(rid)
-            score = ref.get("score", 0)
-            if not isinstance(score, (int, float)) or score < 0:
-                errs.append(f"{label}: {port} 后继 {rid} 的 score 必须是非负数字")
+            if not TASK_ID_RE.match(rid_s):
+                errs.append(f"{label}: 后继 id 非法（{rid_s!r}）")
+                continue
+            if rid_s == tid:
+                errs.append(f"{label}: 不能把自身设为后继")
+                continue
+            if rid_s in seen:
+                errs.append(f"{label}: next_task_ids 后继 {rid_s} 重复")
+            seen.add(rid_s)
     return errs
 
 
@@ -148,7 +153,7 @@ def validate_playbook(data: Any) -> list[str]:
         if not isinstance(t, dict):
             errs.append("tasks 里存在非对象元素")
             continue
-        errs += _errs_for_task(t, ids)
+        errs += _errs_for_task(t)
         tid = str(t.get("id") or "")
         if tid:
             if tid in ids:
@@ -160,14 +165,13 @@ def validate_playbook(data: Any) -> list[str]:
         if not isinstance(t, dict):
             continue
         tid = str(t.get("id") or "")
-        for port in ("on_success", "on_failure"):
-            for ref in t.get(port) or []:
-                rid = str(ref.get("id") or "") if isinstance(ref, dict) else ""
-                if rid and rid not in ids:
-                    errs.append(f"任务 {tid}: {port} 引用了不存在的任务 {rid}")
-                if rid and tid and rid != tid:
-                    edges.append((tid, rid))
-    # 环检测（on_success + on_failure 合并构图）
+        for rid in t.get("next_task_ids") or []:
+            rid_s = str(rid).strip() if isinstance(rid, str) else ""
+            if rid_s and rid_s not in ids:
+                errs.append(f"任务 {tid}: next_task_ids 引用了不存在的任务 {rid_s}")
+            if rid_s and tid and rid_s != tid:
+                edges.append((tid, rid_s))
+    # 环检测（next_task_ids 单端口构图）
     if _has_cycle(edges, ids):
         errs.append("后继关系成环（剧本必须是有向无环图）")
     return errs
@@ -207,43 +211,18 @@ def _default_pos(existing: list[dict]) -> dict:
     }
 
 
-def normalize_task(raw: dict, *, existing: list[dict] | None = None) -> dict:
-    """补全任务默认字段（不校验，校验交给 validate_playbook）。"""
-    existing = existing or []
-    return {
-        "id": str(raw.get("id") or "").strip(),
-        "title": str(raw.get("title") or "notitle").strip(),
-        "goal": str(raw.get("goal") or "").strip(),
-        "strategy": str(raw.get("strategy") or "").strip(),
-        "activation_score": int(raw.get("activation_score") or 1),
-        "initial_status": str(raw.get("initial_status") or STATUS_NOT_STARTED).strip(),
-        "success_condition": str(raw.get("success_condition") or "").strip(),
-        "failure_condition": str(raw.get("failure_condition") or "").strip(),
-        "on_success": _normalize_refs(raw.get("on_success")),
-        "on_failure": _normalize_refs(raw.get("on_failure")),
-        "score_sources": _normalize_score_sources(raw.get("score_sources")),
-        "pos": _normalize_pos(raw.get("pos"), existing),
-    }
-
-
-def _normalize_refs(raw: Any) -> list[dict]:
-    out: list[dict] = []
+def _normalize_ids(raw: Any) -> list[str]:
+    """next_task_ids 归一：字符串列表、strip、去空、去重保序。"""
     if not isinstance(raw, list):
-        return out
-    for ref in raw:
-        if isinstance(ref, dict) and str(ref.get("id") or "").strip():
-            out.append({"id": str(ref["id"]).strip(), "score": int(ref.get("score") or 0)})
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        val = item.strip()
+        if val and val not in out:
+            out.append(val)
     return out
-
-
-def _normalize_score_sources(raw: Any) -> dict:
-    if not isinstance(raw, dict):
-        return {"conversation": True, "time": None}
-    time_val = raw.get("time")
-    return {
-        "conversation": bool(raw.get("conversation", True)),
-        "time": str(time_val).strip() if time_val else None,
-    }
 
 
 def _normalize_pos(raw: Any, existing: list[dict]) -> dict:
@@ -257,11 +236,57 @@ def _normalize_pos(raw: Any, existing: list[dict]) -> dict:
     return base
 
 
+# 旧格式字段（v1：goal/activation_score/on_success…）——读侧升级时检测用
+_LEGACY_TASK_KEYS = (
+    "goal",
+    "strategy",
+    "title",
+    "activation_score",
+    "initial_status",
+    "success_condition",
+    "failure_condition",
+    "on_success",
+    "on_failure",
+    "score_sources",
+)
+
+
+def normalize_task(raw: dict, *, existing: list[dict] | None = None) -> dict:
+    """补全任务默认字段并丢弃未知/遗留键（校验交给 validate_playbook）。
+
+    兼容旧字段：prompt 缺失且 goal 非空 → goal 迁移为 prompt；
+    next_task_ids 缺失且 on_success 存在 → 取其任务 id（分数丢弃）。
+    """
+    existing = existing or []
+    now = _utcnow_iso()
+    raw_goal = str(raw.get("goal") or "").strip()
+    raw_prompt = str(raw.get("prompt") or "").strip()
+    prompt = raw_prompt or raw_goal  # 旧 goal → prompt 迁移
+    nxt: Any = raw.get("next_task_ids")
+    if nxt is None and raw.get("on_success") is not None:
+        nxt = [r.get("id") for r in raw.get("on_success") or [] if isinstance(r, dict)]
+    return {
+        "id": str(raw.get("id") or "").strip(),
+        "type": str(raw.get("type") or TYPE_ONCE).strip()
+        if str(raw.get("type") or "").strip() in ALL_TYPES
+        else TYPE_ONCE,
+        "prompt": prompt.strip(),
+        "next_task_ids": _normalize_ids(nxt),
+        "pos": _normalize_pos(raw.get("pos"), existing),
+        "created_at": str(raw.get("created_at") or now).strip() or now,
+        "updated_at": str(raw.get("updated_at") or now).strip() or now,
+    }
+
+
+def _has_legacy_fields(tasks: list[dict]) -> bool:
+    return any(isinstance(t, dict) and any(k in t for k in _LEGACY_TASK_KEYS) for t in tasks)
+
+
 # ── 剧本任务引擎 ──────────────────────────────────────────────
 
 
 class QuestService(metaclass=SingletonMeta):
-    """剧本文件管理 + 任务实例状态机 + 分数流转 + 工具函数（无状态，状态全在文件/DB）。"""
+    """剧本文件管理 + 任务实例状态机 + complete_task 工具函数（无状态，状态全在文件/DB）。"""
 
     # ── 剧本文件管理 ──────────────────────────────────────────
 
@@ -278,13 +303,21 @@ class QuestService(metaclass=SingletonMeta):
         return sorted(p.stem for p in d.glob("*.json") if p.is_file())
 
     def get_playbook(self, name: str) -> dict | None:
+        """读剧本；旧格式文件在内存升级为新形状（不自动落盘，下次保存写出）。"""
         path = self._playbook_path(name)
         if not path.is_file():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise QuestError(f"剧本 {name} 读取失败: {exc}") from exc
+        if isinstance(data, dict) and _has_legacy_fields(data.get("tasks") or []):
+            tasks: list[dict] = []
+            for t in data.get("tasks") or []:
+                tasks.append(normalize_task(t, existing=tasks))
+            data = dict(data)
+            data["tasks"] = tasks
+        return data
 
     def create_playbook(self, name: str) -> dict:
         if not PLAYBOOK_NAME_RE.match(name):
@@ -296,9 +329,14 @@ class QuestService(metaclass=SingletonMeta):
         return data
 
     def save_playbook(self, name: str, data: dict) -> dict:
-        """整体保存（导入用）：校验通过后原子写盘。"""
+        """整体保存（导入用）：升级旧字段→校验通过后原子写盘。"""
         data = dict(data or {})
         data["name"] = name
+        if isinstance(data.get("tasks"), list) and _has_legacy_fields(data["tasks"]):
+            upgraded: list[dict] = []
+            for t in data["tasks"]:
+                upgraded.append(normalize_task(t, existing=upgraded))
+            data["tasks"] = upgraded
         errs = validate_playbook(data)
         if errs:
             raise QuestError("剧本校验失败：" + "；".join(errs))
@@ -337,7 +375,7 @@ class QuestService(metaclass=SingletonMeta):
         return task
 
     def update_task(self, name: str, task_id: str, patch: dict) -> dict:
-        """更新任务字段；支持改名（id 变了会同步其他任务的连线和运行实例）。"""
+        """更新任务字段；支持改名（id 变了会同步其他任务的后继引用和运行实例）。"""
         pb = self._require_playbook(name)
         tasks = pb.get("tasks") or []
         target = next((t for t in tasks if t["id"] == task_id), None)
@@ -355,28 +393,28 @@ class QuestService(metaclass=SingletonMeta):
         for key, val in patch.items():
             if key == "id":
                 continue
-            if key in ("pos",):
+            if key == "pos":
                 merged[key] = _normalize_pos(val, tasks)
-            elif key in ("on_success", "on_failure"):
-                merged[key] = _normalize_refs(val)
-            else:
+            elif key == "next_task_ids":
+                merged[key] = _normalize_ids(val)
+            elif key in ("type", "prompt"):
                 merged[key] = val
+            # 其余键（含旧字段）忽略
         merged = normalize_task(merged, existing=tasks)
         merged["id"] = new_id
+        merged["updated_at"] = _utcnow_iso()  # 内容变更刷新
         tasks[tasks.index(target)] = merged
         if renamed:
-            # 其他任务的连线里指向旧 id 的引用同步改名，并去重
+            # 其他任务的后继引用里指向旧 id 的同步改名，并去重
             for t in tasks:
-                for port in ("on_success", "on_failure"):
-                    seen: set[str] = set()
-                    out: list[dict] = []
-                    for ref in t.get(port) or []:
-                        if ref["id"] == task_id:
-                            ref["id"] = new_id
-                        if ref["id"] not in seen:
-                            seen.add(ref["id"])
-                            out.append(ref)
-                    t[port] = out
+                if t is merged:
+                    continue
+                out: list[str] = []
+                for rid in t.get("next_task_ids") or []:
+                    rid_new = new_id if rid == task_id else rid
+                    if rid_new not in out:
+                        out.append(rid_new)
+                t["next_task_ids"] = out
         self.save_playbook(name, pb)
         if renamed:
             for row in quest_mapper.list_by_playbook(name):
@@ -390,48 +428,42 @@ class QuestService(metaclass=SingletonMeta):
         if not any(t["id"] == task_id for t in tasks):
             raise QuestError(f"任务不存在: {task_id}")
         pb["tasks"] = [t for t in tasks if t["id"] != task_id]
-        # 清理其他任务的边里指向被删任务的引用
+        # 清理其他任务的后继引用里指向被删任务的 id
         for t in pb["tasks"]:
-            for port in ("on_success", "on_failure"):
-                t[port] = [r for r in t.get(port) or [] if r["id"] != task_id]
+            t["next_task_ids"] = [rid for rid in t.get("next_task_ids") or [] if rid != task_id]
         self.save_playbook(name, pb)
         self._delete_task_instances(name, task_id)
 
-    def set_edge(self, name: str, from_id: str, port: str, to_id: str, score: int) -> dict:
-        """连边：from 的成功口/失败口 → to 的输入口，带分数。
-
-        port ∈ {success, failed}；同一端口到同一目标只保留一条边（重复连 = 改分）。
-        """
+    def set_edge(self, name: str, from_id: str, to_id: str) -> dict:
+        """连边：from 的后继 → to（单端口，无分数）。重复连 = 幂等 no-op。"""
         pb = self._require_playbook(name)
-        if port not in (PORT_SUCCESS, PORT_FAILED):
-            raise QuestError(f"端口必须是 {PORT_SUCCESS}/{PORT_FAILED}（{port!r}）")
         tasks = pb.get("tasks") or []
         src = next((t for t in tasks if t["id"] == from_id), None)
         if src is None:
             raise QuestError(f"任务不存在: {from_id}")
         if not any(t["id"] == to_id for t in tasks):
             raise QuestError(f"任务不存在: {to_id}")
-        if not isinstance(score, (int, float)) or score < 0:
-            raise QuestError("分数必须是非负数字")
-        key = "on_success" if port == PORT_SUCCESS else "on_failure"
-        refs = src.get(key) or []
-        refs = [r for r in refs if r["id"] != to_id]
-        refs.append({"id": to_id, "score": int(score)})
-        src[key] = refs
-        self.save_playbook(name, pb)
-        return {"from": from_id, "port": port, "to": to_id, "score": int(score)}
+        if from_id == to_id:
+            raise QuestError("不能把自身设为后继")
+        nxt = src.get("next_task_ids") or []
+        if to_id not in nxt:
+            nxt = nxt + [to_id]
+            src["next_task_ids"] = nxt
+            src["updated_at"] = _utcnow_iso()
+            self.save_playbook(name, pb)
+        return {"from": from_id, "to": to_id}
 
-    def remove_edge(self, name: str, from_id: str, port: str, to_id: str) -> None:
+    def remove_edge(self, name: str, from_id: str, to_id: str) -> None:
         pb = self._require_playbook(name)
-        if port not in (PORT_SUCCESS, PORT_FAILED):
-            raise QuestError(f"端口必须是 {PORT_SUCCESS}/{PORT_FAILED}（{port!r}）")
         tasks = pb.get("tasks") or []
         src = next((t for t in tasks if t["id"] == from_id), None)
         if src is None:
             raise QuestError(f"任务不存在: {from_id}")
-        key = "on_success" if port == PORT_SUCCESS else "on_failure"
-        src[key] = [r for r in src.get(key) or [] if r["id"] != to_id]
-        self.save_playbook(name, pb)
+        nxt = [rid for rid in src.get("next_task_ids") or [] if rid != to_id]
+        if len(nxt) != len(src.get("next_task_ids") or []):
+            src["next_task_ids"] = nxt
+            src["updated_at"] = _utcnow_iso()
+            self.save_playbook(name, pb)
 
     def _delete_task_instances(self, name: str, task_id: str) -> None:
         rows = quest_mapper.list_by_playbook(name)
@@ -447,36 +479,44 @@ class QuestService(metaclass=SingletonMeta):
 
     # ── 实例管理（分配/查询/重置）────────────────────────────
 
+    @staticmethod
+    def _entry_task_ids(pb: dict) -> set[str]:
+        """无入边任务集：不被任何任务的 next_task_ids 引用。"""
+        referenced: set[str] = set()
+        for t in pb.get("tasks") or []:
+            referenced.update(t.get("next_task_ids") or [])
+        return {t["id"] for t in pb.get("tasks") or [] if t["id"] not in referenced}
+
     def ensure_instances(self, device_id: str, playbook_name: str) -> dict:
         """为设备创建剧本下缺失的任务实例（幂等）。
 
-        定义里 initial_status=running 的任务（剧情起点）直接进入 running。
+        入口任务（无任何前置连线）直接 running（剧情起点），其余 not_started。
         """
         pb = self._require_playbook(playbook_name)
         existing = {r.task_id for r in quest_mapper.list_instances(device_id, playbook_name)}
         now = _utcnow_iso()
+        entry_ids = self._entry_task_ids(pb)
         created = activated = 0
         for t in pb.get("tasks") or []:
             tid = t["id"]
             if tid in existing:
                 continue
-            status = STATUS_RUNNING if t.get("initial_status") == STATUS_RUNNING else STATUS_NOT_STARTED
+            is_entry = tid in entry_ids
+            status = STATUS_RUNNING if is_entry else STATUS_NOT_STARTED
             quest_mapper.insert_instance(
                 id=_new_id(),
                 device_id=device_id,
                 playbook=playbook_name,
                 task_id=tid,
                 status=status,
-                current_score=0,
-                started_at=now if status == STATUS_RUNNING else None,
+                started_at=now if is_entry else None,
                 finished_at=None,
                 result=None,
-                strategy_override=None,
                 created_at=now,
                 updated_at=now,
             )
             created += 1
-            if status == STATUS_RUNNING:
+            if is_entry:
                 activated += 1
         return {"created": created, "activated": activated, "total": len(pb.get("tasks") or [])}
 
@@ -492,14 +532,6 @@ class QuestService(metaclass=SingletonMeta):
     def get_task_definition(self, playbook_name: str, task_id: str) -> dict | None:
         pb = self._require_playbook(playbook_name)
         return next((t for t in pb.get("tasks") or [] if t["id"] == task_id), None)
-
-    def get_effective_strategy(self, device_id: str, playbook_name: str, task_id: str) -> str:
-        """生效策略 = 实例级覆盖（update_task_strategy 写入）优先，否则取定义 strategy。"""
-        row = quest_mapper.get_instance(device_id, playbook_name, task_id)
-        if row is not None and row.strategy_override:
-            return row.strategy_override
-        defn = self.get_task_definition(playbook_name, task_id)
-        return str((defn or {}).get("strategy") or "").strip()
 
     # ── 设备视角查询（运行时接线用）────────────────────────────
 
@@ -541,249 +573,264 @@ class QuestService(metaclass=SingletonMeta):
         except Exception:
             logger.debug("[quest] 默认绑定失败（忽略） device_id=%s", device_id, exc_info=True)
 
+    def _activate_entry_rows(self, device_id: str, playbook: str) -> None:
+        """把「not_started 但当前定义无入边」的遗留行补激活为 running。
+
+        旧库升级 / 编辑器给运行中设备剧本新增入口任务后的兜底；幂等。
+        **不放 ensure_instances**：沙箱 /state 手动置 not_started 的演示不能被弹回。
+        """
+        pb = self._require_playbook(playbook)
+        entry_ids = self._entry_task_ids(pb)
+        if not entry_ids:
+            return
+        now = _utcnow_iso()
+        for row in quest_mapper.list_instances(device_id, playbook):
+            if row.status == STATUS_NOT_STARTED and row.task_id in entry_ids:
+                quest_mapper.update_instance(
+                    id=row.id,
+                    status=STATUS_RUNNING,
+                    started_at=now,
+                    finished_at=None,
+                    result=row.result,
+                    updated_at=now,
+                )
+                logger.info("[quest] 入口任务补激活 task_id=%s device_id=%s", row.task_id, device_id)
+
     def get_current_tasks(self, device_id: str) -> list[dict]:
         """设备当前进行中（running）的任务 —— 仅绑定剧本（devices.quest_id）。
 
         分支语义：
         0. quest_id 为空 → 尝试默认绑定 ``DEFAULT_QUEST_ID``（xiaoy）
         1. 设备行不存在 / 仍未绑定 / 剧本文件缺失 → []
-        2. (device, quest) 无实例 → ensure_instances 幂等初始化
-           （initial_status=running 的最初任务直接 running），再查
-        3. 有实例 → 返回 running 列表（目标/策略/成功失败条件/分数，按达成率降序）
+        2. 缺实例 → ensure_instances 幂等补齐（含入口自动激活）；
+           再 _activate_entry_rows 补激活旧库遗留的入口行
+        3. 返回 running 列表（type+prompt，按 once→long_term→daily、组内定义序排序）
         """
         self._ensure_default_quest_binding(device_id)
         playbook = self.get_bound_playbook(device_id)
         if not playbook:
             return []
-        if not quest_mapper.list_instances(device_id, playbook):
-            try:
-                self.ensure_instances(device_id, playbook)
-            except QuestError:
-                return []  # 检查后剧本文件被删的竞态兜底
+        try:
+            self.ensure_instances(device_id, playbook)
+            self._activate_entry_rows(device_id, playbook)
+        except QuestError:
+            return []  # 检查后剧本文件被删的竞态兜底
         return self._current_tasks_for_playbook(device_id, playbook)
 
     def _current_tasks_for_playbook(self, device_id: str, playbook: str) -> list[dict]:
-        """单个剧本下 running 任务的活跃目标集（格式/排序同旧逻辑）。"""
-        out: list[dict] = []
-        for inst in quest_mapper.list_instances(device_id, playbook):
-            if inst.status != STATUS_RUNNING:
+        """单个剧本下 running 任务的活跃目标集（type+prompt，排序见 docstring）。"""
+        pb = self.get_playbook(playbook)
+        if pb is None:
+            return []
+        by_id: dict[str, dict] = {}
+        order: list[str] = []
+        for t in pb.get("tasks") or []:
+            tid = t["id"]
+            by_id[tid] = t
+            order.append(tid)
+        rows = {r.task_id: r for r in quest_mapper.list_instances(device_id, playbook)}
+        out: list[tuple[int, int, dict]] = []
+        for idx, tid in enumerate(order):
+            row = rows.get(tid)
+            if row is None or row.status != STATUS_RUNNING:
                 continue
-            defn = self.get_task_definition(playbook, inst.task_id)
-            if defn is None:
-                continue
-            activation = max(int(defn.get("activation_score") or 1), 1)
-            ratio = (inst.current_score or 0) / activation
+            defn = by_id[tid]
             out.append(
-                {
-                    "playbook": playbook,
-                    "task_id": inst.task_id,
-                    "title": defn.get("title", "notitle"),
-                    "goal": defn.get("goal", ""),
-                    "strategy": self.get_effective_strategy(device_id, playbook, inst.task_id),
-                    "success_condition": defn.get("success_condition", ""),
-                    "failure_condition": defn.get("failure_condition", ""),
-                    "current_score": inst.current_score,
-                    "activation_score": activation,
-                    "ratio": round(ratio, 3),
-                }
+                (
+                    _TYPE_ORDER.get(str(defn.get("type") or ""), 2),
+                    idx,
+                    {
+                        "playbook": playbook,
+                        "task_id": tid,
+                        "type": defn.get("type", TYPE_ONCE),
+                        "prompt": str(defn.get("prompt") or "").strip(),
+                    },
+                )
             )
-        out.sort(key=lambda x: x["ratio"], reverse=True)
-        return out
+        out.sort(key=lambda x: (x[0], x[1]))
+        return [item[2] for item in out]
 
     def get_tool_calls(self, device_id: str) -> list[dict]:
-        """设备当前可用的剧情工具调用契约（供 LLM system prompt / tool loop 注册）。
+        """设备当前可用的剧情工具调用契约（供 LLM tool loop schema 注入）。
 
-        返回工具名/描述/参数说明，并附当前进行中任务 id（工具可操作的目标）。
+        无 running 任务 → []（不向模型广告不可用工具）。
         """
-        task_ids = [t["task_id"] for t in self.get_current_tasks(device_id)]
+        tasks = self.get_current_tasks(device_id)
+        if not tasks:
+            return []
         return [
             {
-                "name": "update_task_result",
+                "name": "complete_task",
                 "description": (
-                    "判断任务的 success_condition 满足则置 success、failure_condition 满足则置 failed；"
-                    "置终态后沿成功/失败连线向后继任务传播分数，后继达标会自动激活。result 必填"
+                    "完成/记录进行中剧情任务的推进。"
+                    "一次性任务：目标达成后调用即置完成并自动接续其后继；"
+                    "日常任务：对该用户今日完成一次即可调一次（已记录会返回 deduped）；"
+                    "长期任务：有实质新进展才调用，多次调用按用户/时间累计记录。"
                 ),
                 "parameters": {
                     "task_id": "string（目标任务 id）",
-                    "status": 'string（"success" 或 "failed"）',
-                    "result": "string（成功结果/失败原因）",
+                    "user": "string（当前对话用户；日常/长期任务必填）",
+                    "reason": "string（完成内容/达成结果/新进展，口语转述，必填）",
                 },
-                "available_task_ids": task_ids,
-            },
-            {
-                "name": "update_task_strategy",
-                "description": "根据用户反馈更新某任务的处理策略（实例级覆盖定义 strategy，后续对话按新策略执行）",
-                "parameters": {
-                    "task_id": "string（目标任务 id）",
-                    "strategy": "string（新的处理策略）",
-                },
-                "available_task_ids": task_ids,
-            },
+                "available_task_ids": [t["task_id"] for t in tasks],
+                "tasks": [{"task_id": t["task_id"], "type": t["type"]} for t in tasks],
+            }
         ]
 
-    # ── 分数收入（对话贡献分 / 时间收入共用入口）──────────────
+    # ── 任务完成（LLM 工具函数与后台模拟共用）──────────────────
 
-    def contribute_score(self, device_id: str, playbook_name: str, task_id: str, points: int) -> dict:
-        """给任务加当前分数，达到激活分数自动激活（not_started → running）。
-
-        单次贡献封顶 MAX_SCORE_PER_CONTRIBUTE（防工具调用打穿激活线）。
-        终态任务不接受分数。
-        """
-        points = int(points or 0)
-        if points < 0:
-            raise QuestError("分数必须非负")
-        points = min(points, MAX_SCORE_PER_CONTRIBUTE)
-        if points == 0:
-            return self._instance_result(device_id, playbook_name, task_id, activated=False)
-        row = self._require_instance(device_id, playbook_name, task_id)
-        if row.status in TERMINAL_STATUS:
-            raise QuestError(f"任务已是终态（{row.status}），不再接受分数")
-        defn = self.get_task_definition(playbook_name, task_id)
-        activation = int((defn or {}).get("activation_score") or 1)
-        new_score = (row.current_score or 0) + points
-        activated = row.status == STATUS_NOT_STARTED and new_score >= activation
-        status = STATUS_RUNNING if activated else row.status
-        now = _utcnow_iso()
-        quest_mapper.update_instance(
-            id=row.id,
-            status=status,
-            current_score=new_score,
-            started_at=now if activated else _dt_str(row.started_at),
-            finished_at=_dt_str(row.finished_at),
-            result=row.result,
-            strategy_override=row.strategy_override,
-            updated_at=now,
-        )
-        return self._instance_result(device_id, playbook_name, task_id, activated=activated)
-
-    # ── 工具函数（LLM tool loop 与后台模拟共用）────────────────
-
-    def update_task_result(
-        self, device_id: str, playbook_name: str, task_id: str, status: str, result: str
+    def complete_task(
+        self, device_id: str, playbook_name: str, task_id: str, *, user: str, reason: str
     ) -> dict:
-        """工具函数①：AI 判断 success/failure 条件满足后调用。
+        """工具函数：完成任务并落地（一次性置终态+激活后继 / 日常记账 / 长期记账）。
 
-        - status ∈ {success, failed}，result 为成功结果/失败原因（必填）
-        - 任务须处于 running（未激活/已终态会抛错）
-        - 置终态后沿 on_success/on_failure 向后继传播分数；
-          后继当前分数 ≥ 激活分数 时自动激活（写入 started_at）
-        - 返回 {"task": ..., "propagated": [...], "activated": [...]}
+        - once：实例 running 才能完成；置 completed（finished_at/result=reason），
+          并沿 next_task_ids 激活后继（缺失实例自动补建 running）
+        - daily：user 必填；向该用户今日 done_list 追加 ``[{task_id}] reason`` 行；
+          今日已含该任务行 → 不写返回 deduped=True（幂等）；实例保持 running
+        - long_term：user 必填；向该用户 user_info 追加进展行（累计）；实例保持 running
         """
-        if status not in ALL_RESULTS:
-            raise QuestError(f"status 必须是 {RESULT_SUCCESS}/{RESULT_FAILED}（{status!r}）")
-        result = str(result or "").strip()
-        if not result:
-            raise QuestError("缺少结果描述（成功结果/失败原因）")
+        reason_txt = str(reason or "").strip()
+        if not reason_txt:
+            raise QuestError("缺少完成原因（reason），请写达成内容/结果描述")
+        defn = self.get_task_definition(playbook_name, task_id)
+        if defn is None:
+            raise QuestError(f"任务定义不存在: {playbook_name}/{task_id}")
+        ttype = str(defn.get("type") or TYPE_ONCE)
+        if ttype not in ALL_TYPES:
+            raise QuestError(f"任务类型非法: {ttype!r}")
         row = self._require_instance(device_id, playbook_name, task_id)
         if row.status == STATUS_NOT_STARTED:
-            raise QuestError(f"任务未激活（{task_id}），还不能判定结果")
-        if row.status in TERMINAL_STATUS:
-            raise QuestError(f"任务已是终态（{row.status}）")
+            raise QuestError(f"任务未激活（{task_id}），还不能完成")
+        if row.status == STATUS_COMPLETED:
+            raise QuestError(f"任务已完成（{task_id}），不能重复完成")
 
         now = _utcnow_iso()
-        quest_mapper.update_instance(
-            id=row.id,
-            status=status,
-            current_score=row.current_score,
-            started_at=_dt_str(row.started_at),
-            finished_at=now,
-            result=result,
-            strategy_override=row.strategy_override,
-            updated_at=now,
-        )
-        propagated, activated = self._propagate(
-            device_id, playbook_name, task_id, status, now=now
-        )
+        if ttype == TYPE_ONCE:
+            quest_mapper.update_instance(
+                id=row.id,
+                status=STATUS_COMPLETED,
+                started_at=_dt_str(row.started_at),
+                finished_at=now,
+                result=reason_txt,
+                updated_at=now,
+            )
+            activated = self._activate_next_tasks(device_id, playbook_name, task_id, now=now)
+            return {
+                "type": TYPE_ONCE,
+                "task_id": task_id,
+                "status": STATUS_COMPLETED,
+                "reason": reason_txt,
+                "task": self._require_instance_dict(device_id, playbook_name, task_id),
+                "activated": activated,
+            }
+        # daily / long_term：写 per-user 记录，实例保持 running
+        vname = self._validated_user(user)
+        try:
+            if ttype == TYPE_DAILY:
+                out = append_quest_daily_line(device_id, vname, task_id, reason_txt)
+            else:
+                out = append_quest_progress_line(device_id, vname, task_id, reason_txt)
+        except (OSError, ValueError) as exc:
+            raise QuestError(f"记录写入失败: {exc}") from exc
         return {
-            "task": self._instance_result(device_id, playbook_name, task_id),
-            "propagated": propagated,
-            "activated": activated,
+            "type": ttype,
+            "task_id": task_id,
+            "user": vname,
+            "reason": reason_txt,
+            "status": STATUS_RUNNING,
+            "deduped": bool(out.get("deduped")),
+            "written": bool(out.get("written")),
+            "path": str(out.get("path") or ""),
         }
+
+    def _validated_user(self, user: str) -> str:
+        try:
+            return validate_user_name(user)
+        except ValueError as exc:
+            raise QuestError(f"日常/长期任务需要当前对话用户 user（{exc}）") from exc
+
+    def _activate_next_tasks(
+        self, device_id: str, playbook_name: str, task_id: str, *, now: str
+    ) -> list[dict]:
+        """激活任务的后继（complete_task once 分支用）。
+
+        对每个 next_task_ids：无实例 → 补建 running；not_started → running；
+        running → 不动；completed → 不复活。
+        返回 [{task_id, status, created}]。
+        """
+        defn = self.get_task_definition(playbook_name, task_id)
+        next_ids = (defn or {}).get("next_task_ids") or []
+        out: list[dict] = []
+        for nid in next_ids:
+            tgt = quest_mapper.get_instance(device_id, playbook_name, nid)
+            if tgt is None:
+                quest_mapper.insert_instance(
+                    id=_new_id(),
+                    device_id=device_id,
+                    playbook=playbook_name,
+                    task_id=nid,
+                    status=STATUS_RUNNING,
+                    started_at=now,
+                    finished_at=None,
+                    result=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                out.append({"task_id": nid, "status": STATUS_RUNNING, "created": True})
+            elif tgt.status == STATUS_NOT_STARTED:
+                quest_mapper.update_instance(
+                    id=tgt.id,
+                    status=STATUS_RUNNING,
+                    started_at=now,
+                    finished_at=_dt_str(tgt.finished_at),
+                    result=tgt.result,
+                    updated_at=now,
+                )
+                out.append({"task_id": nid, "status": STATUS_RUNNING, "created": False})
+            # running / completed：不复活、不重置
+        return out
 
     def set_state(
         self, device_id: str, playbook_name: str, task_id: str, status: str, result: str | None = None
     ) -> dict:
-        """设计沙箱直接改实例状态（跨过工具契约校验，允许任意跳转，不传播分数）。
+        """设计沙箱直接改实例状态（跨过工具契约校验，允许任意跳转，不传播）。
 
-        终态写入 finished_at/result；改回 running 时补 started_at。
+        completed → 写 finished_at/result；running → 无 started_at 补 now 并清终态字段；
+        not_started → 清 started_at/finished_at/result（表示从未激活）。
         """
         if status not in ALL_STATUS:
             raise QuestError(f"status 必须是 {ALL_STATUS}（{status!r}）")
         row = self._require_instance(device_id, playbook_name, task_id)
         now = _utcnow_iso()
         started_at = _dt_str(row.started_at)
-        if status == STATUS_RUNNING and row.status != STATUS_RUNNING and not started_at:
-            started_at = now
-        finished_at = now if status in TERMINAL_STATUS else None
+        finished_at = _dt_str(row.finished_at)
+        result_txt = row.result
+        if status == STATUS_COMPLETED:
+            if not started_at:
+                started_at = now
+            finished_at = now
+            if result is not None:
+                result_txt = str(result).strip() or None
+        elif status == STATUS_RUNNING:
+            if not started_at:
+                started_at = now
+            finished_at = None
+            # 回到进行中：清掉旧完成原因（除非本轮显式带 result）
+            result_txt = str(result).strip() or None if result is not None else None
+        else:  # not_started：清空运行痕迹
+            started_at = None
+            finished_at = None
+            result_txt = None
         quest_mapper.update_instance(
             id=row.id,
             status=status,
-            current_score=row.current_score,
             started_at=started_at,
             finished_at=finished_at,
-            result=str(result or "").strip() or None,
-            strategy_override=row.strategy_override,
+            result=result_txt,
             updated_at=now,
         )
-        return self._instance_result(device_id, playbook_name, task_id)
-
-    def update_task_strategy(self, device_id: str, playbook_name: str, task_id: str, strategy: str) -> dict:
-        """工具函数②：AI 根据用户反馈更新任务的处理策略（实例级覆盖定义 strategy）。"""
-        strategy = str(strategy or "").strip()
-        if not strategy:
-            raise QuestError("strategy 不能为空")
-        row = self._require_instance(device_id, playbook_name, task_id)
-        now = _utcnow_iso()
-        quest_mapper.update_instance(
-            id=row.id,
-            status=row.status,
-            current_score=row.current_score,
-            started_at=_dt_str(row.started_at),
-            finished_at=_dt_str(row.finished_at),
-            result=row.result,
-            strategy_override=strategy,
-            updated_at=now,
-        )
-        return {"task_id": task_id, "strategy": strategy}
-
-    # ── 内部 ──────────────────────────────────────────────────
-
-    def _propagate(self, device_id: str, playbook_name: str, task_id: str, status: str, *, now: str) -> tuple[list[dict], list[dict]]:
-        defn = self.get_task_definition(playbook_name, task_id)
-        port = "on_success" if status == RESULT_SUCCESS else "on_failure"
-        refs = (defn or {}).get(port) or []
-        propagated: list[dict] = []
-        activated: list[dict] = []
-        for ref in refs:
-            target_id = ref["id"]
-            tgt = quest_mapper.get_instance(device_id, playbook_name, target_id)
-            if tgt is None:
-                continue  # 定义引用了尚未分配实例的任务（改剧本后未重新分配）
-            if tgt.status in TERMINAL_STATUS:
-                continue  # 终态目标不再接收
-            tgt_defn = self.get_task_definition(playbook_name, target_id)
-            activation = int((tgt_defn or {}).get("activation_score") or 1)
-            new_score = (tgt.current_score or 0) + int(ref.get("score") or 0)
-            is_activated = tgt.status == STATUS_NOT_STARTED and new_score >= activation
-            quest_mapper.update_instance(
-                id=tgt.id,
-                status=STATUS_RUNNING if is_activated else tgt.status,
-                current_score=new_score,
-                started_at=now if is_activated else _dt_str(tgt.started_at),
-                finished_at=_dt_str(tgt.finished_at),
-                result=tgt.result,
-                strategy_override=tgt.strategy_override,
-                updated_at=now,
-            )
-            info = {
-                "task_id": target_id,
-                "current_score": new_score,
-                "status": STATUS_RUNNING if is_activated else tgt.status,
-            }
-            propagated.append(info)
-            if is_activated:
-                activated.append(info)
-        return propagated, activated
+        return self._require_instance_dict(device_id, playbook_name, task_id)
 
     def _require_instance(self, device_id: str, playbook_name: str, task_id: str):
         row = quest_mapper.get_instance(device_id, playbook_name, task_id)
@@ -791,11 +838,9 @@ class QuestService(metaclass=SingletonMeta):
             raise QuestError(f"任务实例不存在（剧本 {playbook_name}/{task_id}）——请先创建/分配实例")
         return row
 
-    def _instance_result(self, device_id: str, playbook_name: str, task_id: str, *, activated: bool = False) -> dict:
+    def _require_instance_dict(self, device_id: str, playbook_name: str, task_id: str) -> dict:
         row = quest_mapper.get_instance(device_id, playbook_name, task_id)
-        out = _instance_to_dict(row) if row else {"task_id": task_id}
-        out["activated"] = activated
-        return out
+        return _instance_to_dict(row) if row else {"task_id": task_id}
 
 
 def _instance_to_dict(row) -> dict[str, Any]:
@@ -804,11 +849,9 @@ def _instance_to_dict(row) -> dict[str, Any]:
         "playbook": row.playbook,
         "task_id": row.task_id,
         "status": row.status,
-        "current_score": row.current_score,
         "started_at": _dt_str(row.started_at),
         "finished_at": _dt_str(row.finished_at),
         "result": row.result,
-        "strategy_override": row.strategy_override,
     }
 
 

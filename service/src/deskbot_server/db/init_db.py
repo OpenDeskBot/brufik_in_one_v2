@@ -299,11 +299,80 @@ def _migrate_memory_to_db(engine) -> None:
         logger.info("已迁移 %d 条记忆到 device_memory 表", migrated)
 
 
+def _migrate_quest_instance_schema(engine) -> None:
+    """剧本实例表迁移到新状态机：success/failed → completed，并移除分数/策略遗留列。
+
+    旧状态机 not_started → running → success/failed（带 current_score/strategy_override）；
+    新状态机 not_started → running → completed（仅一次性任务到终态），
+    current_score/strategy_override 两列删除（SQLite 用重建表模式，同
+    _migrate_scheduled_tasks_drop_legacy_run_at 先例）。
+    """
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "quest_instance" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("quest_instance")}
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE quest_instance SET status = 'completed' WHERE status IN ('success', 'failed')")
+        )
+    if "current_score" not in cols:
+        return  # 新库/已迁移：只做状态归一，幂等返回
+
+    logger.info("迁移 quest_instance：移除遗留 current_score/strategy_override 列")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE quest_instance_new (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    device_id VARCHAR(128) NOT NULL,
+                    playbook VARCHAR(64) NOT NULL DEFAULT 'default',
+                    task_id VARCHAR(64) NOT NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'not_started',
+                    started_at DATETIME,
+                    finished_at DATETIME,
+                    result TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO quest_instance_new (
+                    id, device_id, playbook, task_id, status,
+                    started_at, finished_at, result, created_at, updated_at
+                )
+                SELECT
+                    id, device_id, playbook, task_id, status,
+                    started_at, finished_at, result, created_at, updated_at
+                FROM quest_instance
+                """
+            )
+        )
+        conn.execute(text("DROP TABLE quest_instance"))
+        conn.execute(text("ALTER TABLE quest_instance_new RENAME TO quest_instance"))
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_quest_instance_dev_play_task "
+                "ON quest_instance (device_id, playbook, task_id)"
+            )
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_quest_instance_device_id ON quest_instance (device_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_quest_instance_task_id ON quest_instance (task_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_quest_instance_status ON quest_instance (status)"))
+
+
 def init_database() -> None:
     engine = init_engine()
     _migrate_legacy_schema(engine)
     Base.metadata.create_all(bind=engine)
     _migrate_devices_schema(engine)
     _migrate_scheduled_tasks_schema(engine)
+    _migrate_quest_instance_schema(engine)
     _migrate_face_profiles_to_db(engine)
     _migrate_memory_to_db(engine)

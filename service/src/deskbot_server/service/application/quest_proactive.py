@@ -1,14 +1,15 @@
 """剧本主动推进：设备冷场 ≥1 分钟且用户在面前时，发起一轮主动对话推进剧情。
 
-由 LiveService（on_face_tick 冷场判定）调度调用。Quest 当前 running 任务与
-工具契约按 device_id 自动注入每轮对话的 system prompt（infrastructure/llm/utils.py
-的 llm_quest_tasks / llm_quest_tools 附录），因此这里只需像定时任务
-（ScheduledTaskScheduler）一样发起一轮 run_chat_turn —— LLM 会看到任务定义，
-自主选择开口引导主人配合，或在成功/失败条件已满足时直接调 update_task_result
-判定终态并沿连线传播分数。
+由 LiveService（on_face_tick 冷场判定）调度调用。Quest 当前 running 任务按
+device_id 自动注入每轮对话的 system prompt（infrastructure/llm/utils.py 的
+llm_quest_tasks 附录 + 该用户记录），因此这里只需像定时任务
+（ScheduledTaskScheduler）一样发起一轮 run_chat_turn —— LLM 会看到任务定义与
+用户今日记录，自主选择开口引导主人配合并调 complete_task 收尾记账，或在该推进的
+事已做完/无新进展时 need_reply=false 静默收尾。
 
-user_text 以 ``_QUEST_PROACTIVE_PREFIX`` 开头：chat_flow 据此把它当作系统发起轮，
-强制 need_reply 并把「已发送/已汇报」类 meta 文案兜底成面向主人的口播语。
+user_text 以 ``_QUEST_PROACTIVE_PREFIX`` 开头：chat_flow 据此把它当作系统发起轮
+（不强制开口，允许静默；need_reply=true 且 tts 为「已发送/已汇报」类 meta 文案时
+兜底成面向主人的口播语）。LiveService 在每次 attempt 后落冷却，防高频骚扰。
 """
 
 from __future__ import annotations
@@ -121,19 +122,28 @@ class QuestProactiveRunner:
 
 
 def _build_user_text(task: dict[str, Any]) -> str:
-    """构造剧情推进指令（以系统前缀开头，chat_flow 强制本轮开口）。"""
+    """构造剧情推进指令（以系统前缀开头；chat_flow 允许本轮 need_reply=false 静默）。"""
+    from deskbot_server.service.quest_service import TYPE_LABELS
+
+    ttype = str(task.get("type") or "once")
+    ttype_label = TYPE_LABELS.get(ttype, ttype)
+    prompt = str(task.get("prompt") or "").strip()
     parts = [
         f"{_QUEST_PROACTIVE_PREFIX} 主人约 1 分钟没有和本机器人对话，但人就在面前，现在需要主动推进剧情任务："
-        f"[{task.get('task_id')}] {task.get('title') or 'notitle'}",
+        f"[{task.get('task_id')}]（{ttype_label}）：{prompt}",
     ]
-    for key in ("goal", "strategy", "success_condition", "failure_condition"):
-        val = str(task.get(key) or "").strip()
-        if val:
-            parts.append(f"  {key}：{val}")
+    if ttype == "once":
+        parts.append("  - 一次性任务：本轮引导主人配合达成目标；若依据对话已能确定目标达成，"
+                     "直接调 complete_task(task_id, reason, user=当前说话人) 收尾，服务端会自动接续其后继任务。")
+    elif ttype == "daily":
+        parts.append("  - 日常任务：若该用户今日记录（见 system 下方记录）里还没有此任务的完成行，"
+                     "可引导其完成一次并调 complete_task 记账（user 填当前说话人）；已有今日记录就不要重复做。")
+    else:  # long_term
+        parts.append("  - 长期任务：可自然聊聊相关话题；只在此次对话取得实质新进展时调 "
+                     "complete_task(task_id, user=当前说话人, reason=新进展) 追加记录。")
     parts.append(
-        "要求：need_reply 必须为 true，tts 写直接说给主人听的引导语（提问 / 请求配合 / 简述进展），"
-        "禁止写「已发送」「已汇报」等汇报语；若依据已掌握的信息能明确判断成功条件或失败条件满足，"
-        "直接调用 update_task_result 判定终态并简短口播结论；若任务暂无法推进，"
-        "就自然地把话题引向下一个进行中任务或闲聊，不要让对话冷场。"
+        "要求：有可开口推进/问候/记录的事项就开口（need_reply=true，tts 写直接说给主人听的引导语，"
+        "禁止「已发送/已汇报」式汇报腔）；若该任务今日已对当前用户记录过、或此刻没有值得推进的新事项，"
+        "就自然闲聊或保持安静（need_reply=false、tts 留空），不要硬推任务、不要让对话冷场。"
     )
     return "\n".join(parts)

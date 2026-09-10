@@ -44,8 +44,9 @@ logger = logging.getLogger("deskbot-server")
 
 _SCHEDULED_TASK_PREFIX = "[系统定时任务]"
 _QUEST_PROACTIVE_PREFIX = "[系统剧情推进]"
-# 社交主动问候轮：不进 _SYSTEM_INITIATED_PREFIXES —— 不强制开口，
-# LLM 判定此刻无话可说时可 need_reply=false 静默退出（区别于剧情/定时轮必须口播）
+# 社交/剧情主动轮：不进 _SYSTEM_INITIATED_PREFIXES —— 不强制开口，
+# LLM 判定此刻无话可说时可 need_reply=false 静默退出（区别于定时轮必须口播）
+# （剧情任务重构后日常/长期任务永续 running，是否开口须由模型结合今日记录判断）
 _SOCIAL_PROACTIVE_PREFIX = "[系统主动问候]"
 _SYSTEM_INITIATED_PREFIXES = (_SCHEDULED_TASK_PREFIX, _QUEST_PROACTIVE_PREFIX)
 _ALL_SYSTEM_PREFIXES = _SYSTEM_INITIATED_PREFIXES + (_SOCIAL_PROACTIVE_PREFIX,)
@@ -699,9 +700,12 @@ async def run_chat_turn(
         llm_moves = list(parsed.get("moves") or [])
         llm_anims = list(parsed.get("anims") or [])
         need_reply = bool(parsed.get("need_reply", True))
-        if is_scheduled or is_quest_proactive:
-            need_reply = True  # 系统发起轮必须开口，禁止静默
-        # 社交主动问候轮允许静默退出：meta 汇报语/空文案一律按不开口处理
+        if is_scheduled:
+            need_reply = True  # 定时提醒轮必须开口，禁止静默
+        # 剧情/社交主动轮允许静默退出：剧情任务（尤其永续的日常/长期）推进与否由
+        # 模型依据 system 里的任务与今日记录判断（need_reply=false 即静默收尾，
+        # 下方兜底口播语仅在 need_reply=true 且 tts 为空/汇报腔时启用）。
+        # 社交轮额外：meta 汇报语/空文案一律按不开口处理
         # （防「已问候」类汇报语被照字朗读；有动作则走下方静默分支只下发动作）
         if is_social_proactive and _social_tts_looks_like_meta_report(reply_text):
             need_reply = False
@@ -789,7 +793,7 @@ async def run_chat_turn(
         if not parsed["json_ok"]:
             logger.warning("[LLM] 输出未通过 JSON 解析，按整段文本走 TTS。device_id=%s req=%s", device_id, request_id)
 
-        if not need_reply and not (is_scheduled or is_quest_proactive):
+        if not need_reply and not is_scheduled:
             has_motion = bool(llm_moves or llm_anims)
             if has_motion:
                 logger.info(

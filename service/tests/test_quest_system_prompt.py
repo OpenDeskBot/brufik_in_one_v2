@@ -1,4 +1,4 @@
-"""剧情任务注入 system prompt 测试：llm_quest_tasks/tools_prompt_appendix
+"""剧情任务注入 system prompt 测试：llm_quest_tasks_prompt_appendix
 与 build_llm_system_prompt 的组装。"""
 
 from __future__ import annotations
@@ -41,47 +41,23 @@ def _bind_device(device_id: str, quest_id: str | None = "demo") -> None:
 
 
 def _demo_playbook(name: str = "demo") -> dict:
+    """问候(once 入口)→了解姓名(once)。"""
     return {
         "name": name,
         "tasks": [
             {
                 "id": "g_greet",
-                "goal": "主动向用户问好",
-                "strategy": "轻松自然地打招呼",
-                "activation_score": 100,
-                "initial_status": "running",
-                "success_condition": "用户回应了问候",
-                "failure_condition": "用户没有回应",
-                "on_success": [{"id": "g_learn_name", "score": 10}],
-                "on_failure": [],
-                "score_sources": {"conversation": True, "time": "08:00"},
+                "type": "once",
+                "prompt": "主动向用户问好",
+                "next_task_ids": ["g_learn_name"],
                 "pos": {"x": 120, "y": 120, "width": 200, "height": 96},
             },
             {
                 "id": "g_learn_name",
-                "goal": "知道用户的名字",
-                "strategy": "自然地问，记住并下次称呼",
-                "activation_score": 10,
-                "initial_status": "not_started",
-                "success_condition": "用户明确告诉了我他的名字",
-                "failure_condition": "用户表示不想说",
-                "on_success": [],
-                "on_failure": [{"id": "g_learn_name_soften", "score": 6}],
-                "score_sources": {"conversation": True, "time": None},
+                "type": "once",
+                "prompt": "知道用户的名字",
+                "next_task_ids": [],
                 "pos": {"x": 460, "y": 120, "width": 200, "height": 96},
-            },
-            {
-                "id": "g_learn_name_soften",
-                "goal": "换个角度接近用户",
-                "strategy": "不再问名字，聊用户感兴趣的日常",
-                "activation_score": 6,
-                "initial_status": "not_started",
-                "success_condition": "用户愿意闲聊了",
-                "failure_condition": "用户始终冷淡",
-                "on_success": [],
-                "on_failure": [],
-                "score_sources": {"conversation": True, "time": None},
-                "pos": {"x": 460, "y": 380, "width": 200, "height": 96},
             },
         ],
     }
@@ -101,9 +77,7 @@ def _setup_bound(env, device_id: str = "dev1", quest_id: str | None = "demo"):
 
 
 def test_appendix_unbound_empty(env):
-    from deskbot_server.infrastructure.llm.utils import (
-        llm_quest_tasks_prompt_appendix,
-    )
+    from deskbot_server.infrastructure.llm.utils import llm_quest_tasks_prompt_appendix
 
     assert llm_quest_tasks_prompt_appendix(device_id=None) == ""
     _bind_device("dev1", None)
@@ -122,7 +96,10 @@ def test_tasks_appendix_contains_running(env):
     ax = llm_quest_tasks_prompt_appendix(device_id="dev1")
     assert "当前剧情任务" in ax
     assert "g_greet" in ax and "主动向用户问好" in ax
+    assert "一次性" in ax  # type 中文标注
+    assert "complete_task" in ax  # 完成指引
     assert "进度" not in ax  # 不展示分数进度
+    assert "成功条件" not in ax and "失败条件" not in ax  # 旧字段不再注入
 
 
 def test_build_llm_system_prompt_injects_quest_sections(env):
@@ -131,13 +108,12 @@ def test_build_llm_system_prompt_injects_quest_sections(env):
     _setup_bound(env)
     sp = build_llm_system_prompt("你是助手", device_id="dev1")
     assert "当前剧情任务" in sp
-    assert "update_task_result" in sp
-    # 时间戳在全文末尾（剧情/工具段之前），且注入任务不带进度行
+    assert "complete_task" in sp  # 工具名（directive 与完成指引）
+    # 时间戳在全文末尾（剧情段之前）；任务不带进度
     assert "当前时间是: " in sp
-    assert sp.rfind("当前时间是:") > sp.rfind("update_task_result")
-    assert "进度：" not in sp
-    assert "g_greet" in sp and "0/100" not in sp
-    # 未绑定设备且默认剧本缺失（临时目录只有 demo）→ 不注入（基础内容不受影响）
+    assert sp.rfind("当前时间是:") > sp.rfind("当前剧情任务")
+    assert "进度：" not in sp and "g_greet" in sp
+    # 未绑定设备且默认剧本缺失（临时目录只有 demo）→ 不注入
     _bind_device("dev2", None)
     sp2 = build_llm_system_prompt("你是助手", device_id="dev2")
     assert "当前剧情任务" not in sp2
@@ -145,22 +121,13 @@ def test_build_llm_system_prompt_injects_quest_sections(env):
 
 
 def test_tasks_appendix_lists_at_most_three(env, monkeypatch):
-    """进行中任务超过 3 个时只列前 3（优先级高的）。"""
+    """进行中任务超过 3 个时只列前 3（once→long_term→daily，服务端已排序）。"""
     from deskbot_server.infrastructure.llm.utils import llm_quest_tasks_prompt_appendix
     from deskbot_server.service import quest_service
 
     def _fake_tasks(self, device_id):
         return [
-            {
-                "task_id": f"t{i}",
-                "title": f"任务{i}",
-                "goal": f"目标{i}",
-                "strategy": f"策略{i}",
-                "success_condition": f"成功{i}",
-                "failure_condition": f"失败{i}",
-                "current_score": i,
-                "activation_score": 10,
-            }
+            {"task_id": f"t{i}", "type": "daily", "prompt": f"任务{i}"}
             for i in range(1, 5)  # 4 个 running
         ]
 

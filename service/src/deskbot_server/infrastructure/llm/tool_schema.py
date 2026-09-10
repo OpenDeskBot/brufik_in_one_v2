@@ -91,8 +91,12 @@ def _batch1_schemas() -> list[dict[str, Any]]:
 
 # ───────────────────── 第二批（A2 阶段启用）─────────────────────
 
-def _batch2_schemas(*, device_id: str | None = None, quest_task_ids: list[str] | None = None) -> list[dict[str, Any]]:
-    """register_face / register_voiceprint + 剧情任务工具（任务 id 动态注入 description）。"""
+def _batch2_schemas(*, device_id: str | None = None, quest_tasks: list[dict] | None = None) -> list[dict[str, Any]]:
+    """register_face / register_voiceprint + 剧情任务工具 complete_task。
+
+    ``quest_tasks`` 为 ``[{"task_id", "type"}]``（进行中任务），非空才产出
+    complete_task；任务 id 与类型动态注入 description，不进 parameters enum。
+    """
     out: list[dict[str, Any]] = [
         _fn(
             "register_face",
@@ -112,30 +116,23 @@ def _batch2_schemas(*, device_id: str | None = None, quest_task_ids: list[str] |
             {"name": {"type": "string", "description": "姓名"}},
         ),
     ]
-    if quest_task_ids is not None and quest_task_ids:
-        ids_text = ", ".join(quest_task_ids)
+    if quest_tasks:
+        from deskbot_server.service.quest_service import TYPE_LABELS
+
+        ids_text = ", ".join(f"{t['task_id']}({TYPE_LABELS.get(t.get('type', 'once'), '一次性')})" for t in quest_tasks)
         out.append(
             _fn(
-                "update_task_result",
-                f"判断进行中剧情任务的成败并落结果（当前可用任务 id：{ids_text}）。"
-                "success_condition 满足则置 success、failure_condition 满足则置 failed；"
-                "置终态后会自动向后继任务传播。result 必填，写用户原意。",
-                ["task_id", "status", "result"],
+                "complete_task",
+                f"完成/记录进行中剧情任务的推进（当前可用任务：{ids_text}）。"
+                "一次性(once)：本次对话目标达成才调用，reason 写达成内容，完成后自动接续其后继任务；"
+                "日常(daily)：对当前用户今日完成一次调一次（若服务端返回 deduped 表示今日已记录，勿重复调）；"
+                "长期(long_term)：有实质新进展才调用，可对不同用户/不同时间多次累计记录。"
+                "user 填当前对话用户（daily/long_term 必填，once 可空）。",
+                ["task_id", "reason"],
                 {
-                    "task_id": {"type": "string", "description": "目标任务 id"},
-                    "status": {"type": "string", "enum": ["success", "failed"], "description": "判定结果"},
-                    "result": {"type": "string", "description": "成功结果/失败原因（口语转述）"},
-                },
-            )
-        )
-        out.append(
-            _fn(
-                "update_task_strategy",
-                f"根据用户反馈更新某任务的处理策略（当前可用任务 id：{ids_text}）。",
-                ["task_id", "strategy"],
-                {
-                    "task_id": {"type": "string", "description": "目标任务 id"},
-                    "strategy": {"type": "string", "description": "新的处理策略"},
+                    "task_id": {"type": "string", "description": "目标任务 id（见上方可用任务）"},
+                    "user": {"type": "string", "description": "当前对话用户（日常/长期任务必填）"},
+                    "reason": {"type": "string", "description": "完成内容/达成结果/新进展（口语转述，必填）"},
                 },
             )
         )
@@ -190,19 +187,19 @@ def build_native_tool_schemas(
     """输出当前启用的原生工具 schema（供每轮 tools 参数）。
 
     batch1 = 纯函数六工具；batch2 = 人脸/声纹注册 + 剧情任务（无 running 任务时
-    quest 工具不产出；任务 id 动态注入 description，不进 parameters enum）；
+    quest 工具不产出；任务 id/类型动态注入 description，不进 parameters enum）；
     batch3（随 batch2 开关）= 用户社交按人归档两工具，恒在。
     """
     schemas = _batch1_schemas()
     if include_batch2:
-        task_ids: list[str] | None = None
+        quest_tasks: list[dict] | None = None
         if device_id:
             from deskbot_server.service.quest_service import QuestService
 
             calls = QuestService().get_tool_calls(str(device_id))
             if calls:
-                task_ids = list(calls[0].get("available_task_ids") or [])
-        schemas += _batch2_schemas(device_id=device_id, quest_task_ids=task_ids)
+                quest_tasks = calls[0].get("tasks") or []
+        schemas += _batch2_schemas(device_id=device_id, quest_tasks=quest_tasks)
         schemas += _user_social_schemas()
     return schemas
 

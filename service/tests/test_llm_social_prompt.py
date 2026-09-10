@@ -86,7 +86,8 @@ def test_both_face_and_voice_users_injected_with_files(env, monkeypatch):
     assert recognized_known_users("dev1") == ["小红", "小明"]  # 声纹说话人优先
     sp = _build()
     assert "小红 的资料" in sp and "小明 的资料" in sp  # 两人档案块
-    assert "小红 今日已完成的主动问候/关心" in sp
+    assert "小红 今日已完成记录" in sp
+    assert "剧情日常任务" in sp  # 新标签说明剧情日常任务也会记入同一文件
     assert "今日暂无主动互动记录" not in sp  # 两人今日都有记录
     assert "我叫小明，今年10岁，喜欢乐高" in sp
     assert "我问了小红中午吃了什么" in sp

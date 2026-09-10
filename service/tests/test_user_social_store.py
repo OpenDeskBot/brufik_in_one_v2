@@ -125,6 +125,52 @@ def test_last_talk_overwrite_and_read(data_dir, freeze_clock):
     assert s.read_user_last_talk("dev1", "小明") == "2026-09-03 08:00:05"
 
 
+def test_quest_daily_line_marker_dedupe(data_dir, freeze_clock):
+    """剧情日常记账：带 [task_id] 标记；同日同任务二次写 → deduped 幂等。"""
+    s = _store()
+    r1 = s.append_quest_daily_line("dev1", "小明", "g_daily", "小明中午吃了饺子")
+    assert r1["written"] is True and r1["deduped"] is False
+    p = data_dir / "dev1" / "done_list_小明_20260903.txt"
+    assert p.is_file()
+    assert p.read_text(encoding="utf-8") == "2026-09-03 08:00:00 [g_daily] 小明中午吃了饺子\n"
+    # 同日同任务再写（换说法）→ 不写、deduped=True
+    r2 = s.append_quest_daily_line("dev1", "小明", "g_daily", "又确认了一次")
+    assert r2["written"] is False and r2["deduped"] is True
+    assert len(p.read_text(encoding="utf-8").splitlines()) == 1
+    # 不同用户 / 不同任务各自记录，互不拦截
+    r3 = s.append_quest_daily_line("dev1", "小红", "g_daily", "小红吃了面条")
+    assert r3["written"] is True
+    r4 = s.append_quest_daily_line("dev1", "小明", "g_other", "小明又喝了一杯水")
+    assert r4["written"] is True
+    lines = p.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2 and any("[g_other]" in ln for ln in lines)
+    # 跨天：日期文件名轮换 → 同任务可再写
+    freeze_clock(86400)
+    r5 = s.append_quest_daily_line("dev1", "小明", "g_daily", "次日记录")
+    assert r5["written"] is True
+    assert (data_dir / "dev1" / "done_list_小明_20260904.txt").is_file()
+    # reason 空 → ValueError
+    with pytest.raises(ValueError):
+        s.append_quest_daily_line("dev1", "小明", "g_daily", "  ")
+
+
+def test_quest_progress_line_accumulates(data_dir, freeze_clock):
+    """剧情长期进展记账：user_info 累计；精确重复行去重。"""
+    s = _store()
+    r1 = s.append_quest_progress_line("dev1", "小明", "g_habit", "小明说喜欢乐高")
+    assert r1["written"] is True and r1["deduped"] is False
+    r2 = s.append_quest_progress_line("dev1", "小明", "g_habit", "小明还喜欢足球")
+    assert r2["written"] is True and r2["deduped"] is False
+    p = data_dir / "dev1" / "user_info_小明.txt"
+    lines = p.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2 and all("[g_habit]" in ln for ln in lines)
+    assert lines[0] == "2026-09-03 08:00:00 [g_habit] 小明说喜欢乐高"
+    # 精确重复行（同秒同前缀）→ 行级去重、不写
+    r3 = s.append_quest_progress_line("dev1", "小明", "g_habit", "小明说喜欢乐高")
+    assert r3["written"] is False and r3["deduped"] is True
+    assert len(p.read_text(encoding="utf-8").splitlines()) == 2
+
+
 def test_name_validation_and_stem_fallback(data_dir):
     s = _store()
     ok_names = ["小明", "Zhang San", "xiaoming_1", "李-雷", "张.三", "a" * 32]

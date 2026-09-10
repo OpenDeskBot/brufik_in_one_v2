@@ -180,10 +180,11 @@ class DeviceSessionMessage(Base):
 
 
 class QuestInstance(Base):
-    """剧本任务实例：每设备每任务的运行状态、分数与结果。
+    """剧本任务实例：每设备每任务的运行状态与结果。
 
-    定义（goal/activation_score/on_success 等）存于剧本 JSON 文件，
-    本表只存运行态：状态机 not_started → running → success/failed。
+    定义（type/prompt/next_task_ids 等）存于剧本 JSON 文件，
+    本表只存运行态：状态机 not_started → running → completed（仅一次性任务到终态；
+    日常/长期任务一旦 running 即永续，完成记录落在 per-user 文件）。
     """
 
     __tablename__ = "quest_instance"
@@ -196,10 +197,8 @@ class QuestInstance(Base):
     playbook: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     task_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="not_started", index=True)
-    current_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    result: Mapped[str | None] = mapped_column(Text, nullable=True)
-    strategy_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)  # 完成原因（一次性任务 complete 时写入）
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

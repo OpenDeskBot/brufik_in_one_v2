@@ -187,16 +187,16 @@ def test_schema_batch1_keys_match_runner():
 
 
 def test_schema_batch2_default_on_without_quest(monkeypatch):
-    """batch2 默认启用：register_* 恒在；quest 工具需设备有 running 任务才产出。"""
+    """batch2 默认启用：register_* 恒在；complete_task 需设备有 running 任务才产出。"""
     schemas = build_native_tool_schemas(device_id=None)
     names = [s["function"]["name"] for s in schemas]
     assert names[:6] == NATIVE_TOOL_NAMES_BATCH1
     assert "register_face" in names and "register_voiceprint" in names
-    assert "update_task_result" not in names  # 无绑定/无 running → 不广告
+    assert "complete_task" not in names  # 无绑定/无 running → 不广告
 
     class _FakeSvc:
         def get_tool_calls(self, device_id):
-            return [{"available_task_ids": ["g_a"]}]
+            return [{"tasks": [{"task_id": "g_a", "type": "once"}, {"task_id": "g_b", "type": "daily"}]}]
 
     import deskbot_server.infrastructure.llm.tool_schema as ts
     import deskbot_server.service.quest_service as qs
@@ -204,6 +204,12 @@ def test_schema_batch2_default_on_without_quest(monkeypatch):
     monkeypatch.setattr(qs, "QuestService", _FakeSvc)
     schemas2 = build_native_tool_schemas(device_id="dev_q")
     names2 = [s["function"]["name"] for s in schemas2]
-    assert "update_task_result" in names2 and "update_task_strategy" in names2
-    desc = next(s for s in schemas2 if s["function"]["name"] == "update_task_result")["function"]["description"]
-    assert "g_a" in desc  # 动态任务 id 注入 description
+    assert "complete_task" in names2
+    assert "update_task_result" not in names2 and "update_task_strategy" not in names2
+    sch = next(s for s in schemas2 if s["function"]["name"] == "complete_task")
+    fn = sch["function"]
+    assert "g_a" in fn["description"] and "g_b" in fn["description"]  # 动态 id+类型注入 description
+    assert "一次性" in fn["description"] and "日常" in fn["description"]
+    assert fn["parameters"]["required"] == ["task_id", "reason"]  # user 由服务端对 daily/long 强校验
+    props = fn["parameters"]["properties"]
+    assert set(props) == {"task_id", "user", "reason"}

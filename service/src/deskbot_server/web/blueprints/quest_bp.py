@@ -14,14 +14,20 @@ from deskbot_server.service.quest_service import (
     DESIGN_SANDBOX_DEVICE,
     QuestError,
     QuestService,
-    RESULT_FAILED,
-    RESULT_SUCCESS,
 )
-from deskbot_server.web.view_helpers import ViewAPIRoute, get_json, jsonify, render_template
+from deskbot_server.web.view_helpers import (
+    ViewAPIRoute,
+    args_get,
+    get_json,
+    jsonify,
+    render_template,
+)
 
 router = APIRouter(route_class=ViewAPIRoute, tags=["quest"])
 
-_SIM_ACTIONS = ("score", RESULT_SUCCESS, RESULT_FAILED, "set_state")
+# 沙箱模拟动作：set_state 直接改三态 / complete 走完整任务完成链（与 LLM 工具同一条路径）
+_SIM_ACTIONS = ("set_state", "complete")
+_SIM_USER_DEFAULT = "__design__"
 
 
 def _service() -> QuestService:
@@ -154,20 +160,16 @@ def api_task_delete(request: Request, name: str, task_id: str, user: RequireDeve
         return _pb_error(exc)
 
 
-# ── 连线（成功口/失败口 → 目标输入口，带分数）────────────────
+# ── 连线（后继单端口，无分数）─────────────────────────────────
 
 
 @router.put("/api/quest/playbooks/{name}/edges")
 def api_edge_set(request: Request, name: str, user: RequireDeveloper):
     body = get_json(request, silent=True) or {}
     from_id = str(body.get("from") or "").strip()
-    port = str(body.get("port") or "").strip()
     to_id = str(body.get("to") or "").strip()
-    score = body.get("score", 0)
     try:
-        return jsonify(
-            {"ok": True, "edge": _service().set_edge(name, from_id, port, to_id, int(score or 0))}
-        )
+        return jsonify({"ok": True, "edge": _service().set_edge(name, from_id, to_id)})
     except QuestError as exc:
         return _pb_error(exc)
 
@@ -175,10 +177,9 @@ def api_edge_set(request: Request, name: str, user: RequireDeveloper):
 @router.delete("/api/quest/playbooks/{name}/edges")
 def api_edge_remove(request: Request, name: str, user: RequireDeveloper):
     from_id = args_get(request, "from", "", type=str) or ""
-    port = args_get(request, "port", "", type=str) or ""
     to_id = args_get(request, "to", "", type=str) or ""
     try:
-        _service().remove_edge(name, from_id, port, to_id)
+        _service().remove_edge(name, from_id, to_id)
         return jsonify({"ok": True})
     except QuestError as exc:
         return _pb_error(exc)
@@ -190,8 +191,9 @@ def api_edge_remove(request: Request, name: str, user: RequireDeveloper):
 @router.post("/api/quest/playbooks/{name}/simulate/{task_id}")
 def api_quest_simulate(request: Request, name: str, task_id: str, user: RequireDeveloper):
     """沙箱模拟：
-    action=score → 加对话贡献分（points，默认 1）
-    action=success|failed → 判定任务结果（result 必填，成功结果/失败原因）
+    action=set_state → 直接改三态状态（status：not_started/running/completed，result 可选）
+    action=complete → 走完整 complete_task（reason 可选；user 默认 __design__；
+                       一次性会置完成并激活后继，日常/长期会真写 __design__ 下的记录文件）
     """
     body = get_json(request, silent=True) or {}
     action = str(body.get("action") or "").strip()
@@ -200,23 +202,22 @@ def api_quest_simulate(request: Request, name: str, task_id: str, user: RequireD
     svc = _service()
     try:
         _ensure_sandbox(name)
-        if action == "score":
-            points = int(body.get("points") or 1)
+        if action == "complete":
+            user_name = str(body.get("user") or _SIM_USER_DEFAULT).strip() or _SIM_USER_DEFAULT
+            reason = str(body.get("reason") or "").strip()
             return jsonify(
-                {"ok": True, "result": svc.contribute_score(DESIGN_SANDBOX_DEVICE, name, task_id, points)}
+                {
+                    "ok": True,
+                    "result": svc.complete_task(
+                        DESIGN_SANDBOX_DEVICE, name, task_id, user=user_name, reason=reason
+                    ),
+                }
             )
-        if action == "set_state":
-            status = str(body.get("status") or "").strip()
-            result = str(body.get("result") or "").strip() or None
-            return jsonify(
-                {"ok": True, "result": svc.set_state(DESIGN_SANDBOX_DEVICE, name, task_id, status, result)}
-            )
-        result = str(body.get("result") or "").strip()
+        # set_state
+        status = str(body.get("status") or "").strip()
+        result = str(body.get("result") or "").strip() or None
         return jsonify(
-            {
-                "ok": True,
-                "result": svc.update_task_result(DESIGN_SANDBOX_DEVICE, name, task_id, action, result),
-            }
+            {"ok": True, "result": svc.set_state(DESIGN_SANDBOX_DEVICE, name, task_id, status, result)}
         )
     except QuestError as exc:
         return _pb_error(exc)

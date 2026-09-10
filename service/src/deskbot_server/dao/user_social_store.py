@@ -145,6 +145,57 @@ def append_daily_task_line(device_id: str, name: str, message: str) -> dict[str,
     )
 
 
+def append_quest_daily_line(device_id: str, name: str, task_id: str, reason: str) -> dict[str, Any]:
+    """日常任务完成记账：今日 done_list 追加一行 ``<时间> [{task_id}] {reason}``。
+
+    今日该用户文件已存在含 ``[{task_id}]`` 的行 → 不写，返回 deduped=True
+    （幂等：LLM 工具轮安全重试 / 「每用户每日一次」由服务端兜底）；
+    精确重复行另由 ``_append_line`` 行级去重兜底。
+    返回 {ok, written, deduped, created, line_count, path}；name 非法抛 ValueError。
+    """
+    reason_txt = str(reason or "").strip()
+    if not reason_txt:
+        raise ValueError("reason 为空")
+    vname = validate_user_name(name)
+    path = _done_list_path(device_id, vname)
+    marker = f"[{task_id}]"
+    if path.is_file():
+        try:
+            lines = [ln.rstrip("\n") for ln in path.read_text(encoding="utf-8").splitlines()]
+        except OSError as exc:
+            logger.debug("[user_social_store] done_list 防重扫描失败 path=%s err=%s", path, exc)
+            lines = []
+        if any(marker in ln for ln in lines):
+            return {
+                "ok": True, "written": False, "deduped": True, "created": False,
+                "line_count": len(lines), "path": str(path),
+            }
+    else:
+        lines = []
+    line = f"{_ts_str()} {marker} {reason_txt}"
+    out = _append_line(path, line, max_lines=DONE_LIST_MAX_LINES, trim_keep=DONE_LIST_TRIM_KEEP)
+    return {**out, "written": True}
+
+
+def append_quest_progress_line(device_id: str, name: str, task_id: str, reason: str) -> dict[str, Any]:
+    """长期任务进展记账：user_info 追加一行 ``<时间> [{task_id}] {reason}``（累计）。
+
+    不做日期/任务级防重——同任务多次进展累积成历史（文件超限裁旧保新）；
+    精确重复行由 ``_append_line`` 行级去重兜底。
+    返回 {ok, written, deduped, created, line_count, path}；name 非法抛 ValueError。
+    """
+    reason_txt = str(reason or "").strip()
+    if not reason_txt:
+        raise ValueError("reason 为空")
+    vname = validate_user_name(name)
+    line = f"{_ts_str()} [{task_id}] {reason_txt}"
+    out = _append_line(
+        _info_path(device_id, vname), line,
+        max_lines=USER_INFO_MAX_LINES, trim_keep=USER_INFO_TRIM_KEEP,
+    )
+    return {**out, "written": not out.get("deduped")}
+
+
 def stamp_user_last_talk(device_id: str, name: str) -> str | None:
     """覆盖写单行对话时刻；失败返回 None（不向调用层抛）。"""
     try:

@@ -1,6 +1,6 @@
 """剧本任务实例表 SQL Mapper — MyBatis 注解风格。
 
-定义（goal/激活分数/后继等）在剧本 JSON 文件里，本表只存每设备每任务的运行态。
+定义（type/prompt/next_task_ids 等）在剧本 JSON 文件里，本表只存每设备每任务的运行态。
 """
 
 from __future__ import annotations
@@ -36,11 +36,11 @@ def list_by_playbook(playbook: str) -> list[QuestInstance]:
 @execute(
     """
     INSERT INTO quest_instance
-        (id, device_id, playbook, task_id, status, current_score,
-         started_at, finished_at, result, strategy_override, created_at, updated_at)
+        (id, device_id, playbook, task_id, status,
+         started_at, finished_at, result, created_at, updated_at)
     VALUES
-        (:id, :device_id, :playbook, :task_id, :status, :current_score,
-         :started_at, :finished_at, :result, :strategy_override, :created_at, :updated_at)
+        (:id, :device_id, :playbook, :task_id, :status,
+         :started_at, :finished_at, :result, :created_at, :updated_at)
     """
 )
 def insert_instance(
@@ -49,11 +49,9 @@ def insert_instance(
     playbook: str,
     task_id: str,
     status: str,
-    current_score: int,
     started_at: str | None,
     finished_at: str | None,
     result: str | None,
-    strategy_override: str | None,
     created_at: str,
     updated_at: str,
 ) -> int:
@@ -63,20 +61,17 @@ def insert_instance(
 @execute(
     """
     UPDATE quest_instance
-    SET status = :status, current_score = :current_score, started_at = :started_at,
-        finished_at = :finished_at, result = :result, strategy_override = :strategy_override,
-        updated_at = :updated_at
+    SET status = :status, started_at = :started_at,
+        finished_at = :finished_at, result = :result, updated_at = :updated_at
     WHERE id = :id
     """
 )
 def update_instance(
     id: str,
     status: str,
-    current_score: int,
     started_at: str | None,
     finished_at: str | None,
     result: str | None,
-    strategy_override: str | None,
     updated_at: str,
 ) -> int:
     """更新实例运行态字段。"""

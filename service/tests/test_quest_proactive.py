@@ -212,7 +212,7 @@ def test_runner_offline_returns_false(monkeypatch):
     from deskbot_server.service.application.quest_proactive import QuestProactiveRunner
     from deskbot_server.service.quest_service import QuestService
 
-    task = {"task_id": "t1", "title": "喝水", "goal": "完成喝水", "strategy": "引导主人喝水"}
+    task = {"task_id": "t1", "type": "daily", "prompt": "饭点提醒主人喝水"}
     monkeypatch.setattr(QuestService, "get_current_tasks", lambda self, dev: [task])
 
     class OfflineWs:
@@ -230,11 +230,8 @@ def test_runner_full_path(monkeypatch):
 
     task = {
         "task_id": "t1",
-        "title": "喝水打卡",
-        "goal": "引导主人喝水",
-        "strategy": "多提醒",
-        "success_condition": "主人喝了水",
-        "failure_condition": "主人拒绝",
+        "type": "daily",
+        "prompt": "饭点提醒主人喝水",
     }
     monkeypatch.setattr(QuestService, "get_current_tasks", lambda self, dev: [task])
 
@@ -266,6 +263,9 @@ def test_runner_full_path(monkeypatch):
     assert asyncio.run(runner.attempt("dev1")) is True
     assert captured["user_text"].startswith("[系统剧情推进]")
     assert "t1" in captured["user_text"]
+    assert "日常" in captured["user_text"] and "饭点提醒主人喝水" in captured["user_text"]
+    assert "complete_task" in captured["user_text"]  # 分类型推进指引
+    assert "need_reply=false" in captured["user_text"]  # 允许静默收尾（防永续任务骚扰）
     assert captured["kw"]["force_voice"] is True
     assert captured["publish"][1] == "quest_proactive"
 

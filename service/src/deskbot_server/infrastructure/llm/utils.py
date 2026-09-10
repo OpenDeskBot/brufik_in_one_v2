@@ -158,21 +158,27 @@ def llm_quest_tasks_prompt_appendix(*, device_id: str | None = None) -> str:
     """「当前剧情任务」附录：绑定剧本（devices.quest_id）的 running 任务列表。
 
     未绑定 / 剧本缺失 / 无进行中任务 → 空串（不注入）。
-    只列优先级最高的 3 个进行中任务，不展示分数进度（避免模型以分数为目标）。
+    只列优先级最高的 3 个进行中任务（once → long_term → daily，quest_service 排序），
+    不展示状态机细节，附 per-type 完成判定指引（依据下方该用户的
+    done_list / user_info 记录判断何时调用 complete_task）。
     """
     if not device_id:
         return ""
-    from deskbot_server.service.quest_service import QuestService
+    from deskbot_server.service.quest_service import TYPE_LABELS, QuestService
 
     tasks = QuestService().get_current_tasks(str(device_id))
     if not tasks:
         return ""
     lines: list[str] = ["当前剧情任务（进行中，最多列 3 个）："]
     for t in tasks[:3]:
-        lines.append(f"  - [{t['task_id']}] {t['title']}")
-        lines.append(f"    目标：{t['goal']}")
-        lines.append(f"    策略：{t['strategy']}")
-        lines.append(f"    成功条件：{t['success_condition']}｜失败条件：{t['failure_condition']}")
+        ttype = str(t.get("type") or "once")
+        lines.append(f"  - [{t['task_id']}] {TYPE_LABELS.get(ttype, ttype)}：{t.get('prompt') or ''}")
+    lines.append("完成判定与调用指引（工具 complete_task）：")
+    lines.append("  - 一次性任务：本次对话已达成其描述的目标才调用一次，reason 写达成内容，完成后自动接续其后继任务；")
+    lines.append("  - 日常任务：对该用户今天完成了一次就调用一次并记入其今日记录（见下方）；"
+                 "其今日记录里已有该任务的完成行就不要重复调用；")
+    lines.append("  - 长期任务：只在取得实质新进展时调用（进展记录见下方该用户资料），可对同一或不同用户分多次累计；")
+    lines.append("  - user 参数填当前对话用户（日常/长期必填，一次性可空）；没有可完成/可记录的事项时不要调用。")
     return "\n".join(lines)
 
 
@@ -240,8 +246,8 @@ def llm_user_social_context_prompt_appendix(*, device_id: str | None = None) -> 
         info_txt = info if info else "（暂无已记录的自我介绍，不要编造用户资料）"
         done_txt = done if done else "（今日暂无主动互动记录）"
         block = (
-            f"{name} 的资料（update_user_info 归档，时间旧→新）：\n  {info_txt}\n"
-            f"{name} 今日已完成的主动问候/关心（update_daily_task 记账）：\n  {done_txt}"
+            f"{name} 的资料（update_user_info 归档，时间旧→新；[任务id] 开头行为长期剧情任务的进展记录）：\n  {info_txt}\n"
+            f"{name} 今日已完成记录（问候/关心记账，以及 [任务id] 开头行的剧情日常任务完成）：\n  {done_txt}"
         )
         cost = len(block)
         if blocks and used + cost > USER_SOCIAL_TOTAL_CHAR_CAP:
@@ -474,7 +480,7 @@ def build_llm_system_prompt(base_prompt: str, *, device_id: str | None = None, n
     qx = llm_quest_tasks_prompt_appendix(device_id=device_id)
     if qx:
         base += "\n\n" + qx
-    # 剧情工具契约由 API tools schema 承载（update_task_result 等动态 id 注入
+    # 剧情工具契约由 API tools schema 承载（complete_task 动态注入任务 id/类型
     # description），不再注入文本契约段。
     # 用户社交情境（识别到已知用户时才有内容；无人识别 → 空串保持旧行为）
     sx = llm_user_social_context_prompt_appendix(device_id=device_id)

@@ -31,6 +31,7 @@ SLEEP_MAX_SEC = 60.0
 QUEST_ATTEMPT_IDLE_SEC = 60.0        # 距最后一轮对话超过此时长才尝试推进剧情
 QUEST_CHECK_SEC = 5.0                # 人脸帧内检查节流
 QUEST_NO_TASK_COOLDOWN_SEC = 60.0    # 无 running 任务 / 设备离线时空转冷却（避免高频查库）
+QUEST_ATTEMPT_COOLDOWN_SEC = 300.0   # 成功/静默发起一轮后的冷却（日常任务永续，防高频骚扰）
 _QUEST_DB_TS_CACHE_SEC = 30.0        # DB 会话表兜底时间戳的内存缓存时长
 
 # ── 社交主动问候（与 quest 共用冷场判定/节流；SOCIAL_* 控制问候频率）──
@@ -250,9 +251,10 @@ class LiveService(metaclass=SingletonMeta):
     async def _run_quest_attempt(self, device_id: str) -> None:
         try:
             started = await self._quest_runner.attempt(device_id)
-            if not started:
-                # 无 running 任务 / 设备离线 → 冷却后复查
-                self._quest_next_ok[device_id] = time.monotonic() + QUEST_NO_TASK_COOLDOWN_SEC
+            # 无论是否开口都落冷却：静默轮（daily 今日已记录等）不能让 5s 节流
+            # 变成高频重试；无任务/离线用短冷却尽快复查
+            gap = QUEST_ATTEMPT_COOLDOWN_SEC if started else QUEST_NO_TASK_COOLDOWN_SEC
+            self._quest_next_ok[device_id] = time.monotonic() + gap
         except asyncio.CancelledError:
             raise
         except Exception:
