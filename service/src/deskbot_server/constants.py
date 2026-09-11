@@ -17,6 +17,11 @@ PB_JSON_BIN_GAP_SEC = max(0.0, float(os.environ.get("PB_JSON_BIN_GAP_MS", "50"))
 PB_CHUNK_GAP_SEC = max(0.0, float(os.environ.get("PB_CHUNK_GAP_MS", "0")) / 1000.0)
 # 有 audio 的 pb 片：发完后等待设备 pb_ack.idx>=该片 idx 再发下一片（0=关闭）
 PB_WAIT_ACK = os.environ.get("PB_WAIT_ACK", "1").strip().lower() not in ("0", "false", "no", "off")
+# 窗口 ACK 只用于流控，设备异常或 ACK 丢失时不能永久卡住设备 worker。
+PB_ACK_WINDOW_TIMEOUT_SEC = max(0.5, float(os.environ.get("PB_ACK_WINDOW_TIMEOUT_SEC", "3.0")))
+# 末窗口等待的是执行器真正播毕，需覆盖正常音频尾部，但仍必须有硬上限。
+PB_ACK_END_TIMEOUT_SEC = max(1.0, float(os.environ.get("PB_ACK_END_TIMEOUT_SEC", "15.0")))
+PB_ACK_END_GRACE_SEC = max(0.0, float(os.environ.get("PB_ACK_END_GRACE_SEC", "3.0")))
 # ESP32 打包帧 JSON 上限（字节）；与固件 DESKBOT_MAX_PACKED_JSON_LEN 对齐
 PB_MAX_WIRE_JSON_BYTES = max(4096, int(os.environ.get("PB_MAX_WIRE_JSON_BYTES", str(64 * 1024))))
 # ESP32 WS 单帧 BINARY（PCM）上限；默认按 10s@16kHz mono s16le（统一下发采样率，10000ms→320000B）

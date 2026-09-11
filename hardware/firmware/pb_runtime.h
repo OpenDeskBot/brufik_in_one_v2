@@ -23,3 +23,9 @@ bool pb_runtime_enqueue_frame(uint8_t* data, size_t length);
 
 /** 清空待处理下行帧（new_session 等场景）。 */
 void pb_runtime_discard_rx_queue(void);
+
+/**
+ * 中止当前 PB 会话。可由 ws_transport 等其它任务调用；实际执行器清理统一由
+ * pb_runtime 任务完成，并可打断 executor-space / end 等待。
+ */
+void pb_runtime_abort_session(void);

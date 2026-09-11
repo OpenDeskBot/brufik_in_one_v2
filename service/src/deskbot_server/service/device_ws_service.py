@@ -12,7 +12,14 @@ from typing import Any
 
 from websockets.exceptions import ConnectionClosed
 
-from deskbot_server.constants import PB_CHUNK_GAP_SEC, PB_MAX_PCM_BIN_BYTES, SAFE_SEND_TIMEOUT
+from deskbot_server.constants import (
+    PB_ACK_END_GRACE_SEC,
+    PB_ACK_END_TIMEOUT_SEC,
+    PB_ACK_WINDOW_TIMEOUT_SEC,
+    PB_CHUNK_GAP_SEC,
+    PB_MAX_PCM_BIN_BYTES,
+    SAFE_SEND_TIMEOUT,
+)
 from deskbot_server.model.pb_seq import PbBlock, PbSeq, PbType
 from deskbot_server.pb.wire import device_pb_json_msg
 from deskbot_server.service.application.asr_chat_uplink import pack_ws_downlink_frame, parse_packed_frame
@@ -495,13 +502,30 @@ class DeviceWsService(metaclass=SingletonMeta):
                                 "[pb TX] %s 末窗口已下发 req=%s last_idx=%d 等待 pb_end",
                                 device_id, req, entries[batch_end - 1].idx,
                             )
-                        ack_type = await self._wait_ack(entry, req, want_end=is_last_window)
+                        ack_timeout = None
+                        if is_last_window:
+                            declared_sec = sum(max(0, int(item.chunk_ms or 0)) for item in entries) / 1000.0
+                            ack_timeout = max(
+                                PB_ACK_END_TIMEOUT_SEC,
+                                declared_sec + PB_ACK_END_GRACE_SEC,
+                            )
+                        ack_type = await self._wait_ack(
+                            entry, req, want_end=is_last_window, timeout=ack_timeout,
+                        )
                         if is_last_window and ack_type == "pb_end":
                             logger.info(
                                 "[pb ACK] %s 收到 pb_end req=%s 末窗口到播毕 %.0fms",
                                 device_id, req, (time.monotonic() - t_pb_end_wait) * 1000,
                             )
                         if ack_type == "pb_cancel":
+                            cancel_block = PbBlock(type=PbType.CANCEL, req=req, idx=0)
+                            await self._do_send_to_device(device_id, cancel_block, generation=generation)
+                            break
+                        if ack_type == "pb_timeout":
+                            logger.warning(
+                                "[pb ACK] %s 等待超时 req=%s last_idx=%d want_end=%s，取消当前链",
+                                device_id, req, entries[batch_end - 1].idx, is_last_window,
+                            )
                             cancel_block = PbBlock(type=PbType.CANCEL, req=req, idx=0)
                             await self._do_send_to_device(device_id, cancel_block, generation=generation)
                             break
@@ -537,7 +561,14 @@ class DeviceWsService(metaclass=SingletonMeta):
             except TimeoutError:
                 return _IDLE  # type: ignore[return-value]
 
-    async def _wait_ack(self, entry: _DeviceEntry, req: str, *, want_end: bool = False) -> str | None:
+    async def _wait_ack(
+        self,
+        entry: _DeviceEntry,
+        req: str,
+        *,
+        want_end: bool = False,
+        timeout: float | None = None,
+    ) -> str | None:
         """等待匹配 req 的 pb_ack（消费 ack_queue）。
 
         - ``pb_cancel``（_enqueue 抢占哨兵，无 req）优先返回；
@@ -546,8 +577,17 @@ class DeviceWsService(metaclass=SingletonMeta):
         - ``want_end=True``（末窗口）：必须等到 ``ack_type == "pb_end"``，
           期间 ``pb_chunk`` 等同 req ack 静默消费。
         """
+        if timeout is None:
+            timeout = PB_ACK_END_TIMEOUT_SEC if want_end else PB_ACK_WINDOW_TIMEOUT_SEC
+        deadline = time.monotonic() + timeout
         while True:
-            ack = await entry.ack_queue.get()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "pb_timeout"
+            try:
+                ack = await asyncio.wait_for(entry.ack_queue.get(), timeout=remaining)
+            except TimeoutError:
+                return "pb_timeout"
             if ack.get("type") == "pb_cancel":
                 return "pb_cancel"
             if ack.get("req") != req:

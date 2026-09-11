@@ -349,9 +349,9 @@ void ws_transport_new_session(void) {
   s_ws_session++;
   s_app_ready.store(false, std::memory_order_release);
   mic_set_ws_state(kMicWsError);
-  speaker_abort();
-  pb_runtime_discard_rx_queue();
-  log_info("[WS_TRANSPORT] new session=%u (PB rx queue cleared)", (unsigned)s_ws_session);
+  pb_runtime_abort_session();
+  log_info("[WS_TRANSPORT] new session=%u (PB runtime abort requested)",
+           (unsigned)s_ws_session);
 }
 
 bool ws_transport_enqueue_state(const char* json) {

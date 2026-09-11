@@ -34,6 +34,9 @@ static String s_ack_req;
 static constexpr UBaseType_t kPbModelQDepth = 64;
 static constexpr uint32_t kPbRuntimeStack = 24 * 1024;
 static constexpr UBaseType_t kPbRuntimePrio = 5;
+/** 永久等待会使 PB 泵彻底失活；该超时只处理执行器状态损坏等异常。 */
+static constexpr uint32_t kExecutorWaitTimeoutMs = 120000;
+static constexpr uint32_t kExecutorWaitLogMs = 1000;
 
 static bool s_setup_ok = false;
 static TaskHandle_t s_task = nullptr;
@@ -51,7 +54,7 @@ static unsigned computeMinExecutorSpace() {
   return m;
 }
 
-static void sendAck(const char* ack_type) {
+static bool sendAck(const char* ack_type) {
   const unsigned space = computeMinExecutorSpace();
   JsonDocument ack;
   ack["type"] = "pb_ack";
@@ -61,11 +64,16 @@ static void sendAck(const char* ack_type) {
   String msg;
   if (serializeJson(ack, msg) == 0) {
     log_warn("[PB] pb_ack serialize failed");
-    return;
+    return false;
   }
-  ws_transport_enqueue_state(msg.c_str());
+  if (!ws_transport_enqueue_state(msg.c_str())) {
+    log_error("[PB_ACK] enqueue failed type=%s req=%s space=%u", ack_type,
+              s_ack_req.c_str(), space);
+    return false;
+  }
   log_info("[PB_ACK] %s req=%s space=%u", ack_type, s_ack_req.c_str(), space);
   s_dispatched_since_ack = 0;
+  return true;
 }
 
 static void abortRound() {
@@ -203,8 +211,24 @@ static void task_loop_pb_runtime(void* /*arg*/) {
 
     bool preempted = false;
     if (s_dispatched_since_ack >= kAckBatchSize) {
+      const uint32_t wait_started = millis();
+      uint32_t last_wait_log = wait_started;
       while (computeMinExecutorSpace() < (unsigned)kAckBatchSize) {
         if (handle_pb_cancel()) {
+          preempted = true;
+          break;
+        }
+        const uint32_t now = millis();
+        if (now - last_wait_log >= kExecutorWaitLogMs) {
+          log_warn("[PB_WAIT_SPACE] req=%s elapsed=%u space=%u need=%u", s_ack_req.c_str(),
+                   (unsigned)(now - wait_started), computeMinExecutorSpace(),
+                   (unsigned)kAckBatchSize);
+          last_wait_log = now;
+        }
+        if (now - wait_started >= kExecutorWaitTimeoutMs) {
+          log_error("[PB_WAIT_SPACE] timeout req=%s space=%u", s_ack_req.c_str(),
+                    computeMinExecutorSpace());
+          abortRound();
           preempted = true;
           break;
         }
@@ -219,8 +243,27 @@ static void task_loop_pb_runtime(void* /*arg*/) {
       speaker_signal_task_done();
       head_signal_task_done();
       display_signal_task_done();
+      const uint32_t wait_started = millis();
+      uint32_t last_wait_log = wait_started;
       while (!(speaker_task_done() && head_task_done() && display_task_done())) {
         if (handle_pb_cancel()) {
+          preempted = true;
+          break;
+        }
+        const uint32_t now = millis();
+        if (now - last_wait_log >= kExecutorWaitLogMs) {
+          log_warn("[PB_WAIT_END] req=%s elapsed=%u speaker=%d head=%d display=%d "
+                   "speaker_q=%u head_q=%u display_q=%u",
+                   s_ack_req.c_str(), (unsigned)(now - wait_started), speaker_task_done(),
+                   head_task_done(), display_task_done(), speaker_input_queue_depth(),
+                   head_motor_input_queue_depth(), display_render_input_queue_depth());
+          last_wait_log = now;
+        }
+        if (now - wait_started >= kExecutorWaitTimeoutMs) {
+          log_error("[PB_WAIT_END] timeout req=%s speaker=%d head=%d display=%d",
+                    s_ack_req.c_str(), speaker_task_done(), head_task_done(),
+                    display_task_done());
+          abortRound();
           preempted = true;
           break;
         }
@@ -336,4 +379,19 @@ void pb_runtime_discard_rx_queue(void) {
   while (xQueueReceive(s_model_q, &item, 0) == pdTRUE) {
     pb_model_free(item);
   }
+}
+
+void pb_runtime_abort_session(void) {
+  /* 这是控制面抢占信号，不依赖普通模型队列中存在 cancel 帧。等待循环及主循环
+   * 都会调用 handle_pb_cancel，因而可立即结束旧链。新 WS 会话尚未 ready，
+   * 此处清空旧队列不会误删新会话数据。 */
+  if (s_cancel_lock && xSemaphoreTake(s_cancel_lock, portMAX_DELAY) == pdTRUE) {
+    pb_runtime_discard_rx_queue();
+    s_pending_cancel.store(true, std::memory_order_release);
+    xSemaphoreGive(s_cancel_lock);
+  } else {
+    pb_runtime_discard_rx_queue();
+    s_pending_cancel.store(true, std::memory_order_release);
+  }
+  log_warn("[PB_RUNTIME] abort session requested");
 }

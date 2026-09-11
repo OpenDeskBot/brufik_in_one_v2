@@ -215,3 +215,26 @@ def test_empty_seq_done_without_ack(monkeypatch):
             assert sent == []
 
     asyncio.run(_run())
+
+
+def test_ack_timeout_cancels_current_seq(monkeypatch):
+    """ACK 丢失不能永久卡住 worker；超时后取消当前链。"""
+
+    async def _run() -> None:
+        svc, entry, sent = _make_svc(monkeypatch)
+        monkeypatch.setattr(
+            "deskbot_server.service.device_ws_service.PB_ACK_END_TIMEOUT_SEC", 0.05
+        )
+        monkeypatch.setattr(
+            "deskbot_server.service.device_ws_service.PB_ACK_END_GRACE_SEC", 0.0
+        )
+        seq = PbSeq(req="r-timeout", entries=_blocks("r-timeout", 2), level=1,
+                    action=PbAction.REPLACE)
+        assert svc._enqueue(entry, seq) == 1
+
+        async for _task in _run_device_loop(svc):
+            await _wait_until(seq._done.is_set)
+            assert [item[1] for item in sent] == [PbType.START, PbType.END, PbType.CANCEL]
+            assert sent[-1][2] == "r-timeout"
+
+    asyncio.run(_run())
