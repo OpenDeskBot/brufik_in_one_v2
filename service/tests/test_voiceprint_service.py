@@ -405,7 +405,7 @@ def test_llm_tool_runner_register_voiceprint(monkeypatch, db_env):
 
 def test_tool_interim_tts_register_voiceprint():
     assert phrase_for_tool("register_voiceprint") == "我记住你的声音了"
-    assert build_tool_interim_tts([{"tool": "register_voiceprint"}]) == "稍等，我记住你的声音了。"
+    assert build_tool_interim_tts([{"tool": "register_voiceprint"}]) == "我记住你的声音了。"
 
 
 # ────────────────── LLM user 消息注入 ─────────────────────────

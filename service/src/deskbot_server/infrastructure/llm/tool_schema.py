@@ -181,14 +181,36 @@ def _user_social_schemas() -> list[dict[str, Any]]:
     ]
 
 
+def _say_schema() -> dict[str, Any]:
+    """工具轮过渡语工具：与其它工具**同时**调用，服务端顺带播报一句口语。
+
+    只在首轮工具轮注入（``_is_tool_round=True``）——见 ``build_native_tool_schemas``：
+    模型看不到本工具时自然不会调用，无需服务端额外拦截。
+    """
+    return _fn(
+        "say",
+        "执行其它工具时顺带告诉用户你要做什么的一句话，让等待不那么干。"
+        "必须与其它工具**同时**调用（单独调用没有任何效果）；只在确实要让用户等一会儿时才用。"
+        "text 写即将要做的事，像「我帮你查一下」，15 字以内口语；"
+        "禁止预报还没发生的结果（没查完不许说「查到了」），禁止解释动作本身（别说「我要调用搜索」）。",
+        ["text"],
+        {"text": {"type": "string", "description": "对用户说的过渡语，15 字以内口语"}},
+    )
+
+
 def build_native_tool_schemas(
-    *, device_id: str | None = None, include_batch2: bool = True
+    *,
+    device_id: str | None = None,
+    include_batch2: bool = True,
+    is_tool_round: bool = False,
 ) -> list[dict[str, Any]]:
     """输出当前启用的原生工具 schema（供每轮 tools 参数）。
 
     batch1 = 纯函数六工具；batch2 = 人脸/声纹注册 + 剧情任务（无 running 任务时
     quest 工具不产出；任务 id/类型动态注入 description，不进 parameters enum）；
-    batch3（随 batch2 开关）= 用户社交按人归档两工具，恒在。
+    batch3（随 batch2 开关）= 用户社交按人归档两工具，恒在；
+    batch4 = ``say`` 过渡语工具，仅首轮工具轮产出（``is_tool_round=True``），
+    恒排在末尾——batch1 前缀顺序与集合不受影响。
     """
     schemas = _batch1_schemas()
     if include_batch2:
@@ -201,6 +223,8 @@ def build_native_tool_schemas(
                 quest_tasks = calls[0].get("tasks") or []
         schemas += _batch2_schemas(device_id=device_id, quest_tasks=quest_tasks)
         schemas += _user_social_schemas()
+    if is_tool_round:
+        schemas.append(_say_schema())
     return schemas
 
 

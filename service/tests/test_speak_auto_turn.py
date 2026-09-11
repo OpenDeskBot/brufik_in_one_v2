@@ -108,5 +108,5 @@ def test_runner_rejects_camera_follow_as_unknown():
 def test_interim_phrase_falls_back_to_default():
     from deskbot_server.service.application.tool_interim_tts import build_tool_interim_tts, phrase_for_tool
 
-    assert phrase_for_tool("set_camera_follow") == "稍等一下"
+    assert phrase_for_tool("set_camera_follow") == "我想一下啊"
     assert "camera_follow" not in build_tool_interim_tts([{"tool": "camera_follow"}])
