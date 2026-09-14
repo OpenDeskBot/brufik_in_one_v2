@@ -217,6 +217,23 @@ def create_scheduled_task(
 
     session = get_session()
     sid = str(session_id or "").strip() or None
+    # Deterministic idempotency only: do not guess semantic similarity here.
+    # Repeated tool calls with the same normalized fields reuse the active task;
+    # near-duplicates remain an explicit user/data decision.
+    existing = session.scalar(
+        select(ScheduledTask).where(
+            ScheduledTask.device_id == dev,
+            ScheduledTask.description == desc,
+            ScheduledTask.cron_expr == expr,
+            ScheduledTask.task_kind == kind,
+            ScheduledTask.enabled.is_(True),
+            ScheduledTask.status.in_((_STATUS_ACTIVE, _STATUS_RUNNING)),
+        )
+    )
+    if existing is not None:
+        out = _task_to_dict(existing)
+        out["deduped"] = True
+        return out
     row = ScheduledTask(
         id=_new_id(),
         device_id=dev,
@@ -235,7 +252,9 @@ def create_scheduled_task(
         session.rollback()
         raise
     session.refresh(row)
-    return _task_to_dict(row)
+    out = _task_to_dict(row)
+    out["deduped"] = False
+    return out
 
 
 def get_scheduled_task(task_id: str, *, device_id: str | None = None) -> dict[str, Any] | None:

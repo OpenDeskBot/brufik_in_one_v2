@@ -17,6 +17,7 @@ from deskbot_server.infrastructure.llm.utils import (
     build_llm_user_message,
     estimate_text_tokens,
     parse_llm_reply,
+    strip_llm_preamble,
 )
 from deskbot_server.model.settings import AppSettings
 
@@ -68,11 +69,19 @@ def _device_llm_lock(device_id: str | None) -> asyncio.Lock:
 
 
 def _wrap_plain_text_llm_answer(text: str) -> str | None:
-    """DeepSeek 等模型偶发纯文本回复；包装成约定 JSON，避免二次请求超时。"""
-    plain = (text or "").strip()
+    """DeepSeek 等模型偶发纯文本回复；包装成约定 JSON，避免二次请求超时。
+
+    原实现只挡 ``{``/``[`` 开头的输出，模型若写「一段中文推理 + 换行 + JSON
+    envelope」就会被整段包成 ``tts`` 念出来。这里先按原护栏排除 JSON 意图，
+    再用 ``strip_llm_preamble`` 剥掉推理前言。
+    """
+    raw = (text or "").strip()
+    if not raw or raw.startswith("{") or raw.startswith("["):
+        return None  # JSON 意图（哪怕解析失败）交给重试路径
+    plain = strip_llm_preamble(raw)
     if not plain or len(plain) > 800:
         return None
-    if plain.startswith("{") or plain.startswith("["):
+    if plain.startswith("{") or plain.startswith("[") or '"need_reply"' in plain:
         return None
     return json.dumps(
         {"need_reply": True, "tts": plain, "gesture": [], "expression": []}, ensure_ascii=False

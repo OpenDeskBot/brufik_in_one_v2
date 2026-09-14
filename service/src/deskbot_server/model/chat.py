@@ -31,10 +31,15 @@ class ChatTurnResult:
     tool_results: list[Any] = field(default_factory=list)
     servo: list[Any] = field(default_factory=list)
     need_reply: bool = True
+    dialogue_act: str = "answer"
     json_ok: bool = False
     t_llm_end: float | None = None
     t_tts_synth_end: float | None = None
     t_tts_end: float | None = None
+    # PB 播放终态：None=未进入/旧调用方未知，True=收到完整播放完成，False=被抢占/丢弃/超时。
+    playback_completed: bool | None = None
+    playback_status: str | None = None
+    playback_reason: str | None = None
     status: str = "ok"
     error: str | None = None
     voice_auto_reply_off: bool = False

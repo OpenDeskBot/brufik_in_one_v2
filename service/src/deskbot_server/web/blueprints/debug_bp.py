@@ -21,6 +21,7 @@ from deskbot_server.service.face_profile_service import load_face_profiles
 from deskbot_server.service.voice_profile_service import load_voice_profiles
 from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory, list_memory_for_device
 from deskbot_server.dao.scene_playbooks_store import (
+    collect_missing_expression_scenes,
     collect_missing_servo_presets,
     load_scene_playbooks_file,
     normalize_scene_playbooks,
@@ -973,10 +974,15 @@ def api_scene_playbooks_post(request: Request, user: RequireUser):
     except OSError as exc:
         return jsonify({"ok": False, "error": str(exc), "t": time.time()}), 500
     missing = collect_missing_servo_presets(rows, device_id=device_id)
+    missing_expr = collect_missing_expression_scenes(rows, device_id=device_id)
     out = {"ok": True, "config": rows, "file": os.path.basename(cfg_path), "device_id": device_id, "t": time.time()}
     if missing:
         out["missing_servo_presets"] = missing
         out["warning"] = "部分 pb 包引用的舵机 preset 未写入 servo.json，设备下发时会跳过：" + ", ".join(missing)
+    if missing_expr:
+        out["missing_expression_scenes"] = missing_expr
+        expr_warning = "部分 pb 包引用的表情场景不存在，设备下发时会跳过：" + ", ".join(missing_expr)
+        out["warning"] = (str(out.get("warning") or "") + "；" + expr_warning).lstrip("；")
     return jsonify(out)
 
 

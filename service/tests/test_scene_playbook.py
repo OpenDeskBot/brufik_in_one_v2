@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from deskbot_server.dao.scene_playbooks_store import (
+    collect_missing_expression_scenes,
     find_playbook_by_name,
     normalize_playbook,
     normalize_scene_playbooks,
@@ -17,15 +18,15 @@ def test_playbook_to_llm_plan_demo_greet():
             "title": "演示问候",
             "chunks": [
                 {"id": "c1", "text": "", "servo": {"preset": "center", "ms": 500}},
-                {"id": "c2", "text": "你好", "expr": {"scene": "happy_smile", "ms": 800}},
-                {"id": "c3", "text": "世界", "expr": {"scene": "default", "ms": 500}},
+                {"id": "c2", "text": "你好", "expr": {"scene": "happy", "ms": 800}},
+                {"id": "c3", "text": "世界", "expr": {"scene": "idle", "ms": 500}},
             ],
         }
     )
     text, moves, anims, leading = playbook_to_llm_plan(pb)
     assert text == "你好世界"
     assert moves == [{"move": "center", "ms": 500}]
-    assert anims == [{"anim": "happy_smile", "ms": 800}, {"anim": "default", "ms": 500}]
+    assert anims == [{"anim": "happy", "ms": 800}, {"anim": "idle", "ms": 500}]
     assert leading == 0
 
 
@@ -74,6 +75,22 @@ def test_combined_chunk_speech_servo_expr():
     assert phases[0]["anims"] == [{"anim": "happy", "ms": 1000}]
 
 
+def test_recorded_temporary_pose_preset_is_discarded():
+    pb = normalize_playbook(
+        {
+            "name": "recorded",
+            "chunks": [
+                {"id": "c1", "text": "", "servo": {"preset": "pose_x93_y88", "ms": 90}},
+                {"id": "c2", "text": "", "servo": {"preset": "center", "ms": 200}},
+            ],
+        }
+    )
+    assert len(pb["chunks"]) == 1
+    assert pb["chunks"][0]["servo"] == {"preset": "center", "ms": 200}
+    phase = playbook_to_phases(pb)[0]
+    assert phase["moves"] == [{"move": "center", "ms": 200}]
+
+
 def test_legacy_format_migrated_to_chunks():
     pb = normalize_playbook(
         {
@@ -84,7 +101,9 @@ def test_legacy_format_migrated_to_chunks():
             "expr_track": [{"id": "e1", "scene": "happy", "ms": 800}],
         }
     )
-    assert len(pb["chunks"]) >= 2
+    assert len(pb["chunks"]) == 1
+    assert pb["chunks"][0]["servo"]["preset"] == "look_left"
+    assert pb["chunks"][0]["expr"]["scene"] == "happy"
     assert playbook_collect_text(pb) == "你好"
 
 
@@ -111,8 +130,7 @@ def test_collect_missing_servo_presets(tmp_path, monkeypatch):
             return str(servo_path)
         return str(tmp_path / str(path or "x"))
 
-    monkeypatch.setattr("deskbot_server.utils.device_data.resolve_json_path", _resolve)
-    monkeypatch.setattr("deskbot_server.servo_config_store.resolve_json_path", _resolve)
+    monkeypatch.setattr("deskbot_server.dao.servo_config_store.resolve_json_path", _resolve)
 
     pb = {
         "name": "dance",
@@ -123,6 +141,32 @@ def test_collect_missing_servo_presets(tmp_path, monkeypatch):
     }
     missing = sps.collect_missing_servo_presets(pb, device_id="dev1")
     assert missing == ["preset_custom"]
+
+    # 校验入口也必须兼容磁盘里的旧三轨格式；录制器临时预设会被丢弃，
+    # 不应继续作为缺失资源上报。
+    legacy = {
+        "name": "legacy_dance",
+        "servo_track": [
+            {"id": "s1", "preset": "pose_x93_y88", "ms": 90},
+            {"id": "s2", "preset": "preset_custom", "ms": 500},
+        ],
+    }
+    assert sps.collect_missing_servo_presets(legacy, device_id="dev1") == ["preset_custom"]
+
+
+def test_collect_missing_expression_scenes(monkeypatch):
+    monkeypatch.setattr(
+        "deskbot_server.dao.face_expr_scenes_store.load_face_expr_scenes_file",
+        lambda **_kwargs: [{"name": "idle", "frames": [{}]}, {"name": "happy", "frames": [{}]}],
+    )
+    pb = {
+        "name": "demo",
+        "chunks": [
+            {"id": "c1", "text": "", "expr": {"scene": "happy", "ms": 500}},
+            {"id": "c2", "text": "", "expr": {"scene": "missing_face", "ms": 500}},
+        ],
+    }
+    assert collect_missing_expression_scenes(pb, device_id="dev1") == ["missing_face"]
 
 
 def test_find_playbook_by_name_case_insensitive():

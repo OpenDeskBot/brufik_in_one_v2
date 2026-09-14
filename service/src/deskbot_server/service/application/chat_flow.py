@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any
 
 from deskbot_server.dao import device_mapper
@@ -16,17 +17,18 @@ from deskbot_server.infrastructure.llm.utils import (
     format_voice_speaker_note,
     parse_llm_reply,
     recognized_known_users,
+    strip_llm_preamble,
 )
 from deskbot_server.infrastructure.tts.text_split import split_tts_by_punctuation
 from deskbot_server.model.chat import ChatTurnResult, LlmTurnResult
 from deskbot_server.pb.scenes import _pb_scene_entry_by_name, _prepare_pb_scene_chain_frames
-from deskbot_server.pb.shapes import PB_ACTION_APPEND, PB_ACTION_REPLACE, PB_LEVEL_TASK
+from deskbot_server.pb.shapes import PB_ACTION_APPEND, PB_LEVEL_DEBUG, PB_LEVEL_TASK
 from deskbot_server.pb.wire import build_pb_wire_pairs
 from deskbot_server.ports.downlink import DownlinkPort, PipelineEventsPort
 from deskbot_server.service.application.capability_labels import asr_model_label, llm_model_label, tts_model_label
 from deskbot_server.service.application.convo_audio_store import ConvoAudioStore
 from deskbot_server.service.application.face_snapshot_cache import face_snapshot_detect_ms
-from deskbot_server.service.application.voice_snapshot_cache import get_voice_snapshot
+from deskbot_server.service.application.interaction_arbiter import InteractionKind, interaction_arbiter
 from deskbot_server.service.application.llm_error_fallback import (
     build_llm_error_fallback_plan,
     start_llm_error_motion_feedback,
@@ -34,6 +36,7 @@ from deskbot_server.service.application.llm_error_fallback import (
 )
 from deskbot_server.service.application.llm_tool_runner import execute_llm_tools
 from deskbot_server.service.application.tool_interim_tts import resolve_interim_tts
+from deskbot_server.service.application.voice_snapshot_cache import get_voice_snapshot
 from deskbot_server.utils.util import _ms_between
 
 if TYPE_CHECKING:
@@ -50,6 +53,104 @@ _QUEST_PROACTIVE_PREFIX = "[系统剧情推进]"
 _SOCIAL_PROACTIVE_PREFIX = "[系统主动问候]"
 _SYSTEM_INITIATED_PREFIXES = (_SCHEDULED_TASK_PREFIX, _QUEST_PROACTIVE_PREFIX)
 _ALL_SYSTEM_PREFIXES = _SYSTEM_INITIATED_PREFIXES + (_SOCIAL_PROACTIVE_PREFIX,)
+
+_EXPLICIT_SILENCE_PATTERNS = (
+    "别说话", "不要说话", "不用回答", "不用回复", "安静一下", "保持安静", "你安静", "请安静",
+    "闭嘴", "先别聊", "停止对话",
+)
+_BACKCHANNEL_ONLY = frozenset({"嗯", "哦", "啊", "好", "好的", "行", "知道了", "谢谢", "明白了"})
+_RECENT_QUESTION_LOOKBACK = 4
+
+
+def _user_explicitly_requests_silence(user_text: str) -> bool:
+    """用户明确要求停止口播时，允许正常用户轮静默结束。"""
+    compact = re.sub(r"[\s，。！？、,.!?]", "", str(user_text or "")).lower()
+    return compact == "安静" or any(pattern in compact for pattern in _EXPLICIT_SILENCE_PATTERNS)
+
+
+def _is_backchannel_only(user_text: str) -> bool:
+    compact = re.sub(r"[\s，。！？、,.!?~～]", "", str(user_text or ""))
+    return compact in _BACKCHANNEL_ONLY
+
+
+def _history_ends_with_assistant_question(history_messages: list[dict[str, str]] | None) -> bool:
+    for message in reversed(history_messages or []):
+        if message.get("role") != "assistant":
+            continue
+        raw = str(message.get("content") or "").strip()
+        # 兼容清洗前的历史：旧版本可能把整个 JSON envelope 存进 assistant content。
+        text = strip_llm_preamble(raw) or raw
+        text = re.sub(r"[\s。.!！…]+$", "", text)
+        return text.endswith(("?", "？", "吗", "呢", "么"))
+    return False
+
+
+def _question_clauses(text: str) -> list[tuple[str, str]]:
+    """返回 ``(原句, 归一化问题)``；只用于短窗口防重复，不做语义推理。"""
+    spoken = strip_llm_preamble(str(text or "")) or str(text or "").strip()
+    out: list[tuple[str, str]] = []
+    for clause in re.findall(r"[^。！？!?]+(?:[。！？!?]+|$)", spoken):
+        raw = clause.strip()
+        if not raw:
+            continue
+        bare = re.sub(r"[\s。！？!?]+$", "", raw)
+        is_question = raw.endswith(("?", "？")) or bare.endswith(("吗", "呢", "么"))
+        if not is_question:
+            continue
+        normalized = re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", bare.lower())
+        normalized = re.sub(r"^(?:那|那么|所以|对了|话说|顺便问一下)+", "", normalized)
+        normalized = re.sub(r"(?:吗|呢|么|呀|啊|嘛)+$", "", normalized)
+        if normalized:
+            out.append((raw, normalized))
+    return out
+
+
+def _same_recent_question(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    if min(len(left), len(right)) < 4:
+        return False
+    # 只容忍人称、语气和礼貌用语差异；时间、动作、对象等实义字一旦变化，就按
+    # 新问题处理。这样不会把“今天去哪”和“明天去哪”因编辑距离很近而误删。
+    non_semantic_chars = frozenset("你我咱们了的呀啊呢吗么嘛请再还想问说能否可以一下告诉")
+    matcher = SequenceMatcher(None, left, right)
+    changed = "".join(
+        left[a0:a1] + right[b0:b1]
+        for tag, a0, a1, b0, b1 in matcher.get_opcodes()
+        if tag != "equal"
+    )
+    return bool(changed) and all(char in non_semantic_chars for char in changed)
+
+
+def _suppress_recent_duplicate_questions(
+    reply_text: str, history_messages: list[dict[str, str]] | None
+) -> tuple[str, int]:
+    """删掉最近四条助手回复中已经问过的近似问题，返回新文本和删除数量。"""
+    recent: list[str] = []
+    assistant_count = 0
+    for message in reversed(history_messages or []):
+        if message.get("role") != "assistant":
+            continue
+        assistant_count += 1
+        recent.extend(normalized for _raw, normalized in _question_clauses(message.get("content") or ""))
+        if assistant_count >= _RECENT_QUESTION_LOOKBACK:
+            break
+    kept: list[str] = []
+    removed = 0
+    for clause in re.findall(r"[^。！？!?]+(?:[。！？!?]+|$)", str(reply_text or "").strip()):
+        questions = _question_clauses(clause)
+        if questions:
+            normalized = questions[0][1]
+            if any(_same_recent_question(normalized, old) for old in recent):
+                removed += 1
+                continue
+            # 同一条回复里连续问两遍也属于短时重复。
+            recent.append(normalized)
+        kept.append(clause.strip())
+    if not removed:
+        return reply_text, 0
+    cleaned = "".join(kept).strip()
+    return cleaned or "嗯，我记住了。", removed
 
 
 def _convo_watching_sync(device_id: str | None) -> bool:
@@ -193,6 +294,7 @@ async def _play_interim_tts(
         auto_face_turn=True,
         prefetch_tts=task,
         device_ws=device_ws,
+        interaction_request_id=request_id,
     )
 
 
@@ -272,6 +374,62 @@ def _scheduled_task_description(user_text: str) -> str:
     return text.replace(_SCHEDULED_TASK_PREFIX, "").strip()
 
 
+def _looks_like_plain_reply(text: str) -> bool:
+    """判断收尾轮输出是不是「没走 envelope 格式的正经口语」。
+
+    排除两类：以 ``{``/``[`` 开头的（那是 JSON 意图，哪怕解析失败也该重发），以及
+    出现 ``"need_reply"`` 字样的（模型复述 schema / 半截 JSON）。剩下的按口语采纳。
+    """
+    plain = str(text or "").strip()
+    if not plain:
+        return False
+    if plain.startswith("{") or plain.startswith("["):
+        return False
+    return '"need_reply"' not in plain
+
+
+_SESSION_LABEL_MAX = 24  # 系统轮进历史时保留的标签上限（任务类型/人物名）
+
+
+def _cap_session_line(text: str) -> str:
+    """取首行并截断——系统轮已压缩形态/未知形态的兜底保留。"""
+    return str(text or "").strip().split("\n", 1)[0].strip()[:_SESSION_LABEL_MAX]
+
+
+def _session_user_text(user_text: str, *, is_system_round: bool) -> str:
+    """系统轮归档进会话历史时的紧凑形式。
+
+    整段系统指令以 ``role=user`` 进历史会污染模型上下文——它会把「剧情任务 prompt
+    原文」当成主人说过的话，也会让主动轮的指令在后续每轮被反复喂回。这里只留可
+    辨识的最小标识（任务号/人物），用户真实语音轮原样返回。
+
+    **幂等**：对已压缩过的文本再调用必须返回原值。清洗脚本会反复跑，非幂等会让
+    每跑一次就丢一点信息（任务号/人名被逐次吃掉），永远收敛不到稳定状态。
+    """
+    text = str(user_text or "").strip()
+    if not is_system_round:
+        return text
+    if text.startswith(_SCHEDULED_TASK_PREFIX):
+        return f"{_SCHEDULED_TASK_PREFIX} {_scheduled_task_description(text)}".strip()
+    if text.startswith(_QUEST_PROACTIVE_PREFIX):
+        # 原始形态含任务号：重构前 ``[g_city] 位置``、重构后 ``[g_task3]（长期）``。
+        # id 限定 ASCII——``\w`` 会匹配中文，把前缀 ``[系统剧情推进]`` 自己吞掉。
+        rest = text[len(_QUEST_PROACTIVE_PREFIX):].strip()
+        m = re.search(r"\[([A-Za-z0-9_]+)\]\s*([^\n]*)", rest)
+        if m:
+            label = m.group(2).strip()
+            inner = re.match(r"^（([^）]+)）", label)
+            label = inner.group(1) if inner else label.split("：")[0].split(":")[0].strip()
+            return f"{_QUEST_PROACTIVE_PREFIX} {m.group(1)} {label[:_SESSION_LABEL_MAX]}".strip()
+        # 没有任务号：已是紧凑形式（如 ``g_city 位置``）或未知形态，按首行截断保留
+        return f"{_QUEST_PROACTIVE_PREFIX} {_cap_session_line(rest)}".strip()
+    if text.startswith(_SOCIAL_PROACTIVE_PREFIX):
+        rest = text[len(_SOCIAL_PROACTIVE_PREFIX):].strip()
+        m = re.search(r"认识的人（([^）]+)）", rest)
+        return f"{_SOCIAL_PROACTIVE_PREFIX} {m.group(1) if m else _cap_session_line(rest)}".strip()
+    return text
+
+
 def _scheduled_reminder_tts(description: str) -> str:
     desc = str(description or "").strip()
     if not desc:
@@ -307,6 +465,8 @@ def _social_tts_looks_like_meta_report(text: str) -> bool:
 
 def _voice_was_played(result: ChatTurnResult) -> bool:
     if result.voice_auto_reply_off or result.error or result.status != "ok":
+        return False
+    if result.playback_completed is False:
         return False
     if result.t_tts_synth_end is None or result.t_llm_end is None:
         return False
@@ -607,10 +767,26 @@ async def complete_llm_with_tool_loop(
 
         # 模型收尾：无工具调用
         if content:
-            answer = content
             parsed = parse_llm_reply(content)
             if parsed.get("json_ok"):
+                answer = content
                 break
+            # 纯文本收尾（不是坏 JSON）：模型只是没用 envelope 格式，说的却是正经
+            # 口语。直接采纳，省掉一次约 2.9s 的重发——重发还可能被模型改判成
+            # need_reply=false，把一句有效回复彻底丢掉（既没播报也没进历史，
+            # 下一轮它自然会把同一个问题再问一遍）。
+            plain = strip_llm_preamble(content) if _looks_like_plain_reply(content) else ""
+            if plain:
+                logger.info(
+                    "[LLM] native 收尾轮纯文本，直接采纳 device_id=%s req=%s preview=%r",
+                    device_id, request_id, plain[:120],
+                )
+                answer = json.dumps(
+                    {"need_reply": True, "tts": plain, "gesture": [], "expression": []}, ensure_ascii=False
+                )
+                parsed = parse_llm_reply(answer)
+                break
+            answer = content
             logger.warning(
                 "[LLM] native 收尾轮非 JSON，走文本收口 device_id=%s req=%s preview=%r",
                 device_id, request_id, content[:120],
@@ -633,7 +809,87 @@ async def complete_llm_with_tool_loop(
     )
 
 
+def _interaction_kind(user_text: str) -> InteractionKind:
+    text = str(user_text or "").strip()
+    if text.startswith(_SCHEDULED_TASK_PREFIX):
+        return InteractionKind.SCHEDULED
+    if text.startswith(_QUEST_PROACTIVE_PREFIX):
+        return InteractionKind.QUEST
+    if text.startswith(_SOCIAL_PROACTIVE_PREFIX):
+        return InteractionKind.SOCIAL
+    return InteractionKind.USER
+
+
 async def run_chat_turn(
+    downlink: DownlinkPort,
+    chat: ChatService,
+    user_text: str,
+    *,
+    request_id: str | None = None,
+    device_id: str | None = None,
+    device_ws: DeviceWsService | None = None,
+    t_asr_start: float | None = None,
+    t_asr_text: float | None = None,
+    force_voice: bool = False,
+    reuse_session_id: str | None = None,
+    on_llm_error: Any | None = None,
+    bus_service: Any | None = None,
+) -> ChatTurnResult:
+    """Arbitrate one device's complete LLM -> TTS -> playback lifecycle."""
+    if not device_id:
+        return await _run_chat_turn_unarbitrated(
+            downlink,
+            chat,
+            user_text,
+            request_id=request_id,
+            device_id=device_id,
+            device_ws=device_ws,
+            t_asr_start=t_asr_start,
+            t_asr_text=t_asr_text,
+            force_voice=force_voice,
+            reuse_session_id=reuse_session_id,
+            on_llm_error=on_llm_error,
+            bus_service=bus_service,
+        )
+
+    kind = _interaction_kind(user_text)
+    lease = await interaction_arbiter.acquire(device_id, kind=kind, request_id=request_id)
+    if lease is None:
+        now_m = time.monotonic()
+        return ChatTurnResult(
+            need_reply=False,
+            dialogue_act="silence",
+            t_llm_end=now_m,
+            t_tts_synth_end=now_m,
+            t_tts_end=now_m,
+            status="skipped",
+        )
+
+    async with lease:
+        # The arbiter has already cancelled a lower-priority application turn.
+        # Clear any PB it managed to enqueue before cancellation so the user's
+        # answer never waits behind stale proactive/reminder audio.
+        if kind == InteractionKind.USER and device_ws is not None:
+            interrupt = getattr(device_ws, "interrupt_current_playback", None)
+            if callable(interrupt):
+                await interrupt(device_id, reason=f"user_turn:{request_id or ''}")
+        return await _run_chat_turn_unarbitrated(
+            downlink,
+            chat,
+            user_text,
+            request_id=request_id,
+            device_id=device_id,
+            device_ws=device_ws,
+            t_asr_start=t_asr_start,
+            t_asr_text=t_asr_text,
+            force_voice=force_voice,
+            reuse_session_id=reuse_session_id,
+            on_llm_error=on_llm_error,
+            bus_service=bus_service,
+        )
+
+
+async def _run_chat_turn_unarbitrated(
     downlink: DownlinkPort,
     chat: ChatService,
     user_text: str,
@@ -768,6 +1024,7 @@ async def run_chat_turn(
         llm_moves = list(parsed.get("moves") or [])
         llm_anims = list(parsed.get("anims") or [])
         need_reply = bool(parsed.get("need_reply", True))
+        dialogue_act = str(parsed.get("dialogue_act") or "answer")
         if is_scheduled:
             need_reply = True  # 定时提醒轮必须开口，禁止静默
         # 剧情/社交主动轮允许静默退出：剧情任务（尤其永续的日常/长期）推进与否由
@@ -777,6 +1034,43 @@ async def run_chat_turn(
         # （防「已问候」类汇报语被照字朗读；有动作则走下方静默分支只下发动作）
         if is_social_proactive and _social_tts_looks_like_meta_report(reply_text):
             need_reply = False
+
+        if need_reply and reply_text:
+            reply_text, repeated_questions = _suppress_recent_duplicate_questions(
+                reply_text, history_messages
+            )
+            if repeated_questions:
+                dialogue_act = "callback"
+                logger.info(
+                    "[LLM] 已移除近期重复问题 device_id=%s req=%s count=%d",
+                    device_id,
+                    request_id,
+                    repeated_questions,
+                )
+
+        # 能进入此处的用户语音已经通过 ASR 文本过滤与注意力门控。模型偶发把用户对
+        # 上一问的简短回答误判成无需回复，会造成“问完又装没听见”。普通用户轮除非
+        # 明确要求安静，否则强制接住；空回复使用中性确认，不重复追问。
+        should_ack_user = (
+            not _user_explicitly_requests_silence(user_text)
+            and (not _is_backchannel_only(user_text) or _history_ends_with_assistant_question(history_messages))
+        )
+        if not is_system_round and not need_reply and should_ack_user:
+            need_reply = True
+            dialogue_act = "empathize"
+            if not str(reply_text or "").strip():
+                reply_text = "嗯，我听到了。"
+            logger.warning(
+                "[LLM] 用户有效输入被模型判为静默，已纠正 device_id=%s req=%s user=%r",
+                device_id, request_id, (user_text or "")[:80],
+            )
+
+        # dialogue_act 是策略观测字段，必须与最终执行决定一致。上面的定时提醒、
+        # 社交主动轮过滤和用户输入兜底都可能覆盖模型最初给出的 need_reply。
+        if not need_reply:
+            dialogue_act = "silent"
+        elif dialogue_act == "silent":
+            dialogue_act = "answer"
 
         if parsed.get("volume") is not None and device_id:
             from deskbot_server.pb.servo_pcm import parse_pb_volume
@@ -794,6 +1088,7 @@ async def run_chat_turn(
         result.tool_results = llm_turn.tool_results
         result.servo = list(parsed.get("servo") or [])
         result.need_reply = need_reply
+        result.dialogue_act = dialogue_act
         result.json_ok = parsed["json_ok"]
         result.llm_calls = list(llm_turn.llm_calls or [])
         result.system_prompt = llm_turn.system_prompt
@@ -803,11 +1098,14 @@ async def run_chat_turn(
             from deskbot_server.dao.device_session_mapper import append_turn
             from deskbot_server.utils.async_helpers import run_blocking
 
-            # 会话归档用整轮最终输出（含 legacy 原始文本）；llm_turn.answer 兜底
-            # 空 tts 轮（静默/纯动作），避免引用作用域外的局部变量
-            assistant_text = (reply_text or "").strip() or (llm_turn.answer or "").strip()
+            # 只归档「说给主人听的那句话」。静默轮（need_reply=false / 纯动作）不写
+            # assistant 行：历史里一旦出现沉默样例，模型下一轮读到就会照抄，
+            # 形成「读到自己的沉默 → 继续沉默」的自我强化；原始输出里的推理前言
+            # 同样必须剥掉，否则历史会被思维链淹没。
+            assistant_text = strip_llm_preamble(reply_text or "")
+            session_user_text = _session_user_text(user_text, is_system_round=is_system_round)
             try:
-                await run_blocking(append_turn, device_id, session_id, user_text, assistant_text)
+                await run_blocking(append_turn, device_id, session_id, session_user_text, assistant_text)
             except Exception:
                 logger.exception(
                     "[session] 保存对话失败 device_id=%s session_id=%s req=%s", device_id, session_id, request_id
@@ -1125,8 +1423,8 @@ async def _send_pb_pairs(
     device_id: str,
     n_pb: int,
     task_level: int = PB_LEVEL_TASK,
-) -> bool:
-    """下发一组 pb wire 帧。经 DeviceWsService 消息队列统一调度，返回是否因失败而中止。"""
+) -> tuple[bool, str | None, str | None]:
+    """下发一组 PB 帧，返回 ``(是否中止, 状态, 原因)``。"""
     from deskbot_server.model.pb_seq import PbSeq
 
     pb_seq = PbSeq.from_wire_pairs(pairs, level=task_level)
@@ -1134,10 +1432,19 @@ async def _send_pb_pairs(
         "[pb TX] enqueue device_id=%s req=%s level=%d blocks=%d",
         device_id, pb_seq.req, pb_seq.level, pb_seq.block_count,
     )
+    if hasattr(device_ws, "send_and_wait"):
+        outcome = await device_ws.send_and_wait(device_id, pb_seq)
+        if not outcome.completed:
+            logger.warning(
+                "[pb TX] 播放未完成 device_id=%s req=%s status=%s reason=%s",
+                device_id, pb_req, outcome.status.value, outcome.reason,
+            )
+        return not outcome.completed, outcome.status.value, outcome.reason or None
+    # 兼容测试桩和第三方 hub：旧接口只能判断是否成功入队。
     success = await device_ws.send(device_id, pb_seq, wait=True)
     if not success:
         logger.error("[pb TX] enqueue 失败 device_id=%s req=%s", device_id, pb_req)
-    return not success
+    return not success, "completed" if success else "dropped", None if success else "not_accepted"
 
 
 async def _run_pb_playback(
@@ -1155,6 +1462,7 @@ async def _run_pb_playback(
     prefetch_tts: asyncio.Task | None = None,
     device_ws: Any | None = None,
     task_level: int = PB_LEVEL_TASK,
+    interaction_request_id: str | None = None,
 ) -> None:
     """下发 pb 音频/动作帧。
 
@@ -1244,10 +1552,16 @@ async def _run_pb_playback(
             anims=list(parsed_eff.get("anims") or []) if chunk_is_first else None,
             sample_rate=sr_pb,
             request_id=(f"{request_id}_{chunk_i}" if request_id and len(text_chunks) > 1 else request_id),
-            random_servo_cfg=chat.settings.pb_random_servo_cfg() if chunk_is_first else None,
+            # 随机微动作对**每个**分句都传：它本来就是「说话时的细碎动作」，只在首句
+            # 生效会让长回答的后半段变成静止画面（LLM 的 moves/anims 同样只在首句）。
+            # 函数内部会跳过已带 servo 的分片，不会与 LLM 指定的动作叠加。
+            random_servo_cfg=chat.settings.pb_random_servo_cfg(),
             volume=parsed_eff.get("volume") if chunk_is_first else None,
             device_id=device_id,
-            action=PB_ACTION_REPLACE if chunk_is_first else PB_ACTION_APPEND,
+            # Application turns are serialized by DeviceInteractionArbiter.  APPEND
+            # prevents ordinary same-priority speech from cutting a sentence; the
+            # explicit user-barge-in path clears playback separately.
+            action=PB_ACTION_APPEND,
             leading_move_steps=int(parsed_eff.get("leading_move_steps") or 0) if chunk_is_first else 0,
         )
         total_pb += n_pb
@@ -1278,9 +1592,15 @@ async def _run_pb_playback(
         )
         logger.debug("[pb TX] 帧序一览 %s", json.dumps(frame_overview, ensure_ascii=False))
 
-        pb_aborted = await _send_pb_pairs(
+        interaction_arbiter.mark_current_speaking(
+            device_id or "", request_id=interaction_request_id or request_id
+        )
+        pb_aborted, playback_status, playback_reason = await _send_pb_pairs(
             pairs=pairs, pb_req=pb_req, device_ws=device_ws, device_id=device_id, n_pb=n_pb, task_level=task_level,
         )
+        result.playback_completed = not pb_aborted
+        result.playback_status = playback_status
+        result.playback_reason = playback_reason
         if pb_aborted:
             if prefetch_tts_task is not None:
                 prefetch_tts_task.cancel()
@@ -1373,6 +1693,7 @@ async def publish_chat_turn(
         "scenes": list(flow.get("scenes") or []),
         "json_ok": bool(flow.get("json_ok")),
         "need_reply": bool(flow.get("need_reply", True)),
+        "dialogue_act": str(flow.get("dialogue_act") or "answer"),
         "voice_auto_reply_off": bool(flow.get("voice_auto_reply_off")),
         "llm_ms": _ms_between(t_asr_text, t_llm_end),
         "tts_text": flow.get("llm_text"),
@@ -1380,6 +1701,9 @@ async def publish_chat_turn(
         "tts_model": tts_model_label(device_id) if tts_done else None,
         "audio_tts": bool(request_id) and tts_done and store.has(device_id, request_id, "tts"),
         "pb_ms": _ms_between(t_tts_synth_end, t_tts_end),
+        "playback_completed": flow.get("playback_completed"),
+        "playback_status": flow.get("playback_status"),
+        "playback_reason": flow.get("playback_reason"),
         "e2e_ms": _ms_between(t_asr_start, end_t),
         "status": flow.get("status") or "ok",
         "error": flow.get("error"),

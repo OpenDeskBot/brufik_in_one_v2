@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from typing import Any
 
 
@@ -77,6 +77,27 @@ class PbAction(IntEnum):
     def wire(self) -> str:
         _REV = {PbAction.DEFAULT: "default", PbAction.APPEND: "append", PbAction.REPLACE: "replace"}
         return _REV.get(self, "default")
+
+
+class PlaybackStatus(StrEnum):
+    """一条 PB 序列的终态；与“是否成功入队”分开表达。"""
+
+    COMPLETED = "completed"
+    PREEMPTED = "preempted"
+    TIMEOUT = "timeout"
+    DISCONNECTED = "disconnected"
+    DROPPED = "dropped"
+
+
+@dataclass(frozen=True)
+class PlaybackOutcome:
+    status: PlaybackStatus
+    req: str = ""
+    reason: str = ""
+
+    @property
+    def completed(self) -> bool:
+        return self.status == PlaybackStatus.COMPLETED
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +312,20 @@ class PbSeq:
     ch: int = 1
     fmt: str = "opus"
     _done: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
+    _outcome_box: list[PlaybackOutcome] = field(default_factory=list, repr=False, compare=False)
+
+    @property
+    def outcome(self) -> PlaybackOutcome | None:
+        return self._outcome_box[0] if self._outcome_box else None
+
+    def finish(self, status: PlaybackStatus, *, reason: str = "") -> PlaybackOutcome:
+        """幂等记录播放终态，并解除所有 ``wait=True`` 等待者。"""
+        if self._outcome_box:
+            return self._outcome_box[0]
+        outcome = PlaybackOutcome(status=status, req=self.req, reason=reason)
+        self._outcome_box.append(outcome)
+        self._done.set()
+        return outcome
 
     @property
     def block_count(self) -> int:

@@ -76,15 +76,15 @@ llm:
 tts:
   sample_rate: 16000
   pb_random_servo:
-    enabled: false
-    probability: 0.35
-    ms_min: 120
-    ms_max: 280
+    enabled: true
+    probability: 0.4
+    ms_min: 150
+    ms_max: 320
     rel_x_range:
-    - -6
-    - 6
+    - -8
+    - 8
     rel_y_range:
-    - -6
-    - 6
+    - -8
+    - 8
     skip_first: true
     skip_last: true

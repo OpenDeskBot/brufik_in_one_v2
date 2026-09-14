@@ -71,6 +71,23 @@ def test_context_window_keeps_continuous_turns(temp_db):
     assert all(r["role"] in ("user", "assistant") for r in rows)
 
 
+def test_session_access_is_scoped_to_device(temp_db):
+    from deskbot_server.dao.device_session_mapper import (
+        append_turn,
+        load_session,
+        session_context_window,
+        session_history_for_llm,
+    )
+
+    sid = _seed_turns("dev_owner", t0=1_700_000_000.0, turns=[(1_700_000_000.0, "秘密", "收到")])
+    assert load_session("dev_owner", sid) is not None
+    assert load_session("dev_other", sid) is None
+    assert session_history_for_llm("dev_other", sid) == []
+    assert session_context_window("dev_other", sid, max_gap_seconds=300) == []
+    with pytest.raises(ValueError, match="session not found"):
+        append_turn("dev_other", sid, "越权", "不应写入")
+
+
 def test_build_history_messages_token_budget_keeps_newest():
     from deskbot_server.service.application.chat_flow import build_history_messages
 

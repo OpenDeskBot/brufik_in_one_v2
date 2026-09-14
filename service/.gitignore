@@ -163,6 +163,9 @@ tmp
 
 # 运行时产物 / 缓存
 **/app.log
+# 轮转日志（app.log.1 / app.log.2026-09-14 等）：*.log 只匹配以 .log 结尾的名字，
+# 轮转文件必须单独挡，否则 100MB 的 app.log.1 会被 git add -A 带进仓库
+**/app.log.*
 **/output.wav
 **/tts_reply.wav
 
@@ -178,6 +181,7 @@ data/.builtin_password
 data/opendesk.db
 data/opendesk.db-shm
 data/opendesk.db-wal
+data/opendesk.db.bak-*
 data/device/
 data/miot-cli/
 data/services/

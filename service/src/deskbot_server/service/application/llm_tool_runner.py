@@ -81,19 +81,23 @@ async def execute_llm_tools(
             elif tool == "register_voiceprint":
                 name = str(raw.get("name") or raw.get("person_name") or "").strip()
                 out = register_voice_for_device(dev, name)
-                results.append(
-                    {
-                        "tool": tool,
-                        "ok": True,
-                        "profile_id": out["profile"].get("id"),
-                        "name": out["profile"].get("name"),
-                    }
-                )
-                cap = await capture_camera_for_device_async(dev, hub=device_ws)
+                result: dict[str, Any] = {
+                    "tool": tool,
+                    "ok": True,
+                    "voiceprint_registered": True,
+                    "profile_id": out["profile"].get("id"),
+                    "name": out["profile"].get("name"),
+                }
+                # 摄像头快照只是注册后的附加信息，不得再生成第二个 tool result，
+                # 否则后续 function-call 会按下标与错误的 tool_call_id 对齐。
+                try:
+                    cap = await capture_camera_for_device_async(dev, hub=device_ws)
+                except Exception as cap_exc:
+                    cap = {"ok": False, "error": str(cap_exc)}
+                result["camera_capture"] = cap
                 if not cap.get("ok"):
-                    results.append({"tool": tool, "ok": False, "error": cap.get("error")})
-                else:
-                    results.append({"tool": tool, **cap})
+                    result["warnings"] = [f"声纹已注册，但摄像头快照失败：{cap.get('error') or '未知错误'}"]
+                results.append(result)
             elif tool == "update_user_info":
                 name = next((str(raw.get(k) or "").strip() for k in _NAME_KEYS if str(raw.get(k) or "").strip()), "")
                 message = next(

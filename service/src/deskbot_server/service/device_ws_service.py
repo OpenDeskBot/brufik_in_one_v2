@@ -20,7 +20,7 @@ from deskbot_server.constants import (
     PB_MAX_PCM_BIN_BYTES,
     SAFE_SEND_TIMEOUT,
 )
-from deskbot_server.model.pb_seq import PbBlock, PbSeq, PbType
+from deskbot_server.model.pb_seq import PbBlock, PbSeq, PbType, PlaybackOutcome, PlaybackStatus
 from deskbot_server.pb.wire import device_pb_json_msg
 from deskbot_server.service.application.asr_chat_uplink import pack_ws_downlink_frame, parse_packed_frame
 from deskbot_server.service.application.boot_wake import deliver_boot_wake_scene
@@ -382,8 +382,7 @@ class DeviceWsService(metaclass=SingletonMeta):
             entry = self._devices.get(device_id)
             if entry is None or entry.stopped:
                 logger.warning("[send] 设备不可用 device_id=%s entry=%s stopped=%s", device_id, entry is not None, getattr(entry, 'stopped', None) if entry else None)
-                if wait:
-                    pb_seq._done.set()
+                pb_seq.finish(PlaybackStatus.DROPPED, reason="device_unavailable")
                 return 0
             n = self._enqueue(entry, pb_seq)
             if n > 0:
@@ -392,9 +391,53 @@ class DeviceWsService(metaclass=SingletonMeta):
         if wait:
             if n > 0:
                 await pb_seq._done.wait()
-            else:
-                pb_seq._done.set()
         return n
+
+    async def send_and_wait(self, device_id: str, pb_seq: PbSeq) -> PlaybackOutcome:
+        """发送并返回明确播放终态；旧 ``send`` 接口继续返回入队结果以保持兼容。"""
+        accepted = await self.send(device_id, pb_seq, wait=False)
+        if accepted:
+            await pb_seq._done.wait()
+        return pb_seq.outcome or pb_seq.finish(PlaybackStatus.DROPPED, reason="not_accepted")
+
+    async def interrupt_current_playback(self, device_id: str, *, reason: str = "user_turn") -> int:
+        """Stop current/queued PB work for an explicit user interruption.
+
+        Normal application turns no longer use REPLACE against one another.  This
+        is the single explicit barge-in path: a recognized user utterance clears
+        stale queued speech and asks the worker to cancel the sequence on device.
+        Returns the number of affected sequences.
+        """
+        dev = str(device_id or "").strip()
+        if not dev:
+            return 0
+        affected = 0
+        async with self._queue_lock:
+            entry = self._devices.get(dev)
+            if entry is None or entry.stopped:
+                return 0
+            for queued in entry.queue:
+                queued.finish(PlaybackStatus.PREEMPTED, reason=reason)
+                affected += 1
+            entry.queue.clear()
+            sending = entry.sending_seq
+            if sending is not None and not sending._done.is_set():
+                entry.ack_queue.put_nowait(
+                    {
+                        "type": "pb_cancel",
+                        "status": PlaybackStatus.PREEMPTED.value,
+                        "reason": reason,
+                    }
+                )
+                affected += 1
+        if affected:
+            logger.info(
+                "[interaction] 用户插话中止播放 device_id=%s affected=%d reason=%s",
+                dev,
+                affected,
+                reason,
+            )
+        return affected
 
     async def ack(self, device_id: str, ack: dict) -> None:
         """将 ACK 通知转发给设备队列。"""
@@ -420,8 +463,10 @@ class DeviceWsService(metaclass=SingletonMeta):
             cmp = new_seq.compare(old)
             if cmp == 1:
                 q.pop()
+                old.finish(PlaybackStatus.PREEMPTED, reason=f"evicted_by:{new_seq.req}")
                 logger.debug("[_enqueue] %s evict queued req=%s level=%d action=%s", dev, old.req, old.level, old.action.wire)
             elif cmp == -1:
+                new_seq.finish(PlaybackStatus.DROPPED, reason=f"lower_than_queued:{old.req}")
                 logger.debug("[_enqueue] %s drop (lower priority) %s", dev, new_info)
                 return 0
             else:
@@ -437,11 +482,16 @@ class DeviceWsService(metaclass=SingletonMeta):
 
         cmp = new_seq.compare(sending)
         if cmp == -1:
+            new_seq.finish(PlaybackStatus.DROPPED, reason=f"lower_than_running:{sending.req}")
             logger.debug("[_enqueue] %s drop (lower than running) %s", dev, new_info)
             return 0
         if cmp == 1:
             q.append(new_seq)
-            entry.ack_queue.put_nowait({"type": "pb_cancel"})
+            entry.ack_queue.put_nowait({
+                "type": "pb_cancel",
+                "status": PlaybackStatus.PREEMPTED.value,
+                "reason": f"replaced_by:{new_seq.req}",
+            })
             logger.debug("[_enqueue] %s preempt running -> pb_cancel, %s", dev, new_info)
             return 1
         q.append(new_seq)
@@ -472,6 +522,8 @@ class DeviceWsService(metaclass=SingletonMeta):
                             entry.event.set()
                     continue
                 entry.sending_seq = pb_seq
+                outcome_status = PlaybackStatus.COMPLETED
+                outcome_reason = ""
                 while not entry.ack_queue.empty():
                     try:
                         entry.ack_queue.get_nowait()
@@ -494,6 +546,8 @@ class DeviceWsService(metaclass=SingletonMeta):
                                 level=seq_level, sr=seq_sr, fmt=seq_fmt, ch=seq_ch,
                                 generation=generation,
                             ):
+                                outcome_status = PlaybackStatus.DISCONNECTED
+                                outcome_reason = "downlink_unavailable"
                                 return
                         is_last_window = batch_end >= n
                         if is_last_window:
@@ -518,10 +572,14 @@ class DeviceWsService(metaclass=SingletonMeta):
                                 device_id, req, (time.monotonic() - t_pb_end_wait) * 1000,
                             )
                         if ack_type == "pb_cancel":
+                            outcome_status = PlaybackStatus.PREEMPTED
+                            outcome_reason = "replaced"
                             cancel_block = PbBlock(type=PbType.CANCEL, req=req, idx=0)
                             await self._do_send_to_device(device_id, cancel_block, generation=generation)
                             break
                         if ack_type == "pb_timeout":
+                            outcome_status = PlaybackStatus.TIMEOUT
+                            outcome_reason = "pb_ack_timeout"
                             logger.warning(
                                 "[pb ACK] %s 等待超时 req=%s last_idx=%d want_end=%s，取消当前链",
                                 device_id, req, entries[batch_end - 1].idx, is_last_window,
@@ -530,9 +588,13 @@ class DeviceWsService(metaclass=SingletonMeta):
                             await self._do_send_to_device(device_id, cancel_block, generation=generation)
                             break
                         i = batch_end
+                except asyncio.CancelledError:
+                    outcome_status = PlaybackStatus.DISCONNECTED
+                    outcome_reason = "device_worker_cancelled"
+                    raise
                 finally:
                     entry.sending_seq = None
-                    pb_seq._done.set()
+                    pb_seq.finish(outcome_status, reason=outcome_reason)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -739,6 +801,11 @@ class DeviceWsService(metaclass=SingletonMeta):
         tasks: list[asyncio.Task] = []
         async with self._queue_lock:
             entry.stopped = True
+            for queued in entry.queue:
+                queued.finish(PlaybackStatus.DISCONNECTED, reason="device_worker_retired")
+            entry.queue.clear()
+            if entry.sending_seq is not None:
+                entry.sending_seq.finish(PlaybackStatus.DISCONNECTED, reason="device_worker_retired")
             if entry.seq_task is not None:
                 if entry.seq_task.done():
                     entry.seq_task = None

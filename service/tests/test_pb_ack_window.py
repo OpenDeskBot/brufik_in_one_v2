@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 
-from deskbot_server.model.pb_seq import PbAction, PbBlock, PbSeq, PbType
+from deskbot_server.model.pb_seq import PbAction, PbBlock, PbSeq, PbType, PlaybackStatus
 from deskbot_server.service.device_ws_service import DeviceWsService, _DeviceEntry
 
 
@@ -87,7 +87,48 @@ def test_final_window_waits_for_pb_end(monkeypatch):
 
             entry.ack_queue.put_nowait(_ack("r1", "pb_end", idx=2))
             await _wait_until(seq._done.is_set)
+            assert seq.outcome is not None and seq.outcome.status == PlaybackStatus.COMPLETED
             assert entry.sending_seq is None
+
+    asyncio.run(_run())
+
+
+def test_send_and_wait_returns_playback_outcome(monkeypatch):
+    """新接口返回真实播毕结果，不再把“成功入队”冒充“播放成功”。"""
+
+    async def _run() -> None:
+        svc, entry, sent = _make_svc(monkeypatch)
+        seq = PbSeq(req="r-outcome", entries=_blocks("r-outcome", 2))
+
+        async for _task in _run_device_loop(svc):
+            waiter = asyncio.create_task(svc.send_and_wait("d1", seq))
+            await _wait_until(lambda: len(sent) == 2)
+            assert not waiter.done()
+            entry.ack_queue.put_nowait(_ack("r-outcome", "pb_end", idx=1))
+            outcome = await waiter
+            assert outcome.status == PlaybackStatus.COMPLETED
+            assert outcome.req == "r-outcome"
+
+    asyncio.run(_run())
+
+
+def test_explicit_user_interrupt_clears_running_and_queued_sequences(monkeypatch):
+    async def _run() -> None:
+        svc, entry, _sent = _make_svc(monkeypatch)
+        running = PbSeq(req="running", entries=_blocks("running", 2), level=1, action=PbAction.APPEND)
+        queued = PbSeq(req="queued", entries=_blocks("queued", 2), level=1, action=PbAction.APPEND)
+        entry.sending_seq = running
+        entry.queue.append(queued)
+
+        affected = await svc.interrupt_current_playback("d1", reason="user_turn:test")
+
+        assert affected == 2
+        assert entry.queue == []
+        assert queued.outcome is not None
+        assert queued.outcome.status == PlaybackStatus.PREEMPTED
+        signal = entry.ack_queue.get_nowait()
+        assert signal["type"] == "pb_cancel"
+        assert signal["reason"] == "user_turn:test"
 
     asyncio.run(_run())
 
@@ -139,6 +180,7 @@ def test_preempt_during_end_wait_sends_cancel_and_plays_next(monkeypatch):
             assert svc._enqueue(entry, seq2) == 1  # level 2 抢占
 
             await _wait_until(seq1._done.is_set)
+            assert seq1.outcome is not None and seq1.outcome.status == PlaybackStatus.PREEMPTED
             assert sent[3] == ("d1", PbType.CANCEL, "r3", 0)  # cancel 带旧 req（第 4 个发送）
 
             await _wait_until(lambda: len(sent) == 3 + 1 + 2)
@@ -146,6 +188,7 @@ def test_preempt_during_end_wait_sends_cancel_and_plays_next(monkeypatch):
 
             entry.ack_queue.put_nowait(_ack("r4", "pb_end", idx=1))
             await _wait_until(seq2._done.is_set)
+            assert seq2.outcome is not None and seq2.outcome.status == PlaybackStatus.COMPLETED
 
     asyncio.run(_run())
 
@@ -234,6 +277,7 @@ def test_ack_timeout_cancels_current_seq(monkeypatch):
 
         async for _task in _run_device_loop(svc):
             await _wait_until(seq._done.is_set)
+            assert seq.outcome is not None and seq.outcome.status == PlaybackStatus.TIMEOUT
             assert [item[1] for item in sent] == [PbType.START, PbType.END, PbType.CANCEL]
             assert sent[-1][2] == "r-timeout"
 

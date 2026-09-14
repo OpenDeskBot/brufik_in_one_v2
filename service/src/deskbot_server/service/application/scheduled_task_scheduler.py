@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from deskbot_server.infrastructure.ws.downlink_adapter import WsDownlinkAdapter, WsPipelineEventsAdapter
 from deskbot_server.service.application.chat_flow import _voice_was_played, publish_chat_turn, run_chat_turn
@@ -17,8 +17,6 @@ from deskbot_server.service.scheduled_task_service import (
 
 if TYPE_CHECKING:
     from deskbot_server.service.application.chat_service import ChatService
-    from deskbot_server.service.device_ws_service import DeviceWsService
-    from deskbot_server.service.bus_service import BusService
     from deskbot_server.service.device_ws_service import DeviceWsService
 
 logger = logging.getLogger("deskbot-server")
@@ -151,6 +149,17 @@ class ScheduledTaskScheduler:
                 voice_ok,
                 (summary or "")[:120],
             )
+        except asyncio.CancelledError:
+            # Explicit user speech may preempt a reminder.  Put recurring tasks
+            # back on their normal schedule and never report a truncated prompt
+            # as successfully spoken.
+            finish_scheduled_task(tid, ok=False, summary="被用户对话打断，未完整播报")
+            logger.info(
+                "[scheduler] 任务被用户对话打断 task_id=%s device_id=%s",
+                tid,
+                device_id,
+            )
+            raise
         except Exception as exc:
             finish_scheduled_task(tid, ok=False, summary=str(exc))
             logger.exception("[scheduler] 任务异常 task_id=%s device_id=%s", tid, device_id)

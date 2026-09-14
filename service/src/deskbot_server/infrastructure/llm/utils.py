@@ -426,6 +426,17 @@ def build_llm_user_message(
         # 语音轮：正文行括号标注「ASR 转写来源 + 声纹说话人身份」（与实验台同源）
         note = format_voice_speaker_note(dev) if dev else None
         note_text = "语音转写" + (f"，{note}" if note else "")
+        # 身份没认出来时补一句限定：模型会把「声纹判定：陌生人 / 判定中」读成
+        # 「不是在跟我说话」而整轮静默（实测占静默轮次的近三成）。是否该回应已由
+        # 服务端注意力门控（asr_attention_gate）决定，这里只提醒它别再自行否决。
+        # 限定语单独成行（同上方「未检测到人脸」的写法），不改「用户正文（…）」
+        # 那一行的格式——那是被测试钉住的契约，也是与实验台展示同源的格式。
+        if note and ("陌生人" in note or "判定中" in note or "不可用" in note):
+            lines.append("")
+            lines.append(
+                "（声纹身份未确定只影响怎么称呼——用「你」即可；"
+                "是否该回应已由服务端判定，本轮照常回答用户正文。）"
+            )
         lines.append(f"用户正文（{note_text}）：{body}")
     else:
         lines.append(f"用户正文: {body}")
@@ -638,10 +649,37 @@ def _parse_llm_anim_items(raw: Any) -> list[Any]:
     return out
 
 
+def strip_llm_preamble(raw: str) -> str:
+    """从模型原始输出里取出「该说给主人听的那句话」。
+
+    模型经常先写一段中文推理再给 JSON envelope。若直接把原始输出当作口语，
+    会话历史会被自己的思维链污染（模型下一轮读到推理样例 → 自我强化沉默），
+    也可能被 TTS 念出来。这里统一清洗：
+
+    - 含 JSON envelope → 取其 ``tts``（兼容旧名 ``reply``），为空则返回空串
+    - 纯文本 → 取最后一段非空行（丢弃推理前言）
+    - 无有效内容 → 空串
+
+    供会话归档与纯文本兜底包装共用。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    parsed = parse_llm_reply(text)
+    if parsed.get("json_ok"):
+        # tts 为空说明模型本轮选择静默（need_reply=false），不要拿整段 JSON 充数
+        return str(parsed.get("reply") or "").strip()
+    for line in reversed(text.splitlines()):
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
 def parse_llm_reply(raw: str) -> dict:
     """把 LLM 输出尝试解析为约定 JSON。
 
-    格式 ``{"need_reply", "tts", "volume?", "gesture", "expression"}``；
+    格式 ``{"need_reply", "tts", "dialogue_act?", "volume?", "gesture", "expression"}``；
     兼容旧名 ``moves`` / ``anims`` 与旧版 ``servo`` / ``scenes`` / ``reply`` 字段
     （新名存在时优先）。解析结果统一归一为内部键 ``moves`` / ``anims``。
     工具调用只走原生 function calling（API tools 参数），envelope 内不再有 ``tools`` 键。
@@ -710,6 +748,9 @@ def parse_llm_reply(raw: str) -> dict:
                     if v:
                         scenes_out.append(v)
         vol = parse_pb_volume(parsed.get("volume"))
+        dialogue_act = str(parsed.get("dialogue_act") or "").strip().lower()
+        if dialogue_act not in {"answer", "empathize", "follow_up", "playful", "callback", "silent"}:
+            dialogue_act = "silent" if not _parsed_json_need_reply(parsed) else "answer"
         return {
             "reply": reply,
             "moves": moves_out,
@@ -718,6 +759,7 @@ def parse_llm_reply(raw: str) -> dict:
             "servo": servo_out,
             "volume": vol,
             "need_reply": _parsed_json_need_reply(parsed),
+            "dialogue_act": dialogue_act,
             "json_ok": True,
             "raw": text,
         }
@@ -730,6 +772,7 @@ def parse_llm_reply(raw: str) -> dict:
         "servo": [],
         "volume": None,
         "need_reply": True,
+        "dialogue_act": "answer",
         "json_ok": False,
         "raw": text,
     }

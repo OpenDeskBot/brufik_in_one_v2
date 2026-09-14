@@ -393,7 +393,9 @@ def test_llm_tool_runner_register_voiceprint(monkeypatch, db_env):
     results = asyncio.run(
         execute_llm_tools([{"tool": "register_voiceprint", "name": "小明"}], device_id=DV)
     )
+    assert len(results) == 1
     assert results[0]["ok"] is True
+    assert results[0]["voiceprint_registered"] is True
     assert results[0]["name"] == "小明"
     assert results[0]["profile_id"] > 0
 

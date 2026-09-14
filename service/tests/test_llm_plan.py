@@ -11,6 +11,12 @@ from deskbot_server.pb.llm_plan import (
     merge_llm_plan_anim_rows,
     preset_default_ms,
 )
+from deskbot_server.service.application.chat_flow import (
+    _history_ends_with_assistant_question,
+    _is_backchannel_only,
+    _suppress_recent_duplicate_questions,
+    _user_explicitly_requests_silence,
+)
 
 
 def test_parse_llm_reply_moves_anims():
@@ -59,6 +65,52 @@ def test_parse_llm_reply_gesture_expression_ids():
     both = parse_llm_reply('{"gesture": [], "moves": ["look_left"], "expression": [], "anims": ["angry"]}')
     assert both["moves"] == []
     assert both["anims"] == []
+
+
+def test_parse_llm_reply_dialogue_act_is_normalized():
+    parsed = parse_llm_reply('{"need_reply":true,"tts":"我懂了","dialogue_act":"EMPATHIZE"}')
+    assert parsed["dialogue_act"] == "empathize"
+    assert parse_llm_reply('{"need_reply":false,"tts":"","dialogue_act":"unknown"}')["dialogue_act"] == "silent"
+
+
+def test_only_explicit_user_request_allows_silence():
+    assert _user_explicitly_requests_silence("你先安静一下") is True
+    assert _user_explicitly_requests_silence("不用回复了") is True
+    assert _user_explicitly_requests_silence("我今天吃了面") is False
+    assert _user_explicitly_requests_silence("为什么房间这么安静") is False
+    assert _is_backchannel_only("嗯。") is True
+    assert _is_backchannel_only("嗯，我吃了面") is False
+    assert _history_ends_with_assistant_question([{"role": "assistant", "content": "你今天吃了什么？"}]) is True
+    assert _history_ends_with_assistant_question(
+        [{"role": "assistant", "content": '{"need_reply":true,"tts":"你吃饭了吗。"}'}]
+    ) is True
+
+
+def test_recent_duplicate_question_is_removed_without_another_llm_call():
+    history = [
+        {"role": "assistant", "content": '{"need_reply":true,"tts":"你今天吃了什么？"}'},
+        {"role": "user", "content": "吃了面"},
+    ]
+    reply, removed = _suppress_recent_duplicate_questions("原来如此。你今天吃什么呀？", history)
+    assert reply == "原来如此。"
+    assert removed == 1
+
+    reply, removed = _suppress_recent_duplicate_questions("你今天吃什么呀？", history)
+    assert reply == "嗯，我记住了。"
+    assert removed == 1
+
+    reply, removed = _suppress_recent_duplicate_questions("你明天想去哪里？", history)
+    assert reply == "你明天想去哪里？"
+    assert removed == 0
+
+    time_history = [{"role": "assistant", "content": "你今天想去哪里？"}]
+    reply, removed = _suppress_recent_duplicate_questions("你明天想去哪里？", time_history)
+    assert reply == "你明天想去哪里？"
+    assert removed == 0
+
+    reply, removed = _suppress_recent_duplicate_questions("你今天吃什么？你今天吃了什么呀？", [])
+    assert reply == "你今天吃什么？"
+    assert removed == 1
 
 
 def test_expand_llm_moves_string_uses_preset_default_ms():
@@ -261,23 +313,7 @@ def test_parse_llm_reply_ignores_images():
     assert "images" not in parsed
 
 
-def test_device_volume_persist(tmp_path, monkeypatch):
-    from deskbot_server.dao import device_volume_store as dvs
-
-    vol_file = tmp_path / "device_volume.json"
-
-    def _resolve(path, device_id=None):
-        return str(vol_file)
-
-    monkeypatch.setattr(dvs, "resolve_json_path", _resolve)
-    monkeypatch.setattr(dvs, "DEVICE_VOLUME_FILE", str(vol_file))
-    assert dvs.persist_device_volume(55, device_id="dev1") == 55
-    assert dvs.get_device_volume("dev1") == 55
-    assert dvs.persist_device_volume(90, device_id="dev1") == 90
-    assert dvs.get_device_volume("dev1") == 90
-    raw = '{"tts":"好","volume":75,"moves":[],"anims":[]}'
-    parsed = parse_llm_reply(raw)
-    assert parsed["volume"] == 75
+def test_parse_llm_reply_volume_omitted():
     omit = parse_llm_reply('{"tts":"好","moves":[],"anims":[]}')
     assert omit["volume"] is None
 

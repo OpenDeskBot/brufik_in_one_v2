@@ -216,8 +216,11 @@ def create_session(device_id: str, *, title: str | None = None, now: float | Non
 
 
 def load_session(device_id: str, session_id: str) -> dict[str, Any] | None:
+    dev = str(device_id or "").strip()
+    if not dev:
+        return None
     session = get_session(str(session_id or "").strip())
-    if session is None:
+    if session is None or str(session.device_id or "").strip() != dev:
         return None
     messages = list_messages(session.id)
     return _session_to_dict(session, messages=messages)
@@ -245,6 +248,9 @@ def session_history_for_llm(
     device_id: str, session_id: str, *, max_turns: int = _MAX_HISTORY_TURNS
 ) -> list[dict[str, str]]:
     """将已存 session 消息转为 LLM ``history_messages``（role/content）。"""
+    session = load_session(device_id, session_id)
+    if session is None:
+        return []
     messages = list_messages(str(session_id or "").strip())
     cap = max(0, int(max_turns)) * 2
     if cap > 0:
@@ -271,6 +277,9 @@ def session_context_window(
     """
     sid = str(session_id or "").strip()
     if not sid:
+        return []
+    owned = get_session(sid)
+    if owned is None or str(owned.device_id or "").strip() != str(device_id or "").strip():
         return []
     messages = list_messages(sid)
     cap = max(0, int(max_history_turns)) * 2
@@ -306,6 +315,8 @@ def append_turn(
     if session is None:
         created = create_session(device_id, title=_truncate_title(user_text), now=now)
         sid = created["session_id"]
+    elif str(session.device_id or "").strip() != str(device_id or "").strip():
+        raise ValueError("session not found")
 
     ts_str = datetime.fromtimestamp(now, tz=timezone.utc).isoformat() if now is not None else None
     user_msg = str(user_text or "").strip()

@@ -63,6 +63,22 @@ def test_create_list_delete_cron_task(temp_db):
     assert list_scheduled_tasks_for_device("deskbot_test") == []
 
 
+def test_create_task_is_idempotent_for_same_normalized_fields(temp_db):
+    from deskbot_server.service.scheduled_task_service import create_scheduled_task, list_scheduled_tasks_for_device
+
+    first = create_scheduled_task(
+        "deskbot_test", "提醒主人喝水", cron="0 9 * * *", task_kind="recurring"
+    )
+    repeated = create_scheduled_task(
+        "deskbot_test", "提醒主人喝水", cron="  0   9  * * * ", task_kind="recurring"
+    )
+
+    assert first["deduped"] is False
+    assert repeated["deduped"] is True
+    assert repeated["id"] == first["id"]
+    assert len(list_scheduled_tasks_for_device("deskbot_test")) == 1
+
+
 def test_schedule_task_crud_via_tool(temp_db):
     import asyncio
 
