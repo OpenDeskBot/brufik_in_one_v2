@@ -50,9 +50,16 @@ asr:
     min_text_len: 2
     min_chinese_ratio: 0.0
 llm:
-  protocol: ark_responses
-  base_url: https://ark.cn-beijing.volces.com/api/v3
-  model_name: deepseek-v4-flash-ga-260731
+  # 系统默认 = 硅基流动（免费云端，OpenAI 兼容）。所有 llm_provider 为空的设备
+  # （含新绑定设备）都用它；密钥由 api_key_env 指名的服务端环境变量提供，
+  # 见 .env 的 SILICONFLOW_API_KEY。回滚成火山方舟：protocol: ark_responses +
+  # base_url: https://ark.cn-beijing.volces.com/api/v3 + model_name: <接入点 ep-…>。
+  protocol: openai
+  base_url: https://api.siliconflow.cn/v1
+  model_name: Qwen/Qwen3-8B
+  api_key_env: SILICONFLOW_API_KEY
+  # Qwen3-8B 在硅基流动是 32k 上下文；不写则历史预算回退 8192//2=4096（对话会莫名变笨）
+  context_window: 32768
   system_prompt_file: data/global/llm_system.txt
   system_prompt: '你是"小歪"，桌面上活泼俏皮、温柔体贴的小型陪伴机器人。情绪用眼睛、表情、动作明显表达，不只靠说话。识别到用户名就称呼那个名字；说话口语化、简短自然，像好朋友，不书面腔、不客套、不自我介绍。
 

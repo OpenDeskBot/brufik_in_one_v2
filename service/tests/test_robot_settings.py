@@ -12,7 +12,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from deskbot_server.infrastructure.llm.runtime import QWEN_LLM_BASE_URL
+from deskbot_server.infrastructure.llm.runtime import (
+    QWEN_LLM_BASE_URL,
+    SILICONFLOW_API_KEY_ENV,
+    SILICONFLOW_BASE_URL,
+    SILICONFLOW_DEFAULT_MODEL,
+)
 from deskbot_server.service.robot_capability import (
     ASR_CANDIDATES,
     LLM_CANDIDATES,
@@ -49,8 +54,12 @@ def svc(temp_cfg: Path) -> RobotCapabilityService:
 
 @pytest.fixture()
 def clean_llm_env(monkeypatch):
-    """隔离宿主环境的 LLM env 覆盖，保证 resolve_system_llm_config 走 config.yaml。"""
-    for name in ("LLM_PROTOCOL", "LLM_MODEL", "LLM_BASE_URL", "LLM_API_KEY", "ARK_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY", "DASHSCOPE_API_KEY", "QWEN_API_KEY", "ASR_PROVIDER", "TTS_PROVIDER"):
+    """隔离宿主环境的 LLM env 覆盖，保证 resolve_system_llm_config 走 config.yaml。
+
+    SILICONFLOW_API_KEY 必列：导入链会经 ``create_app()`` → ``mount_web`` → ``load_dotenv``
+    把本机真实 ``.env`` 灌进 ``os.environ``，不删的话断言「未配置密钥」的用例会随机失败。
+    """
+    for name in ("LLM_PROTOCOL", "LLM_MODEL", "LLM_BASE_URL", "LLM_API_KEY", "ARK_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY", "DASHSCOPE_API_KEY", "QWEN_API_KEY", "SILICONFLOW_API_KEY", "ASR_PROVIDER", "TTS_PROVIDER"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -104,13 +113,16 @@ def bound_asr():
 
 def test_capability_catalogs_structure():
     assert [c.id for c in ASR_CANDIDATES] == ["funasr", "doubao"]
-    # 本地模型在前，火山方舟 Ark 置底
-    assert [c.id for c in LLM_CANDIDATES] == ["minicpm", "qwen", "ark"]
+    # 本地模型在前，云端（ark / siliconflow）置底
+    assert [c.id for c in LLM_CANDIDATES] == ["minicpm", "qwen", "ark", "siliconflow"]
     assert [c.id for c in TTS_CANDIDATES] == ["moss-tts-nano", "doubao"]
 
     minicpm = LLM_CANDIDATES[0]
     qwen = LLM_CANDIDATES[1]
     ark = LLM_CANDIDATES[2]
+    siliconflow = LLM_CANDIDATES[3]
+    assert siliconflow.experimental is False
+    assert siliconflow.requires_service is None  # 云端 SaaS，不走外部服务框架
     assert ark.experimental is False
     assert minicpm.experimental is True
     assert minicpm.requires_service == "llm-minicpm"
@@ -220,6 +232,55 @@ def test_apply_llm_writes_device_table(svc, device, clean_llm_env):
     svc.apply_llm("ark", "deskbot_asr")
     assert get_llm_provider("deskbot_asr") == "ark"
     assert get_llm_param("deskbot_asr") == {}
+
+    # siliconflow：模型可配、密钥在服务端 .env，应用后不需要任何 llm_param
+    svc.apply_llm("siliconflow", "deskbot_asr")
+    assert get_llm_provider("deskbot_asr") == "siliconflow"
+    sf = svc.get_status("deskbot_asr")["capabilities"]["llm"]
+    assert sf["current"] == "siliconflow"
+    assert sf["effective"]["base_url"] == SILICONFLOW_BASE_URL
+    assert sf["effective"]["model_name"] == SILICONFLOW_DEFAULT_MODEL  # 未配置 → 预设默认
+    assert sf["device_params"]["configured"] is False
+
+
+def test_llm_status_system_default_siliconflow(tmp_path, temp_db, device, clean_llm_env, monkeypatch):
+    """系统默认指向硅基流动时：current 由 base_url host 反查得到 siliconflow（而非 custom）。
+
+    这是「新设备 + 未配置设备默认用硅基流动」的展示侧验证 —— 落到 custom 会让页面单选不亮、
+    「应用」按钮永久禁用。
+    """
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {
+                **MINIMAL_CONFIG,
+                "llm": {
+                    "protocol": "openai",
+                    "base_url": SILICONFLOW_BASE_URL,
+                    "model_name": "Qwen/Qwen3-8B",
+                    "api_key_env": SILICONFLOW_API_KEY_ENV,
+                    "context_window": 32768,
+                },
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    svc2 = RobotCapabilityService(config_path=cfg_path)
+
+    llm = svc2.get_status("deskbot_asr")["capabilities"]["llm"]
+    assert llm["current"] == "siliconflow"
+    assert llm["effective"]["protocol"] == "openai"
+    assert llm["effective"]["model_name"] == "Qwen/Qwen3-8B"  # org 前缀未被剥
+    assert llm["effective"]["api_key_set"] is False
+    assert SILICONFLOW_API_KEY_ENV in (llm["warning"] or "")  # 引导去 .env 配 key
+
+    # 配上服务端密钥后 warning 消失（密钥来源是 env，不是设备表）
+    monkeypatch.setenv(SILICONFLOW_API_KEY_ENV, "sk-sf")
+    llm = svc2.get_status("deskbot_asr")["capabilities"]["llm"]
+    assert llm["effective"]["api_key_set"] is True
+    assert llm["warning"] is None
 
 
 def test_apply_llm_requires_device(svc, clean_llm_env):
@@ -387,7 +448,8 @@ def test_api_robot_settings_endpoints(temp_db):
     assert payload["ok"] is True
     assert payload["capabilities"]["asr"]["current"] in ("funasr", "doubao")
     assert payload["capabilities"]["tts"]["current"] in ("moss-tts-nano", "doubao")
-    assert payload["capabilities"]["llm"]["current"] in ("ark", "minicpm", "qwen", "custom")
+    # 走真实 config.yaml（create_app 默认路径）：系统默认已切到硅基流动，未选设备时即它
+    assert payload["capabilities"]["llm"]["current"] == "siliconflow"
 
     # 行为开关（未选设备）：GET 回落默认值，写操作 → 400
     assert payload["behavior"] == {"auto_reply": True, "follow_mode": ""}
@@ -425,6 +487,12 @@ def test_robot_settings_page_renders(temp_db):
     assert "cap-opt-test" in html  # 候选行配置按钮（ASR/LLM/TTS）
     assert "openLlmCfg" in html    # LLM 配置对话框（字段 + 试聊）
     assert "/api/robot-settings/llm/config-info" in html
+    # siliconflow 配置分支：模型下拉 + 服务端 .env 凭证提示（守住对话框分支不被误删）。
+    # 注意断言的是模板里的标识符而非 SILICONFLOW_API_KEY 字面量 —— 后者由 Vue 运行时注入，
+    # 不出现在服务端渲染的 HTML 里。
+    assert "llmCfg.provider==='siliconflow'" in html
+    assert "llmCfg.models" in html
+    assert "llmCfg.apiKeyEnv" in html
     assert "openTtsCfg" in html    # TTS 配置对话框（音色/凭证设置 + 试听）
     assert "保存配置" in html
     assert "/api/robot-settings/tts/config" in html

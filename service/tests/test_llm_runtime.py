@@ -26,6 +26,174 @@ def test_build_chat_model_keeps_openai_compatible_model_id():
     assert build_chat_model("openai", "openai/ep-202607020001") == "ep-202607020001"
 
 
+def test_build_chat_model_preserves_real_org_prefixes():
+    """前缀只在属于当前协议时才剥：``Qwen/Qwen3-8B`` 的 ``Qwen`` 是 org 名，不是协议别名。
+
+    早先的实现不看协议、只要前缀命中 LEGACY_MODEL_PREFIXES 就剥（``qwen`` 恰在其中），
+    会把硅基流动的模型 ID 变成 ``Qwen3-8B`` 发给云端 → 400。
+    """
+    from deskbot_server.infrastructure.llm.runtime import build_chat_model
+
+    assert build_chat_model("openai", "Qwen/Qwen3-8B") == "Qwen/Qwen3-8B"
+    assert build_chat_model("openai", "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B") == "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+    # 协议自己的别名照旧剥
+    assert build_chat_model("ark", "ark/ep-1") == "ep-1"
+    assert build_chat_model("ark_responses", "ark_responses/ep-1") == "ep-1"
+    assert build_chat_model("ark", "volcano/ep-1") == "ep-1"  # _normalized_protocol 归一别名
+    # 别的协议的前缀不再越界剥（新语义）
+    assert build_chat_model("openai", "dashscope/qwen-max") == "dashscope/qwen-max"
+    # 已知残留：前缀恰好等于协议名时仍剥（有意保留的向后兼容）
+    assert build_chat_model("openai", "openai/gpt-oss-20b") == "gpt-oss-20b"
+
+
+def test_cloud_provider_of_base_url_matches_host_suffix_only():
+    """host 后缀匹配：``evil-siliconflow.cn`` / ``api.siliconflow.cn.evil.com`` 不算硅基流动。"""
+    from deskbot_server.infrastructure.llm.runtime import cloud_provider_of_base_url as f
+
+    assert f("https://api.siliconflow.cn/v1") == "siliconflow"
+    assert f("https://api.siliconflow.cn/v1/") == "siliconflow"
+    assert f("https://ark.cn-beijing.volces.com/api/v3") == "ark"
+    assert f("https://evil-siliconflow.cn/v1") is None
+    assert f("https://api.siliconflow.cn.evil.com/v1") is None
+    assert f("http://127.0.0.1:9105/v1") is None
+    assert f("") is None
+
+
+def test_resolve_system_llm_config_reads_api_key_env(monkeypatch):
+    """系统默认可经 ``llm.api_key_env`` **指名**服务端环境变量取密钥（只认变量名）。"""
+    from deskbot_server.infrastructure.llm.runtime import SILICONFLOW_BASE_URL, resolve_system_llm_config
+
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-test")
+    monkeypatch.setattr(
+        "deskbot_server.infrastructure.llm.runtime.load_config",
+        lambda: {
+            "llm": {
+                "protocol": "openai",
+                "base_url": SILICONFLOW_BASE_URL,
+                "model_name": "Qwen/Qwen3-8B",
+                "api_key_env": "SILICONFLOW_API_KEY",
+                "context_window": 32768,
+            }
+        },
+    )
+
+    cfg = resolve_system_llm_config()
+
+    assert cfg.api_key == "sk-sf-test"
+    assert cfg.protocol == "openai"
+    assert cfg.api_base == SILICONFLOW_BASE_URL
+    assert cfg.model == "Qwen/Qwen3-8B"  # org 前缀必须保留
+    assert cfg.context_window == 32768
+    assert cfg.extra_body == {"enable_thinking": False}
+
+
+def test_resolve_system_llm_config_api_key_env_never_inline_secret(monkeypatch):
+    """``api_key_env`` 只接受环境变量名；写明文密钥进去取不到值（config.yaml 进 git）。"""
+    from deskbot_server.infrastructure.llm.runtime import resolve_system_llm_config
+
+    monkeypatch.setattr(
+        "deskbot_server.infrastructure.llm.runtime.load_config",
+        lambda: {"llm": {"protocol": "openai", "model_name": "m", "api_key_env": "sk-inline-secret"}},
+    )
+
+    assert resolve_system_llm_config().api_key == ""
+
+
+def test_resolve_system_llm_config_api_key_env_missing(monkeypatch):
+    """变量名合法但环境未设置 → 空 key，不抛（由 _validate_api_key 在真正调用时报错）。"""
+    from deskbot_server.infrastructure.llm.runtime import resolve_system_llm_config
+
+    monkeypatch.delenv("NO_SUCH_ENV_XYZ", raising=False)
+    monkeypatch.setattr(
+        "deskbot_server.infrastructure.llm.runtime.load_config",
+        lambda: {"llm": {"protocol": "openai", "model_name": "m", "api_key_env": "NO_SUCH_ENV_XYZ"}},
+    )
+
+    assert resolve_system_llm_config().api_key == ""
+
+
+def test_siliconflow_extra_body_only_for_thinking_capable_models():
+    """R1 蒸馏款的思考被 chat template 固化，下发 enable_thinking 无效（实测仍有 reasoning token）。"""
+    from deskbot_server.infrastructure.llm.runtime import siliconflow_extra_body
+
+    assert siliconflow_extra_body("Qwen/Qwen3-8B") == {"enable_thinking": False}
+    assert siliconflow_extra_body("deepseek-ai/DeepSeek-R1-0528-Qwen3-8B") is None
+    assert siliconflow_extra_body("") is None
+
+
+def test_build_completion_payload_merges_extra_body_with_reserved_key_guard():
+    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, _build_completion_payload
+
+    def cfg(**kw):
+        base = {
+            "model": "Qwen/Qwen3-8B",
+            "api_key": "k",
+            "api_base": "https://api.siliconflow.cn/v1",
+            "protocol": "openai",
+            "source": "test",
+            "display_name": "t",
+        }
+        return ResolvedLlmConfig(**{**base, **kw})
+
+    msgs = [{"role": "user", "content": "hi"}]
+    body = _build_completion_payload(
+        msgs, cfg(extra_body={"enable_thinking": False}), temperature=0.7, json_mode=False, stream=False
+    )
+    assert body["enable_thinking"] is False
+    assert body["model"] == "Qwen/Qwen3-8B"
+
+    # 保留键不可被 extra_body 覆盖
+    body = _build_completion_payload(
+        msgs, cfg(extra_body={"model": "hacked", "messages": []}), temperature=0.7, json_mode=False, stream=False
+    )
+    assert body["model"] == "Qwen/Qwen3-8B"
+    assert body["messages"] == msgs
+
+    # extra_body 为 None 时不合并（保持既有请求体形状）
+    body = _build_completion_payload(msgs, cfg(), temperature=0.7, json_mode=False, stream=False)
+    assert body == {"model": "Qwen/Qwen3-8B", "messages": msgs, "temperature": 0.7, "stream": False}
+
+    # ark_responses 分支不合并（它有自己的 thinking 字段）
+    body = _build_completion_payload(
+        msgs,
+        cfg(protocol="ark_responses", extra_body={"enable_thinking": False}),
+        temperature=0.7,
+        json_mode=False,
+        stream=False,
+    )
+    assert "enable_thinking" not in body
+    assert body["thinking"] == {"type": "disabled"}
+
+
+def test_api_key_error_message_names_siliconflow_env():
+    from deskbot_server.infrastructure.llm.runtime import (
+        SILICONFLOW_API_KEY_ENV,
+        ResolvedLlmConfig,
+        api_key_error_message,
+    )
+
+    sf = ResolvedLlmConfig(
+        model="Qwen/Qwen3-8B",
+        api_key="",
+        api_base="https://api.siliconflow.cn/v1",
+        protocol="openai",
+        source="system",
+        display_name="t",
+    )
+    msg = api_key_error_message(sf)
+    assert msg and SILICONFLOW_API_KEY_ENV in msg
+    assert ".env" in msg
+
+    # 有 key → 无需报错
+    assert api_key_error_message(ResolvedLlmConfig(**{**sf.__dict__, "api_key": "sk-x"})) is None
+
+    # 本地引擎恒不报错
+    local = ResolvedLlmConfig(
+        model="m", api_key="", api_base="http://127.0.0.1:9105/v1", protocol="openai", source="device", display_name="t"
+    )
+    assert api_key_error_message(local) is None
+
+
 def test_resolve_system_llm_config_ignores_env_keys(monkeypatch):
     """系统默认 LLM 不读任何环境变量密钥（密钥仅设备级 llm_param）；只取 config.yaml llm 段。"""
     from deskbot_server.infrastructure.llm.runtime import resolve_system_llm_config

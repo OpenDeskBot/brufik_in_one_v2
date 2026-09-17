@@ -522,25 +522,15 @@ def llm_chat(request: Request, user: RequireUser):
     else:
         system_prompt = default_system_prompt
 
-    from deskbot_server.infrastructure.llm.runtime import is_local_llm_url, resolve_llm_config
+    from deskbot_server.infrastructure.llm.runtime import api_key_error_message, resolve_llm_config
 
     try:
         llm_runtime_cfg = resolve_llm_config(debug_device_id or None)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    if not is_local_llm_url(llm_runtime_cfg.api_base) and (
-        not llm_runtime_cfg.api_key or "请替换" in llm_runtime_cfg.api_key
-    ):
-        return (
-            jsonify(
-                {
-                    "ok": False,
-                    "error": "LLM API Key 未配置：请在该设备 LLM 配置（机器人设置 → LLM → ark「配置」）中填写，"
-                    "或切换到本地免费引擎（minicpm / qwen）",
-                }
-            ),
-            400,
-        )
+    key_error = api_key_error_message(llm_runtime_cfg)
+    if key_error:
+        return jsonify({"ok": False, "error": key_error}), 400
 
     from deskbot_server.infrastructure.llm.utils import build_llm_system_prompt, build_llm_user_message
 

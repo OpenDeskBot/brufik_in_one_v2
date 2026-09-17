@@ -2,12 +2,19 @@
 
 - ASR：设备级配置（device 表 asr_provider，默认 funasr），写表即生效——
   ``resolve_asr_adapter`` 每次调用动态解析（见 infrastructure/asr/resolve.py）
-- LLM：设备级配置（device 表 llm_provider：minicpm / qwen 本地固定端点 / ark 云端，
-  空=回落系统默认 config.yaml llm 段）；ark 的密钥/模型存 device 表 llm_param["ark"]，
+- LLM：设备级配置（device 表 llm_provider：minicpm / qwen 本地固定端点 / ark / siliconflow
+  云端，空=回落系统默认 config.yaml llm 段，当前默认指向硅基流动）；ark 的密钥/模型存 device 表
+  llm_param["ark"]，siliconflow 只存模型（密钥是服务端公共凭证，见文末例外），
   写表即生效——``resolve_llm_config`` 每次调用动态解析（见 infrastructure/llm/runtime.py）
 - TTS：设备级配置（device 表 tts_provider，默认 moss-tts-nano；tts_param 存音色/凭证），
   写表即生效——``resolve_tts_adapter`` 每次调用动态解析（见 infrastructure/tts/resolve.py）。
-  config.yaml 不再持有 provider 与凭证，ASR/TTS/LLM 云端凭证由各设备自配（服务器不承担公共凭证）
+  config.yaml 不再持有 provider 与凭证，ASR/TTS/LLM 云端凭证由各设备自配。
+
+**例外：LLM 的「系统默认」是服务端公共凭证**。``config.yaml`` 的 ``llm`` 段默认指向
+硅基流动（云端），密钥由 ``llm.api_key_env`` 指名的环境变量（``SILICONFLOW_API_KEY``）提供，
+所有 ``llm_provider`` 为空的设备（含新绑定设备）共用。这是为「开箱即用的免费云端大脑」做的
+有意例外，不要按 ASR/TTS 的「服务器不承担公共凭证」原则把它改回设备级；
+设备想用别的模型仍可选 ark（设备级密钥）或本地引擎。
 """
 
 from __future__ import annotations
@@ -55,11 +62,19 @@ from deskbot_server.infrastructure.llm.runtime import (
     ARK_OPENAI_BASE_URL,
     ARK_PARAM_FIELDS,
     LOCAL_LLM_PROVIDERS,
+    SILICONFLOW_API_KEY_ENV,
+    SILICONFLOW_BASE_URL,
+    SILICONFLOW_DEFAULT_MODEL,
+    SILICONFLOW_MODEL_PRESETS,
+    SILICONFLOW_PARAM_FIELDS,
     VOLCENGINE_PROTOCOLS,
     ResolvedLlmConfig,
+    build_siliconflow_config,
     chat_acompletion,
+    cloud_provider_of_base_url,
     resolve_device_llm_provider,
     resolve_llm_config,
+    resolve_siliconflow_api_key,
 )
 from deskbot_server.infrastructure.tts.doubao import (
     DOUBAO_TTS_FIELDS,
@@ -89,6 +104,13 @@ LLM_TEST_DEFAULT_TEXT = "你好，请用一句话简短回复。"
 
 # 本地 LLM provider 的外部服务名（端点/模型常量统一在 infrastructure/llm/runtime.py）
 LOCAL_LLM_SERVICES = {"minicpm": "llm-minicpm", "qwen": "llm-qwen"}
+
+# 设备级可保存的 LLM 字段（provider → llm_param[provider] 的键）。保存/回填/掩码共用。
+# siliconflow 只有 model_name：它的密钥是服务端公共凭证（.env），不进设备表、页面不暴露。
+_DEVICE_LLM_PARAM_FIELDS: dict[str, tuple[str, ...]] = {
+    "ark": ARK_PARAM_FIELDS,
+    "siliconflow": SILICONFLOW_PARAM_FIELDS,
+}
 
 # ASR 测试默认音频样本（与 external/manager.DEFAULT_ASR_TEST_AUDIO 同路径）
 DEFAULT_ASR_TEST_AUDIO = SERVICE_ROOT / "data" / "test" / "asr.wav"
@@ -142,7 +164,13 @@ LLM_CANDIDATES = [
     CapabilityCandidate(
         "ark",
         "火山方舟 Ark（云端）",
-        "默认云端 LLM，支持工具调用（提醒 / 记忆 / 实验台）；API Key 与模型 ID 由该设备自配（服务器不承担公共凭证）",
+        "云端 LLM，支持工具调用（提醒 / 记忆 / 实验台）；API Key 与模型 ID 由该设备自配（服务器不承担公共凭证）",
+    ),
+    CapabilityCandidate(
+        "siliconflow",
+        "硅基流动 SiliconFlow（云端）",
+        "系统默认云端 LLM（OpenAI 兼容，api.siliconflow.cn），模型在「配置」中选择；"
+        "API Key 由服务端 .env（SILICONFLOW_API_KEY）统一提供，页面不暴露、不支持设备级密钥",
     ),
 ]
 TTS_CANDIDATES = [
@@ -292,10 +320,13 @@ class RobotCapabilityService:
         else:
             protocol = str(effective.get("protocol") or "").strip()
             if protocol == "openai":
-                # 本地端点精确匹配（9105/9106 等，见 runtime.LOCAL_LLM_PROVIDERS）；其他归 custom
+                # 先按本地端点精确匹配（9105/9106 等，见 runtime.LOCAL_LLM_PROVIDERS），
+                # 再按云端端点 host 反查（系统默认指向硅基流动时落到这里）；其余归 custom
                 base_url = str(effective.get("base_url") or "").strip().rstrip("/")
-                current = next(
-                    (pid for pid, (url, _) in LOCAL_LLM_PROVIDERS.items() if base_url == url), "custom"
+                current = (
+                    next((pid for pid, (url, _) in LOCAL_LLM_PROVIDERS.items() if base_url == url), None)
+                    or cloud_provider_of_base_url(base_url)
+                    or "custom"
                 )
             elif protocol in VOLCENGINE_PROTOCOLS:
                 current = "ark"  # 系统默认指向云端：按候选标签展示，密钥需设备级配置
@@ -307,16 +338,25 @@ class RobotCapabilityService:
             svc_name = LOCAL_LLM_SERVICES[current]
             if not self._service_running(svc_name):
                 warning = f"{svc_name} 未在运行，对话将失败；请先在「独立服务管理」中启动"
-        elif current == "ark" and not effective.get("error") and not effective.get("api_key_set"):
-            # 设备选了 ark 但没配 key（或系统默认指向云端）→ 引导配置
-            if provider == "ark":
+        elif (
+            current in ("ark", "siliconflow")
+            and not effective.get("error")
+            and not effective.get("api_key_set")
+        ):
+            if current == "siliconflow":
+                where = "该设备已选" if provider == "siliconflow" else "系统默认指向"
+                warning = (
+                    f"{where}硅基流动云端 LLM，但服务端未配置 {SILICONFLOW_API_KEY_ENV}（.env）："
+                    "请在服务端 .env 中填写该变量后重启服务"
+                )
+            elif provider == "ark":
                 warning = (
                     "该设备已选 ark 云端 LLM 但未配置 API Key：请点击 ark「配置」"
                     "为该设备填写 API Key 与模型 ID（保存到该设备 llm_param）"
                 )
             else:
                 warning = (
-                    "系统默认指向云端 LLM 但没有密钥（密钥仅设备级）：请切换 minicpm/qwen，"
+                    "系统默认指向 ark 云端 LLM 但没有密钥（密钥仅设备级）：请切换 minicpm/qwen，"
                     "或选中 ark 并在「配置」中为该设备填写 API Key"
                 )
 
@@ -876,10 +916,11 @@ class RobotCapabilityService:
     # ---------- LLM 切换（设备级：写 device 表，动态解析即时生效） ----------
 
     def apply_llm(self, provider: str, device_id: str | None = None) -> dict[str, Any]:
-        """切换设备级 LLM provider（minicpm / qwen / ark，写 device 表 llm_provider 即生效）。
+        """切换设备级 LLM provider（minicpm / qwen / ark / siliconflow，写 device 表即生效）。
 
         允许未配密钥先应用 ark（对齐 ASR/TTS 的 doubao）：缺 key 由卡片 warning 引导，
-        运行时错误文案亦指向设备配置。不再写 config.yaml / .env。
+        运行时错误文案亦指向设备配置。siliconflow 的密钥是服务端公共凭证，无此问题。
+        不再写 config.yaml / .env。
         """
         _candidate("llm", provider)
         if not device_id:
@@ -888,17 +929,35 @@ class RobotCapabilityService:
         logger.info("[robot-settings] LLM 设备级切换生效 device_id=%s provider=%s", device_id, provider)
         return self.get_status(device_id)
 
-    # ---------- LLM 配置 / 试聊（对话框；密钥仅设备级 llm_param） ----------
+    # ---------- LLM 配置 / 试聊（对话框；ark 密钥在设备 llm_param，siliconflow 在服务端 .env） ----------
 
     def llm_config_info(self, provider: str, device_id: str | None = None) -> dict[str, Any]:
-        """LLM 配置对话框元信息：本地引擎只读固定端点；ark 显示当前设备 llm_param 值（key 掩码）。
+        """LLM 配置对话框元信息。
 
-        ark 字段仅读设备 llm_param["ark"]，不回退 config.yaml（与 runtime 解析一致）。
+        - 本地引擎：只读固定端点；
+        - ark：当前设备 llm_param["ark"]（key 掩码），不回退 config.yaml（与 runtime 解析一致）；
+        - siliconflow：只回模型预设（密钥是服务端 .env 公共凭证，永不回显、不可编辑）。
         """
         _candidate("llm", provider)
         if provider in LOCAL_LLM_PROVIDERS:
             base_url, model_name = LOCAL_LLM_PROVIDERS[provider]
             return {"provider": provider, "base_url": base_url, "model_name": model_name, "readonly": True}
+        if provider == "siliconflow":
+            sf = {}
+            if device_id:
+                raw = get_llm_param(device_id).get("siliconflow")
+                sf = raw if isinstance(raw, dict) else {}
+            return {
+                "provider": provider,
+                "model_name": str(sf.get("model_name") or "").strip() or SILICONFLOW_DEFAULT_MODEL,
+                "models": list(SILICONFLOW_MODEL_PRESETS),
+                "base_url": SILICONFLOW_BASE_URL,
+                "api_key": "",  # 服务端密钥永不回显
+                "api_key_set": bool(resolve_siliconflow_api_key()),
+                "api_key_env": SILICONFLOW_API_KEY_ENV,
+                "readonly": False,  # 模型可保存
+                "credential_readonly": True,  # 凭证只读：前端据此不渲染输入框
+            }
         ark = {}
         if device_id:
             raw = get_llm_param(device_id).get("ark")
@@ -916,38 +975,42 @@ class RobotCapabilityService:
     def save_device_llm_config(
         self, device_id: str | None, provider: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        """保存设备级 ark 配置到 device 表 llm_param["ark"]（JSON），不写 .env / config.yaml。
+        """保存设备级 LLM 配置到 device 表 llm_param[provider]（JSON），不写 .env / config.yaml。
 
-        掩码/空值按回填链保留：payload > 设备已有 llm_param["ark"]；全空 → 删除该键，
-        llm_param 空则置 NULL（回到系统默认）。写表即生效（runtime 每次动态解析）。
+        可保存字段由 ``_DEVICE_LLM_PARAM_FIELDS`` 决定（ark 三个、siliconflow 只有 model_name
+        —— 它的密钥是服务端公共凭证，payload 里带 api_key 会被天然忽略）。
+        掩码/空值按回填链保留：payload > 设备已有；全空 → 删除该键，llm_param 空则置 NULL
+        （回到系统默认）。写表即生效（runtime 每次动态解析）。
         """
         _candidate("llm", provider)
         if not device_id:
             raise CapabilityError("未选择当前设备，无法保存 LLM 配置")
-        if provider not in ("ark",):
+        fields = _DEVICE_LLM_PARAM_FIELDS.get(provider)
+        if fields is None:
             raise CapabilityError("本地模型无可保存字段（端点为固定内置值）")
         existing = get_llm_param(device_id)
-        existing_ark = existing.get("ark") if isinstance(existing.get("ark"), dict) else {}
+        raw_existing = existing.get(provider)
+        existing_provider = raw_existing if isinstance(raw_existing, dict) else {}
 
-        ark_out: dict[str, str] = {}
-        for key in ARK_PARAM_FIELDS:
+        out: dict[str, str] = {}
+        for key in fields:
             raw = str(payload.get(key) or "").strip()
             if key == "api_key" and _is_masked_secret(raw):
                 raw = ""  # 掩码占位 → 回填已有值
             if not raw:
-                raw = str(existing_ark.get(key) or "").strip()
+                raw = str(existing_provider.get(key) or "").strip()
             if raw:
-                ark_out[key] = raw
+                out[key] = raw
 
         param = dict(existing)
-        if ark_out:
-            param["ark"] = ark_out
+        if out:
+            param[provider] = out
         else:
-            param.pop("ark", None)
+            param.pop(provider, None)
         update_llm_param(device_id, json.dumps(param, ensure_ascii=False) if param else None)
         logger.info(
-            "[robot-settings] 设备级 LLM 配置已保存 device_id=%s fields=%s",
-            device_id, sorted(ark_out),
+            "[robot-settings] 设备级 LLM 配置已保存 device_id=%s provider=%s fields=%s",
+            device_id, provider, sorted(out),
         )
         return self.llm_config_info(provider, device_id)
 
@@ -962,7 +1025,9 @@ class RobotCapabilityService:
         """按指定 provider 试聊（临时 ResolvedLlmConfig，不落盘、不改表）。
 
         本地引擎直连固定端点（免 key）；ark 需 device_id，参数优先级：
-        表单覆盖（overrides）> 设备 llm_param["ark"] > 内置默认（api_key 无默认）。
+        表单覆盖（overrides）> 设备 llm_param["ark"] > 内置默认（api_key 无默认）；
+        siliconflow **不需要 device_id**（密钥在服务端 .env），优先级：
+        overrides.model_name > 设备 llm_param["siliconflow"] > 预设默认。
         """
         _candidate("llm", provider)
         text = (text or "").strip() or LLM_TEST_DEFAULT_TEXT
@@ -977,7 +1042,20 @@ class RobotCapabilityService:
                 source="test",
                 display_name=f"{provider} 试聊",
             )
-        else:  # ark
+        elif provider == "siliconflow":
+            dev_sf = {}
+            if device_id:
+                raw = get_llm_param(device_id).get("siliconflow")
+                dev_sf = raw if isinstance(raw, dict) else {}
+            model_name = (
+                str(ov.get("model_name") or "").strip()
+                or str(dev_sf.get("model_name") or "").strip()
+                or SILICONFLOW_DEFAULT_MODEL
+            )
+            resolved = build_siliconflow_config(
+                model_name, source="test", display_name=f"SiliconFlow 试聊 ({model_name})"
+            )
+        elif provider == "ark":
             if not device_id:
                 raise CapabilityError("未选择当前设备，无法试聊云端 LLM（密钥仅设备级）")
             dev_ark = get_llm_param(device_id).get("ark")
@@ -1002,6 +1080,8 @@ class RobotCapabilityService:
                 source="test",
                 display_name=f"ark 试聊 ({model_name})",
             )
+        else:
+            raise CapabilityError(f"未支持的 LLM provider: {provider}")
         t0 = time.monotonic()
         try:
             reply, meta = await chat_acompletion(

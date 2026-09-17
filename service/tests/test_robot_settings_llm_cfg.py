@@ -108,6 +108,69 @@ def test_llm_config_info_unknown_provider_rejected(tmp_path):
         svc.llm_config_info("bogus", "deskbot_llm")
 
 
+def test_llm_config_info_siliconflow_presets_and_never_echoes_key(tmp_path, device, monkeypatch):
+    """siliconflow 的密钥是服务端公共凭证：只回状态与变量名，不回显、不可编辑。"""
+    from deskbot_server.dao.device_mapper import update_llm_param
+    from deskbot_server.infrastructure.llm.runtime import (
+        SILICONFLOW_API_KEY_ENV,
+        SILICONFLOW_BASE_URL,
+        SILICONFLOW_DEFAULT_MODEL,
+        SILICONFLOW_MODEL_PRESETS,
+    )
+
+    svc = _llm_svc(tmp_path)
+    monkeypatch.setenv(SILICONFLOW_API_KEY_ENV, "sk-sf-secret")
+    update_llm_param("deskbot_llm", json.dumps({"siliconflow": {"model_name": "Qwen/Qwen3-8B"}}))
+
+    info = svc.llm_config_info("siliconflow", "deskbot_llm")
+
+    assert info["models"] == list(SILICONFLOW_MODEL_PRESETS)
+    assert info["model_name"] == "Qwen/Qwen3-8B"
+    assert info["base_url"] == SILICONFLOW_BASE_URL
+    assert info["api_key"] == ""  # 永不回显
+    assert info["api_key_set"] is True
+    assert info["api_key_env"] == SILICONFLOW_API_KEY_ENV
+    assert info["readonly"] is False  # 模型可保存
+    assert info["credential_readonly"] is True
+
+    # 设备未配模型 → 预设默认（不需要 device_id）
+    update_llm_param("deskbot_llm", None)
+    info = svc.llm_config_info("siliconflow", "deskbot_llm")
+    assert info["model_name"] == SILICONFLOW_DEFAULT_MODEL
+
+
+def test_save_llm_config_siliconflow_model_only(tmp_path, device):
+    """保存只落 model_name；payload 里混入 api_key 会被字段白名单丢弃（页面不暴露密钥的兜底）。"""
+    from deskbot_server.config import load_config
+    from deskbot_server.dao.device_mapper import get_llm_param, update_llm_param
+
+    svc = _llm_svc(tmp_path)
+    update_llm_param("deskbot_llm", json.dumps({"context_window": 16384}))
+    before = load_config(svc._config_path)
+
+    out = svc.save_device_llm_config(
+        "deskbot_llm",
+        "siliconflow",
+        {"provider": "siliconflow", "model_name": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B", "api_key": "sk-sneaky"},
+    )
+
+    param = get_llm_param("deskbot_llm")
+    assert param["siliconflow"] == {"model_name": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"}
+    assert "api_key" not in param["siliconflow"]  # 设备表里不该有密钥
+    assert param["context_window"] == 16384  # 其它顶层键保留
+    assert load_config(svc._config_path) == before  # config.yaml 不被改写
+    assert out["model_name"] == "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+
+
+def test_save_llm_config_siliconflow_empty_model_clears_key(tmp_path, device):
+    """模型清空且无既有值 → 不落键（llm_param 为空则整列置 NULL，回到系统默认）。"""
+    from deskbot_server.dao.device_mapper import get_llm_param
+
+    svc = _llm_svc(tmp_path)
+    svc.save_device_llm_config("deskbot_llm", "siliconflow", {"provider": "siliconflow", "model_name": ""})
+    assert get_llm_param("deskbot_llm") == {}
+
+
 # ---------- save_device_llm_config ----------
 
 
@@ -284,6 +347,60 @@ def test_llm_test_local_no_api_key_needed(tmp_path, monkeypatch):
     assert cfg.api_key == ""  # 本地免 Key（is_local_llm_url 豁免）
     assert cfg.api_base == "http://127.0.0.1:9105/v1"
     assert cfg.model == "minicpm5-1b"
+
+
+def test_llm_test_siliconflow_needs_no_device(tmp_path, monkeypatch):
+    """密钥在服务端 .env，所以试聊**不需要 device_id**（ark 则必须有）。"""
+    from deskbot_server.infrastructure.llm.runtime import (
+        SILICONFLOW_API_KEY_ENV,
+        SILICONFLOW_BASE_URL,
+        SILICONFLOW_DEFAULT_MODEL,
+    )
+
+    captured: dict = {}
+    monkeypatch.setattr("deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured))
+    monkeypatch.setenv(SILICONFLOW_API_KEY_ENV, "sk-sf-env")
+    svc = _llm_svc(tmp_path)
+
+    result = asyncio.run(svc.llm_test("siliconflow", "你好"))  # 不传 device_id
+
+    assert result["ok"] is True
+    cfg = captured["cfg"]
+    assert cfg.api_key == "sk-sf-env"
+    assert cfg.api_base == SILICONFLOW_BASE_URL
+    assert cfg.model == SILICONFLOW_DEFAULT_MODEL
+    assert cfg.extra_body == {"enable_thinking": False}
+    assert cfg.source == "test"
+
+
+def test_llm_test_siliconflow_model_priority(tmp_path, device, monkeypatch):
+    """模型优先级：表单覆盖 > 设备 llm_param > 预设默认；R1 款不带 enable_thinking。"""
+    from deskbot_server.dao.device_mapper import update_llm_param
+    from deskbot_server.infrastructure.llm.runtime import SILICONFLOW_API_KEY_ENV, SILICONFLOW_DEFAULT_MODEL
+
+    captured: dict = {}
+    monkeypatch.setattr("deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured))
+    monkeypatch.setenv(SILICONFLOW_API_KEY_ENV, "sk-sf-env")
+    svc = _llm_svc(tmp_path)
+    update_llm_param("deskbot_llm", json.dumps({"siliconflow": {"model_name": "device-model"}}))
+
+    asyncio.run(svc.llm_test("siliconflow", "你好", device_id="deskbot_llm"))
+    assert captured["cfg"].model == "device-model"  # 设备值 > 预设默认
+
+    asyncio.run(
+        svc.llm_test(
+            "siliconflow",
+            "你好",
+            device_id="deskbot_llm",
+            overrides={"model_name": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"},
+        )
+    )
+    assert captured["cfg"].model == "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"  # 表单覆盖 > 设备值
+    assert captured["cfg"].extra_body is None  # R1 蒸馏款不支持开关思考
+
+    # 无设备且无覆盖 → 预设默认
+    asyncio.run(svc.llm_test("siliconflow", "你好"))
+    assert captured["cfg"].model == SILICONFLOW_DEFAULT_MODEL
 
 
 def test_llm_test_failure_returns_ok_false(tmp_path, monkeypatch):

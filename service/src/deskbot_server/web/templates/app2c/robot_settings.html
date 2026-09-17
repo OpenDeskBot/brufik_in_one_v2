@@ -186,7 +186,7 @@
         <div><b>大脑 LLM</b><small>LANGUAGE MODEL</small></div>
       </div>
       <div v-if="llm.device_params && llm.device_params.configured" class="cap-ovr">
-        <span>该设备已配置 LLM 参数（llm_param，含 ark 的 API Key / 模型 ID）；清除后回到系统默认 LLM。</span>
+        <span>该设备已配置 LLM 参数（llm_param：ark 的 API Key / 模型 ID、siliconflow 的模型）；清除后回到系统默认 LLM。</span>
         <button type="button" class="btn ghost" @click="clearOverride">清除配置</button>
       </div>
       <label v-for="c in llm.candidates" :key="c.id" class="cap-opt" :class="{on: selected.llm===c.id}">
@@ -219,7 +219,8 @@
         </button>
       </div>
       <p class="cap-hint">LLM 为设备级配置，保存在 device 表（llm_provider / llm_param）；未设置时使用系统默认
-      （config.yaml llm 段，仅本地引擎，无密钥）。「配置」中为 ark 填写的 API Key / 模型 ID 保存到该设备，写表即生效。</p>
+      （config.yaml llm 段，当前指向硅基流动云端，密钥由服务端 .env 统一提供、页面不暴露）。「配置」中为 ark 填写的
+      API Key / 模型 ID 保存到该设备，写表即生效；siliconflow 只需选模型。</p>
     </div>
 
     <!-- ===== TTS（设备级） ===== -->
@@ -356,6 +357,34 @@
               [[ llmCfg.saveBusy ? '保存中…' : '保存配置' ]]
             </button>
             <span class="rts-hint">API Key / 模型 / 地址保存到该设备（device 表 llm_param，密钥设备自配，服务器不存公共凭证）；掩码/留空保留已保存值，全空则清除。写表即生效。</span>
+          </div>
+        </template>
+
+        <!-- siliconflow：只选模型；凭证是服务端 .env 公共凭证，页面不暴露、不可编辑 -->
+        <template v-else-if="llmCfg.provider==='siliconflow'">
+          <div class="rts-field">
+            <h4>模型</h4>
+            <select v-model="llmCfg.form.model_name">
+              <option v-for="m in llmCfg.models" :key="m" :value="m">[[ m ]]</option>
+            </select>
+          </div>
+          <div class="rts-field">
+            <h4>API Key（服务端统一提供，不可在此修改）</h4>
+            <p class="rts-meta" style="margin:0">
+              [[ llmCfg.apiKeySet ? '已配置（服务端 .env · ' + llmCfg.apiKeyEnv + '）'
+                                  : '未配置：请在服务端 .env 中设置 ' + llmCfg.apiKeyEnv + ' 后重启服务' ]]
+            </p>
+          </div>
+          <div class="rts-field">
+            <h4>Base URL</h4>
+            <p class="rts-meta" style="margin:0">[[ llmCfg.base_url ]]</p>
+          </div>
+          <div class="rts-actions">
+            <button type="button" class="btn" :disabled="llmCfg.saveBusy" @click="saveLlmCfg">
+              [[ llmCfg.saveBusy ? '保存中…' : '保存配置' ]]
+            </button>
+            <span class="rts-hint">模型保存到该设备（device 表 llm_param["siliconflow"]），写表即生效；
+            API Key 由服务端 .env 统一提供，不支持按设备配置。</span>
           </div>
         </template>
 
@@ -759,13 +788,17 @@ createApp({
       }finally{ this.voiceprintBusy = false; }
     },
     async openLlmCfg(provider){
-      // 打开配置对话框：ark 表单回填（config-info，api_key 掩码）；本地只读端点；支持试聊
+      // 打开配置对话框：ark 表单回填（config-info，api_key 掩码）；siliconflow 只有模型下拉；
+      // 本地只读端点；都支持试聊
       if(!provider) return;
       this.llmCfg = {
         provider: provider,
         text: '你好，请用一句话简短回复。',
         base_url: '',
         model_name: '',
+        models: [],        // siliconflow 模型预设
+        apiKeySet: false,  // siliconflow：服务端 .env 是否已配置密钥
+        apiKeyEnv: '',
         form: { api_key: '', model_name: '', base_url: '' },
         busy: false,       // 试聊中
         saveBusy: false,   // 保存配置中
@@ -783,12 +816,20 @@ createApp({
             model_name: d.model_name || '',
             base_url: d.base_url || '',
           };
+        }else if(provider === 'siliconflow'){
+          this.llmCfg.models = Array.isArray(d.models) ? d.models.slice() : [];
+          this.llmCfg.apiKeySet = !!d.api_key_set;
+          this.llmCfg.apiKeyEnv = d.api_key_env || '';
+          // 设备存了非预设模型（或预设表以后删项）时补进下拉，否则 <select> 显示空白
+          if(d.model_name && !this.llmCfg.models.includes(d.model_name)) this.llmCfg.models.push(d.model_name);
+          this.llmCfg.form = { api_key: '', model_name: d.model_name || '', base_url: '' };
         }
       }catch(e){ this.llmCfg.err = '配置信息加载失败：' + e.message; }
     },
     closeLlmCfg(){ this.llmCfg = null; this.llmTestResult = null; },
     async saveLlmCfg(){
-      // 保存 ark 配置到该设备 llm_param（device 表，写表即生效；掩码/留空保留已有值）
+      // 保存设备级 LLM 配置到 llm_param（device 表，写表即生效；掩码/留空保留已有值）。
+      // ark 存 api_key/model_name/base_url；siliconflow 只认 model_name（后端按字段表白名单过滤）。
       const t = this.llmCfg;
       if(!t || t.saveBusy) return;
       t.saveBusy = true; t.err = '';
@@ -802,7 +843,7 @@ createApp({
             base_url: (t.form.base_url || '').trim(),
           }),
         });
-        this.msg = 'LLM 配置已保存' + (t.provider === 'ark' && d.model_name ? '（模型 ' + d.model_name + '）' : '');
+        this.msg = 'LLM 配置已保存' + (t.provider !== 'minicpm' && t.provider !== 'qwen' && d.model_name ? '（模型 ' + d.model_name + '）' : '');
         // 掩码回填密码框
         t.form.api_key = d.api_key || '';
         try{ this.status = await this.api('/api/robot-settings'); }catch(e){}
@@ -822,6 +863,9 @@ createApp({
             model_name: (t.form.model_name || '').trim(),
             base_url: (t.form.base_url || '').trim(),
           };
+        }else if(t.provider === 'siliconflow'){
+          // 密钥在服务端 .env，只有模型可覆盖
+          body.overrides = { model_name: (t.form.model_name || '').trim() };
         }
         const d = await this.api('/api/robot-settings/llm/test', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },

@@ -132,9 +132,9 @@ TTS provider / 音色 / 凭证已移至设备级（devices 表 `tts_provider` / 
 | 方法 | 路径 | 用途 | 主要输入 |
 |------|------|------|----------|
 | GET | `/api/robot-settings` | 能力状态（ASR/LLM/TTS/人脸 + 服务快照 + env 覆盖） | session: `device_id` |
-| GET | `/api/robot-settings/llm/config-info` | LLM 配置对话框元信息：ark 当前值（api_key 掩码；本地模型只读固定端点） | query: `provider` |
-| POST | `/api/robot-settings/llm/config` | 保存 ark 配置：API Key → `.env` ARK_API_KEY（掩码/空不覆盖）；模型/地址 → config.yaml llm 段（当前生效为 ark 写主键，否则写快照键） | JSON: `provider`, `api_key`, `model_name`, `base_url` |
-| POST | `/api/robot-settings/llm/test` | LLM 试聊（临时 config 不落盘；overrides 表单覆盖优先，本地模型免 Key） | JSON: `provider`, `text`, `overrides`? |
+| GET | `/api/robot-settings/llm/config-info` | LLM 配置对话框元信息：ark 当前值（api_key 掩码）、siliconflow 模型预设 + 服务端密钥状态、本地模型只读固定端点 | query: `provider` |
+| POST | `/api/robot-settings/llm/config` | 保存设备级 LLM 配置到 `devices.llm_param[provider]`（不写 `.env` / `config.yaml`）：ark 存 `api_key`/`model_name`/`base_url`（掩码/空不覆盖），siliconflow **只存 `model_name`**——其密钥是服务端公共凭证（`.env` `SILICONFLOW_API_KEY`），payload 里的 `api_key` 会被字段白名单丢弃 | JSON: `provider`, `api_key`, `model_name`, `base_url` |
+| POST | `/api/robot-settings/llm/test` | LLM 试聊（临时 config 不落盘；overrides 表单覆盖优先，本地模型免 Key；siliconflow 不要求当前设备，只需要模型） | JSON: `provider`, `text`, `overrides`? |
 | POST | `/api/robot-settings/tts` | 切换 TTS provider（写 device 表 tts_provider，立即生效） | JSON: `provider` |
 | GET | `/api/robot-settings/tts/config-info` | TTS 配置对话框元信息：音色列表 + 当前设备参数（api_key 掩码，设备 tts_param 优先回落 .env） | session: `device_id` |
 | POST | `/api/robot-settings/tts/config` | 保存设备级 TTS 参数到 tts_param（JSON：`{"moss": {"demo_id"}, "doubao": {api_key, speaker, resource_id, model, ws_url, sample_rate}}`；空值/掩码按 payload > 设备 > .env 回填） | session: `device_id` |

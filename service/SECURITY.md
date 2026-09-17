@@ -12,7 +12,7 @@
 ## 网络暴露
 
 - 默认绑定 `0.0.0.0`（`:9000` 设备链路与控制台）：公网暴露前请加防火墙、反向代理与 TLS
-- LLM 凭据（`ARK_API_KEY` 等）仅通过环境变量 / `.env` 注入，勿写入 `config.yaml` 或日志
+- **LLM 凭据分两层**：设备级（`devices.llm_param["ark"]`，如 `ARK_API_KEY` 由用户为每台设备填写）与服务端公共凭证（系统默认大脑，即 `config.yaml` `llm.api_key_env` 指名的 `SILICONFLOW_API_KEY`）。后者**所有 `llm_provider` 为空的设备共用**（含其他账号绑定的设备），且当前无配额/限速——上线时请评估额度消耗，必要时自行加限流。任何密钥都不要写入 `config.yaml`（该文件进 git）或日志。
 
 ## 认证与隔离
 

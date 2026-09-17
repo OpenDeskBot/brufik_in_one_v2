@@ -22,6 +22,7 @@ class _Cfg:
     protocol = "openai"
     model = "qwen3.8-2b"
     api_key = ""
+    extra_body = None  # 镜像 ResolvedLlmConfig 的同名默认字段
 
 
 def test_payload_tools_no_json_format_when_tools_present():

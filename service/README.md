@@ -20,7 +20,8 @@ sudo apt install -y python3.11 python3.11-venv python3.11-dev ffmpeg curl git
 # 2. 配置大模型 Key（必填）
 cd service   # monorepo 内；独立 clone 时进入对应目录
 cp .env.example .env
-# 编辑 .env，填写 ARK_API_KEY 与 ARK_MODEL（火山方舟）
+# 编辑 .env，填写 SILICONFLOW_API_KEY（硅基流动，系统默认大脑；免费额度足够日常对话）
+# 可选：ARK_API_KEY 与 ARK_MODEL（火山方舟，仅当设备在「机器人配置 → 大脑 LLM」中选 ark 时需要）
 
 # 3. 一键启动（自动建 venv、下载 VAD 模型、起主服务 + Web 控制台）
 chmod +x start.sh

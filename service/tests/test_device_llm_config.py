@@ -72,25 +72,36 @@ def test_resolve_llm_config_context_window(temp_db):
     from deskbot_server.dao.device_mapper import update_llm_param
     from deskbot_server.infrastructure.llm.runtime import resolve_llm_config
 
-    # 无设备 → 系统默认，context_window=None
-    cfg = resolve_llm_config("dev_no_such")
-    assert cfg.context_window is None
+    # 前半段用显式 cfg 隔离真实 config.yaml，只验证「设备覆盖 / 非法回落」语义
+    no_win = {"llm": {"protocol": "openai", "model_name": "m"}}
+
+    # 无设备 → 系统默认；config 未声明窗口 → None
+    assert resolve_llm_config("dev_no_such", no_win).context_window is None
 
     _bind_device()
-    # 设备存在但 llm_param 为空 → None
-    assert resolve_llm_config("dev_llm_cfg").context_window is None
+    # 设备存在但 llm_param 为空 → 沿用系统默认（此处未声明 → None）
+    assert resolve_llm_config("dev_llm_cfg", no_win).context_window is None
 
     update_llm_param("dev_llm_cfg", '{"context_window": 16384}')
-    assert resolve_llm_config("dev_llm_cfg").context_window == 16384
+    assert resolve_llm_config("dev_llm_cfg", no_win).context_window == 16384
 
-    # 非法值 → None（不抛）
+    # 非法值 → 不抛，回落系统默认
     update_llm_param("dev_llm_cfg", '{"context_window": "abc"}')
-    assert resolve_llm_config("dev_llm_cfg").context_window is None
+    assert resolve_llm_config("dev_llm_cfg", no_win).context_window is None
     update_llm_param("dev_llm_cfg", '{"context_window": -5}')
-    assert resolve_llm_config("dev_llm_cfg").context_window is None
+    assert resolve_llm_config("dev_llm_cfg", no_win).context_window is None
+
+    # 接线验证（真实 config.yaml）：系统默认声明的窗口传导到未配置的设备。
+    # 从 config 读取期望值而非硬编码，避免以后调窗口时这条测试变成假失败。
+    from deskbot_server.config import load_config
+
+    update_llm_param("dev_llm_cfg", None)
+    declared = (load_config().get("llm") or {}).get("context_window")
+    assert resolve_llm_config("dev_llm_cfg").context_window == declared
 
 
 def test_history_token_budget_follows_context_window(temp_db):
+    from deskbot_server.config import load_config
     from deskbot_server.dao.device_mapper import update_llm_param
     from deskbot_server.service.application.chat_flow import _history_token_budget
 
@@ -98,20 +109,24 @@ def test_history_token_budget_follows_context_window(temp_db):
     assert _history_token_budget(None) == 4096
 
     _bind_device()
-    # 默认无 param → 4096
-    assert _history_token_budget("dev_llm_cfg") == 4096
+    # 设备未配置 param → 用系统默认（config.yaml llm.context_window）的一半
+    declared = int((load_config().get("llm") or {}).get("context_window") or 0)
+    assert _history_token_budget("dev_llm_cfg") == (declared // 2 if declared else 4096)
 
+    # 设备 llm_param 覆盖系统默认
     update_llm_param("dev_llm_cfg", '{"context_window": 16384}')
     assert _history_token_budget("dev_llm_cfg") == 8192
 
 
-def test_resolve_llm_config_device_provider_branches(temp_db):
+def test_resolve_llm_config_device_provider_branches(temp_db, monkeypatch):
     """设备级真源：llm_provider 白名单生效，llm_param["ark"] 承载云端密钥/模型，非法值回落系统默认。"""
     from deskbot_server.dao.device_mapper import update_llm_param, update_llm_provider
     from deskbot_server.infrastructure.llm.runtime import (
         ARK_OPENAI_BASE_URL,
         QWEN_LLM_BASE_URL,
         QWEN_LLM_MODEL,
+        SILICONFLOW_BASE_URL,
+        SILICONFLOW_DEFAULT_MODEL,
         resolve_llm_config,
     )
 
@@ -140,6 +155,28 @@ def test_resolve_llm_config_device_provider_branches(temp_db):
     update_llm_param("dev_llm_cfg", '{"ark": {"api_key": "sk-test"}}')
     with pytest.raises(ValueError):
         resolve_llm_config("dev_llm_cfg")
+
+    # siliconflow：模型存 llm_param["siliconflow"]，密钥走服务端 .env（设备表里没有 key）
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-env")
+    update_llm_provider("dev_llm_cfg", "siliconflow")
+    update_llm_param("dev_llm_cfg", '{"siliconflow": {"model_name": "Qwen/Qwen3-8B"}}')
+    cfg = resolve_llm_config("dev_llm_cfg")
+    assert cfg.protocol == "openai"
+    assert cfg.api_base == SILICONFLOW_BASE_URL
+    assert cfg.model == "Qwen/Qwen3-8B"  # org 前缀保留
+    assert cfg.api_key == "sk-sf-env"  # 密钥来自 env 而非设备表
+    assert cfg.source == "device"
+    assert cfg.extra_body == {"enable_thinking": False}
+
+    # 缺模型不抛（app_bp 的 PUT /api/devices/{id}/llm 不校验白名单）→ 回落预设默认
+    update_llm_param("dev_llm_cfg", "{}")
+    cfg = resolve_llm_config("dev_llm_cfg")
+    assert cfg.model == SILICONFLOW_DEFAULT_MODEL
+    assert cfg.extra_body == {"enable_thinking": False}
+
+    # R1 蒸馏款不支持开关思考 → 不下发 enable_thinking
+    update_llm_param("dev_llm_cfg", '{"siliconflow": {"model_name": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"}}')
+    assert resolve_llm_config("dev_llm_cfg").extra_body is None
 
     # 非法 / 空 provider（app_bp PUT 可写任意串）→ 白名单校验回落系统默认
     update_llm_provider("dev_llm_cfg", "openai")

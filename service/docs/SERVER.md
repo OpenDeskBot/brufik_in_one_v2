@@ -11,7 +11,7 @@ SKIP_SETUP=1 ./start.sh
 ```
 
 ```bash
-cp .env.example .env   # 必填 ARK_API_KEY / ARK_MODEL（火山方舟）
+cp .env.example .env   # 填 SILICONFLOW_API_KEY（系统默认大脑，硅基流动）
 ```
 
 | 端口 | 服务 |
@@ -106,8 +106,9 @@ cp .env.example .env   # 必填 ARK_API_KEY / ARK_MODEL（火山方舟）
 
 ## 配置
 
-- **`.env`**：`ARK_API_KEY` / `ARK_MODEL`（火山方舟 LLM，必填；兼容旧版 `LLM_API_KEY` / `DASHSCOPE_API_KEY`）、`DOUBAO_TTS_*`（豆包 TTS）、`DOUBAO_ASR_API_KEY` / `DOUBAO_ASR_RESOURCE_ID` / `DOUBAO_ASR_UID`（豆包 ASR 2.0 全局兜底凭证；设备级配置优先存 `devices.asr_param`）、`ASR_MODEL_DIR`、`DESKBOT_WEB_PUBLIC_HOST`（多网卡时填局域网 IP）、`DESKBOT_WEB_SECRET_KEY`（生产必设）
-- **`config.yaml`**：`audio.input_codec`、`llm.model_name`、`tts.provider`（`moss-tts-nano` 默认 / `doubao`）、`server.asr_chat_device_pb_only`、`debug.asr_auto_reply`
+- **`.env`**：`SILICONFLOW_API_KEY`（硅基流动，**系统默认大脑的密钥**；`config.yaml` 的 `llm.api_key_env` 指名此变量，`llm_provider` 为空的设备共用它——见下方「LLM 密钥分层」）、`ARK_API_KEY` / `ARK_MODEL`（火山方舟，仅设备选用 ark 时需要；密钥实际存 `devices.llm_param["ark"]`）、`DOUBAO_TTS_*`（豆包 TTS）、`DOUBAO_ASR_API_KEY` / `DOUBAO_ASR_RESOURCE_ID` / `DOUBAO_ASR_UID`（豆包 ASR 2.0 全局兜底凭证；设备级配置优先存 `devices.asr_param`）、`ASR_MODEL_DIR`、`DESKBOT_WEB_PUBLIC_HOST`（多网卡时填局域网 IP）、`DESKBOT_WEB_SECRET_KEY`（生产必设）
+- **LLM 密钥分层**：系统默认（`config.yaml` llm 段，当前 = 硅基流动）的密钥是**服务端公共凭证**，从 `llm.api_key_env` 指名的环境变量读取，所有未单独配置的设备共用；设备级 `ark` 的密钥存在设备表 `llm_param["ark"]`，互不影响。**改 `.env` 后必须重启服务**才生效（`load_dotenv` 只在启动时读一次）。
+- **`config.yaml`**：`audio.input_codec`、`llm.*`（系统默认大脑：protocol / base_url / model_name / api_key_env / context_window）、`tts.provider`（`moss-tts-nano` 默认 / `doubao`）、`server.asr_chat_device_pb_only`、`debug.asr_auto_reply`
 
 架构概要：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 

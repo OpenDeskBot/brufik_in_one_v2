@@ -32,15 +32,32 @@ LLM_FIRST_TOKEN_TIMEOUT_SECONDS = 5.0
 VOLCENGINE_PROTOCOLS = {"ark", "ark_responses", "volcengine", "doubao"}
 OPENAI_COMPAT_PROTOCOLS = {"openai", "ark", "volcengine", "doubao", "dashscope", "qwen"}
 ARK_RESPONSES_PROTOCOLS = {"ark_responses"}
-LEGACY_MODEL_PREFIXES = OPENAI_COMPAT_PROTOCOLS | ARK_RESPONSES_PROTOCOLS | {"azure", "anthropic", "gemini", "ollama"}
+
+# 旧适配器给 model 加过的协议前缀（``openai/foo``）：**只剥属于本协议自己的别名**。
+# 早先的实现不看协议、只要前缀命中就剥，而 ``qwen`` 既是协议别名又是真实 org 名
+# （硅基流动的 ``Qwen/Qwen3-8B``），会被误剥成 ``Qwen3-8B`` 后原样发给云端 → 400。
+_VOLCENGINE_PREFIX_ALIASES = frozenset(VOLCENGINE_PROTOCOLS | {"byteark", "volcano"})
+_PROTOCOL_MODEL_PREFIXES: dict[str, frozenset[str]] = {
+    "ark": _VOLCENGINE_PREFIX_ALIASES,
+    "ark_responses": _VOLCENGINE_PREFIX_ALIASES,
+    "volcengine": _VOLCENGINE_PREFIX_ALIASES,
+    "doubao": _VOLCENGINE_PREFIX_ALIASES,
+    "openai": frozenset({"openai"}),
+    "dashscope": frozenset({"dashscope"}),
+    "qwen": frozenset({"qwen"}),
+}
+
+
+def _strip_prefixes_for(protocol: str) -> frozenset[str]:
+    return _PROTOCOL_MODEL_PREFIXES.get(_normalized_protocol(protocol), frozenset())
 
 # 本地 llama-server 引擎端点（OpenAI 兼容；服务端不校验 Authorization、不支持 stream）
 MINICPM_LLM_BASE_URL = "http://127.0.0.1:9105/v1"
 MINICPM_LLM_MODEL = "minicpm5-1b"
 QWEN_LLM_BASE_URL = "http://127.0.0.1:9106/v1"
 QWEN_LLM_MODEL = "qwen3.8-2b"
-# 设备级 LLM provider 白名单：本地固定端点 / 云端 ark；空/非法回落系统默认（config.yaml llm 段）
-DEVICE_LLM_PROVIDERS = frozenset({"minicpm", "qwen", "ark"})
+# 设备级 LLM provider 白名单：本地固定端点 / 云端 ark / 云端硅基流动；空/非法回落系统默认
+DEVICE_LLM_PROVIDERS = frozenset({"minicpm", "qwen", "ark", "siliconflow"})
 LOCAL_LLM_PROVIDERS: dict[str, tuple[str, str]] = {
     "minicpm": (MINICPM_LLM_BASE_URL, MINICPM_LLM_MODEL),
     "qwen": (QWEN_LLM_BASE_URL, QWEN_LLM_MODEL),
@@ -48,6 +65,26 @@ LOCAL_LLM_PROVIDERS: dict[str, tuple[str, str]] = {
 # 设备级 ark 参数白名单（llm_param["ark"]），解析 / 保存 / 掩码共用
 ARK_PARAM_FIELDS = ("api_key", "model_name", "base_url")
 ARK_DEVICE_PROTOCOL = "ark_responses"
+
+# ── 硅基流动（SiliconFlow，OpenAI 兼容）──────────────────────────────────────
+# 与 ark 的关键差异：**密钥是服务端全局的**（.env SILICONFLOW_API_KEY），不进设备表、
+# 不在页面暴露，因此参数白名单里只有 model_name。
+SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
+SILICONFLOW_API_KEY_ENV = "SILICONFLOW_API_KEY"
+SILICONFLOW_DEFAULT_MODEL = "Qwen/Qwen3-8B"
+# 页面「配置」下拉预设（首项即默认，顺序即展示顺序）
+SILICONFLOW_MODEL_PRESETS = ("Qwen/Qwen3-8B", "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B")
+# 模型专属请求体参数（服务端下发，不经页面、不落设备表）。
+# Qwen3 默认开思维链，实测首字延迟从 0.91s 涨到 32s（中位）——实时对话必须关掉。
+# R1 蒸馏款（DeepSeek-R1-0528-Qwen3-8B）的思考被 chat template 固化，
+# 下发该字段无效（实测仍产出 187 个 reasoning token），故不列在此表。
+SILICONFLOW_MODEL_EXTRA_BODY: dict[str, dict[str, Any]] = {
+    "Qwen/Qwen3-8B": {"enable_thinking": False},
+}
+SILICONFLOW_PARAM_FIELDS = ("model_name",)
+_SILICONFLOW_HOST = "siliconflow.cn"
+# 缺失的环境变量只告警一次：resolve_* 每条消息都会调用，不能刷日志
+_missing_key_env_warned: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -60,6 +97,9 @@ class ResolvedLlmConfig:
     display_name: str
     # 模型上下文窗口 token 数；None = 未知（调用方回退默认预算）
     context_window: int | None = None
+    # 模型专属请求体字段（如硅基流动的 enable_thinking）；None = 不下发。
+    # 仅对 OpenAI ChatCompletions 生效：ark_responses 有自己的 thinking 字段，不合并。
+    extra_body: dict[str, Any] | None = None
 
 
 def _normalized_protocol(protocol: str | None) -> str:
@@ -109,11 +149,80 @@ def _resolve_api_base(protocol: str, configured_base_url: str | None) -> str | N
     return default_base.rstrip("/") if default_base else None
 
 
-def resolve_system_llm_config(cfg: dict | None = None) -> ResolvedLlmConfig:
-    """系统默认 LLM：只读 config.yaml ``llm`` 段（本地免费引擎或未带密钥的旧配置）。
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-    云端模型密钥一律为设备级（devices.llm_provider=ark + llm_param["ark"]）；系统默认
-    不读取任何环境变量密钥，api_key 恒为空。
+
+def _url_host(api_base: str | None) -> str:
+    """取 base_url 的 host（小写、去端口与方括号）；无法解析返回空串。"""
+    raw = str(api_base or "").strip().rstrip("/")
+    if "://" not in raw:
+        return ""
+    netloc = raw.split("://", 1)[1].split("/", 1)[0]
+    return netloc.rsplit(":", 1)[0].strip("[]").lower()
+
+
+# 云端端点 host → 设备级 provider id。用于把「系统默认解析出来的 base_url」反查回
+# 候选标签（页面高亮当前项）。用 host 而非全等比较：运维可能写成 …/v1、…/v1/ 或
+# 直接写到 /chat/completions，``_completion_url`` 三种都接受。
+CLOUD_LLM_ENDPOINT_HOSTS: tuple[tuple[str, str], ...] = (
+    ("ark", "volces.com"),
+    ("siliconflow", _SILICONFLOW_HOST),
+)
+
+
+def cloud_provider_of_base_url(api_base: str | None) -> str | None:
+    """base_url → 云端 provider id；非云端返回 None。"""
+    host = _url_host(api_base)
+    if not host:
+        return None
+    for provider, domain in CLOUD_LLM_ENDPOINT_HOSTS:
+        if host == domain or host.endswith("." + domain):
+            return provider
+    return None
+
+
+def is_siliconflow_base(api_base: str | None) -> bool:
+    return cloud_provider_of_base_url(api_base) == "siliconflow"
+
+
+def siliconflow_extra_body(model: str) -> dict[str, Any] | None:
+    """按模型取服务端下发的请求体字段（仅支持开关思考的模型有）。"""
+    return SILICONFLOW_MODEL_EXTRA_BODY.get(str(model or "").strip())
+
+
+def read_api_key_env(name: str) -> str:
+    """读服务端环境变量里的密钥（``.env`` 由 ``web.mount.load_dotenv`` 灌入 ``os.environ``）。
+
+    只接受合法变量名形态 —— ``config.yaml`` 进 git，不能让人把明文密钥写进去当"变量名"。
+    变量未设置时告警一次后返回空串（静默空 key 会变成最难查的现场）。
+    """
+    var = str(name or "").strip()
+    if not var or not _ENV_NAME_RE.fullmatch(var):
+        return ""
+    value = str(os.environ.get(var) or "").strip()
+    if not value and var not in _missing_key_env_warned:
+        _missing_key_env_warned.add(var)
+        logger.warning("[LLM] 环境变量 %s 未设置：云端 LLM 调用将因缺少 API Key 失败", var)
+    return value
+
+
+def resolve_siliconflow_api_key() -> str:
+    return read_api_key_env(SILICONFLOW_API_KEY_ENV)
+
+
+def resolve_system_llm_config(cfg: dict | None = None) -> ResolvedLlmConfig:
+    """系统默认 LLM：只读 config.yaml ``llm`` 段。
+
+    ``llm_provider`` 为空 / 非法的设备（含新绑定设备）都走这里，因此本函数同时决定了
+    「系统默认」与「新设备默认」两件事。
+
+    密钥来源：
+    - 本地免费引擎：恒为空，不需要密钥；
+    - 云端（当前默认指向硅基流动）：由 ``llm.api_key_env`` **指名**服务端环境变量
+      （如 ``SILICONFLOW_API_KEY``），本函数只读该变量名，绝不接受内联明文
+      （``config.yaml`` 进 git）。未配置 ``api_key_env`` 时 api_key 仍为空，行为同旧版。
+
+    ``llm.extra_body`` 可显式指定模型专属请求体字段；未指定时按 base_url host 命中预设表。
     """
     if cfg is None:
         cfg = load_config()
@@ -122,13 +231,25 @@ def resolve_system_llm_config(cfg: dict | None = None) -> ResolvedLlmConfig:
     model_name = str(llm_cfg.get("model_name") or "").strip()
     base_url = str(llm_cfg.get("base_url") or "").strip()
     resolved_base = _resolve_api_base(protocol, base_url)
+    api_key = read_api_key_env(str(llm_cfg.get("api_key_env") or ""))
+    raw_extra = llm_cfg.get("extra_body")
+    if isinstance(raw_extra, dict):
+        extra_body = dict(raw_extra) or None
+    else:
+        extra_body = siliconflow_extra_body(model_name) if is_siliconflow_base(resolved_base) else None
+    try:
+        ctx = int(llm_cfg.get("context_window"))
+    except (TypeError, ValueError):
+        ctx = 0
     return ResolvedLlmConfig(
         model=build_chat_model(protocol, model_name),
-        api_key="",
+        api_key=api_key,
         api_base=resolved_base,
         protocol=protocol,
         source="system",
         display_name=f"系统默认 ({model_name})",
+        context_window=ctx if ctx > 0 else None,
+        extra_body=extra_body,
     )
 
 
@@ -191,10 +312,48 @@ def _ark_device_llm_config(device_id: str) -> ResolvedLlmConfig:
     )
 
 
+def build_siliconflow_config(
+    model_name: str | None,
+    *,
+    source: str = "system",
+    display_name: str | None = None,
+) -> ResolvedLlmConfig:
+    """硅基流动（OpenAI 兼容）配置：**密钥只来自服务端 .env**，与设备无关。
+
+    系统默认、设备级 siliconflow、试聊三条路共用，保证密钥与 extra_body 口径一致。
+    """
+    model = str(model_name or "").strip() or SILICONFLOW_DEFAULT_MODEL
+    return ResolvedLlmConfig(
+        model=build_chat_model("openai", model),
+        api_key=resolve_siliconflow_api_key(),
+        api_base=SILICONFLOW_BASE_URL,
+        protocol="openai",
+        source=source,
+        display_name=display_name or f"SiliconFlow · {model}",
+        extra_body=siliconflow_extra_body(model),
+    )
+
+
+def _siliconflow_device_llm_config(device_id: str) -> ResolvedLlmConfig:
+    """设备级 siliconflow：只从 llm_param["siliconflow"] 取 model_name。
+
+    与 ark 相反，**模型缺失不抛错**而是回落预设默认：``PUT /api/devices/{id}/llm``
+    （app_bp）不校验 provider 白名单，客户端可以只写 provider 不带模型；抛错会让整页
+    ``_llm_status`` 退化成错误展示。密钥恒由服务端 .env 提供。
+    """
+    from deskbot_server.dao.device_mapper import get_llm_param
+
+    param = get_llm_param(device_id)
+    raw = param.get("siliconflow")
+    sf = raw if isinstance(raw, dict) else {}
+    return build_siliconflow_config(str(sf.get("model_name") or "").strip(), source="device")
+
+
 def resolve_llm_config(device_id: str | None = None, cfg: dict | None = None) -> ResolvedLlmConfig:
     """解析设备生效 LLM 配置（设备级真源：devices.llm_provider / llm_param）。
 
     优先级：minicpm / qwen（本地固定端点）→ ark（llm_param["ark"]，含密钥/模型）→
+    siliconflow（llm_param["siliconflow"] 只存模型，密钥走服务端 .env）→
     系统默认（config.yaml llm 段）。顶层键 context_window / native_tools 自
     devices.llm_param 合并（未填 → None，调用方回退默认预算）。
     ``cfg`` 仅供测试注入自定义 config 文件内容。
@@ -204,6 +363,8 @@ def resolve_llm_config(device_id: str | None = None, cfg: dict | None = None) ->
         resolved = _local_device_llm_config(provider)
     elif provider == "ark":
         resolved = _ark_device_llm_config(str(device_id or "").strip())
+    elif provider == "siliconflow":
+        resolved = _siliconflow_device_llm_config(str(device_id or "").strip())
     else:
         resolved = resolve_system_llm_config(cfg)
     did = str(device_id or "").strip()
@@ -228,15 +389,19 @@ def build_chat_model(protocol: str, model_name: str) -> str:
     Older code prefixed models for the previous adapter (for example ``openai/foo``).  The
     direct HTTP API expects the provider model ID only, so known compatibility
     prefixes are stripped while real ``org/model`` IDs are preserved.
+
+    前缀只在**属于当前协议自己**时才剥（见 ``_PROTOCOL_MODEL_PREFIXES``），否则真实 org 名
+    会被误伤（``Qwen/Qwen3-8B`` 曾因此变成 ``Qwen3-8B``）。已知残留：前缀恰好等于协议名时
+    仍会剥（``build_chat_model("openai", "openai/gpt-oss-20b") == "gpt-oss-20b"``），
+    这是为兼容旧配置有意保留的行为，若将来要下发此类 ID 需另加 verbatim 开关。
     """
-    _ = _normalized_protocol(protocol)
     raw_model = str(model_name or "").strip()
     if not raw_model:
         raise ValueError("model_name required")
     if "/" not in raw_model:
         return raw_model
     prefix, rest = raw_model.split("/", 1)
-    if prefix.strip().lower() in LEGACY_MODEL_PREFIXES and rest.strip():
+    if prefix.strip().lower() in _strip_prefixes_for(protocol) and rest.strip():
         return rest.strip()
     return raw_model
 
@@ -369,14 +534,9 @@ def is_local_llm_url(api_base: str | None) -> bool:
 
     本地引擎（如 llm-minicpm）不需要 API Key、不支持流式，据此走豁免与降级路径。
     """
-    raw = str(api_base or "").strip().rstrip("/")
-    if not raw:
+    host = _url_host(api_base)
+    if not host:
         return False
-    try:
-        netloc = raw.split("://", 1)[1].split("/", 1)[0]
-    except IndexError:
-        return False
-    host = netloc.rsplit(":", 1)[0].strip("[]")
     if host in LOCAL_LLM_HOSTS:
         return True
     try:
@@ -386,14 +546,34 @@ def is_local_llm_url(api_base: str | None) -> bool:
     return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
-def _validate_api_key(cfg: ResolvedLlmConfig) -> None:
+def api_key_error_message(cfg: ResolvedLlmConfig) -> str | None:
+    """云端配置缺少密钥时的引导文案（``None`` = 已具备，无需报错）。
+
+    运行时（``_validate_api_key``）与调试台预检（``debug_bp``）共用，避免两处文案漂移。
+    """
     if is_local_llm_url(cfg.api_base):
-        return  # 本地引擎不校验 Authorization（服务端不鉴权）
-    if not cfg.api_key or "请替换" in cfg.api_key:
-        raise ValueError(
-            "LLM API Key 未配置。系统默认仅支持本地免费引擎；"
-            "云端模型密钥请在该设备 LLM 配置（机器人设置 → LLM → ark「配置」）中填写。"
+        return None  # 本地引擎不校验 Authorization（服务端不鉴权）
+    if cfg.api_key and "请替换" not in cfg.api_key:
+        return None
+    if is_siliconflow_base(cfg.api_base):
+        return (
+            f"SiliconFlow API Key 未配置：请在服务端 .env 中设置 {SILICONFLOW_API_KEY_ENV} "
+            "并重启服务（硅基流动的密钥由服务端统一提供，不支持按设备配置）。"
         )
+    return (
+        "LLM API Key 未配置。云端模型密钥请在该设备 LLM 配置（机器人设置 → LLM → ark「配置」）中填写；"
+        f"系统默认云端模型（硅基流动）的密钥由服务端 .env（{SILICONFLOW_API_KEY_ENV}）提供。"
+    )
+
+
+def _validate_api_key(cfg: ResolvedLlmConfig) -> None:
+    message = api_key_error_message(cfg)
+    if message:
+        raise ValueError(message)
+
+
+# extra_body 不可覆盖的协议契约键
+_RESERVED_PAYLOAD_KEYS = frozenset({"model", "messages", "stream", "tools", "tool_choice", "input"})
 
 
 def _build_completion_payload(
@@ -406,6 +586,11 @@ def _build_completion_payload(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any = None,
 ) -> dict[str, Any]:
+    """构造请求体。
+
+    ``cfg.extra_body`` 仅合并进 OpenAI ChatCompletions 分支：``ark_responses`` 有自己
+    的 ``thinking`` 字段，语义重叠，合并会造成两套开关心智负担。
+    """
     # 原生 function calling 轮：带 tools 时不叠加 json_object 约束（两者并存易冲突）
     want_json = json_mode and not tools
     if _uses_ark_responses_api(cfg.protocol):
@@ -430,6 +615,10 @@ def _build_completion_payload(
         "temperature": temperature,
         "stream": stream,
     }
+    if cfg.extra_body:
+        # 模型专属字段（如硅基流动的 enable_thinking）。协议契约键不可被覆盖，
+        # 否则配置里一个笔误就能静默改掉模型 ID 或消息体。
+        payload.update({k: v for k, v in cfg.extra_body.items() if k not in _RESERVED_PAYLOAD_KEYS})
     if want_json:
         payload["response_format"] = {"type": "json_object"}
     if tools:
