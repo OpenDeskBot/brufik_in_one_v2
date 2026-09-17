@@ -36,6 +36,9 @@ def test_schemas_registered_without_touching_batch1():
     assert "user_name" in info["function"]["parameters"]["properties"]
     task = next(s for s in schemas if s["function"]["name"] == "update_daily_task")
     assert task["function"]["parameters"]["required"] == ["user_name", "message"]
+    description = task["function"]["description"]
+    assert "几分钟没有交谈不代表重新见面" in description
+    assert "距上次对话较久表达思念" not in description
 
 
 def test_execute_update_user_info_and_daily_task(data_dir):

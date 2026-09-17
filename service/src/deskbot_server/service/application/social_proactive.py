@@ -4,7 +4,7 @@
 已知用户时 system prompt 会自动注入按人档案/今日记录与「你的当前任务」规则
 （infrastructure/llm/utils.py 的 llm_user_social_context / llm_social_active_tasks
 附录），因此这里只需像 QuestProactiveRunner 一样发起一轮 run_chat_turn：LLM
-依据规则自行判断此刻是否该主动问候/关心/表达思念——该开口就先调 update_daily_task
+依据规则自行判断此刻是否该主动问候/关心——该开口就先调 update_daily_task
 记账再口播；无话可说时输出 need_reply=false 静默退出。
 
 user_text 以 ``_SOCIAL_PROACTIVE_PREFIX``（[系统主动问候]）开头：chat_flow 对社交
@@ -131,12 +131,14 @@ def _build_user_text(names: list[str]) -> str:
     """构造社交问候指令（以系统前缀开头；chat_flow 允许静默退出，不强制开口）。"""
     name_text = "、".join(names)
     return (
-        f"{_SOCIAL_PROACTIVE_PREFIX} 检测到认识的人（{name_text}）在面前，且有一段时间"
-        "没有对话，现在轮到你主动开口。请依据 system 提示中的「你的当前任务」规则判断：\n"
-        "- 属于该主动表达的情形（该时段首次见面问候 / 饭点关心吃饭 / 距上次对话较久表达思念）："
+        f"{_SOCIAL_PROACTIVE_PREFIX} 检测到认识的人（{name_text}）仍在面前，最近一段时间"
+        "没有交谈。这只是冷场，不代表对方离开后回来。请依据 system 提示中的「你的当前任务」规则判断：\n"
+        "- 属于该主动表达的情形（该时段首次问候 / 饭点关心吃饭）："
         "先调用 update_daily_task 记账，再正常开口（need_reply=true，tts 写直接说给"
         "对方听的口语，称呼其名），不要复述规则本身。\n"
         "- 不属于任何需要主动表达的情形（如今天该时段已经问候过、刚聊过不久且不在饭点）："
         "本轮不开口 —— need_reply=false、tts 留空，只输出 JSON。\n"
+        "- 禁止把这次冷场描述成重逢，禁止说「又见到你」「又见面」「回来啦」「好久不见」或表达想念；"
+        "当前输入没有提供对方真实离开后重新出现的事实，不要自行推断。\n"
         "禁止输出「已问候/已汇报」类的汇报语。"
     )

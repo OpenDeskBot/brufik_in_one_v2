@@ -22,7 +22,11 @@ from deskbot_server.constants import (
 )
 from deskbot_server.model.pb_seq import PbBlock, PbSeq, PbType, PlaybackOutcome, PlaybackStatus
 from deskbot_server.pb.wire import device_pb_json_msg
-from deskbot_server.service.application.asr_chat_uplink import pack_ws_downlink_frame, parse_packed_frame
+from deskbot_server.service.application.asr_chat_uplink import (
+    coerce_audio_flush,
+    pack_ws_downlink_frame,
+    parse_packed_frame,
+)
 from deskbot_server.service.application.boot_wake import deliver_boot_wake_scene
 from deskbot_server.service.application.chat_service import ChatService
 from deskbot_server.service.camera_face_service import CameraFaceService
@@ -984,8 +988,32 @@ class DeviceWsService(metaclass=SingletonMeta):
                         msg_type = data.get("type")
 
                         if msg_type == "audio":
+                            flush_audio = coerce_audio_flush(data)
                             if not attached_media:
-                                logger.warning("[/asr_chat] audio 帧缺少 binary device_id=%s", device_id)
+                                if not flush_audio:
+                                    logger.warning("[/asr_chat] audio 帧缺少 binary device_id=%s", device_id)
+                                    continue
+                                # 固件在一段语音已经发完、batch 恰好为空时会发送
+                                # next_bin_len=0 + flush=1，要求服务端立即让 VAD 收尾。
+                                flushed = session.flush()
+                                await self.touch(device_id)
+                                if flushed:
+                                    logger.info(
+                                        "[/asr_chat] flush 切句完成 device_id=%s pcm_bytes=%d -> 触发ASR",
+                                        device_id,
+                                        len(flushed.pcm),
+                                    )
+                                    spawn(
+                                        self._run_asr_turn(
+                                            websocket,
+                                            pipeline,
+                                            flushed.pcm,
+                                            device_id=device_id,
+                                            uplink_sr=flushed.sample_rate,
+                                            uplink_ch=flushed.channels,
+                                            uplink_codec=flushed.codec,
+                                        )
+                                    )
                                 continue
                             codec = data.get("codec")
                             sr_raw = data.get("sr")
@@ -1008,6 +1036,25 @@ class DeviceWsService(metaclass=SingletonMeta):
                                     uplink_ch=session.rom_ch,
                                     uplink_codec=session.rom_codec,
                                 ))
+                            if flush_audio:
+                                flushed = session.flush()
+                                if flushed:
+                                    logger.info(
+                                        "[/asr_chat] 尾包 flush 切句完成 device_id=%s pcm_bytes=%d -> 触发ASR",
+                                        device_id,
+                                        len(flushed.pcm),
+                                    )
+                                    spawn(
+                                        self._run_asr_turn(
+                                            websocket,
+                                            pipeline,
+                                            flushed.pcm,
+                                            device_id=device_id,
+                                            uplink_sr=flushed.sample_rate,
+                                            uplink_ch=flushed.channels,
+                                            uplink_codec=flushed.codec,
+                                        )
+                                    )
                             continue
 
                         if msg_type == "camera_frame":

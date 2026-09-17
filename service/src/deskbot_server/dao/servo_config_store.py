@@ -190,9 +190,13 @@ def normalize_servo_document(raw: object, *, require_presets: bool = False) -> d
     return out
 
 
-def load_servo_cfg_file(*, device_id: str | None = None) -> dict[str, Any] | None:
+def load_servo_cfg_file(*, device_id: str | None = None, fallback_to_global: bool = False) -> dict[str, Any] | None:
     path = resolve_json_path(SERVO_CFG_FILE, device_id)
     raw = load_json_file(path, default=None)
+    # 新设备可能已连上 /asr_chat，但尚未经过用户绑定流程复制设备级模板。
+    # 动作预设调用方可显式回退 data/servo.json；限位读取仍保持设备缺失时用安全默认值。
+    if raw is None and device_id and fallback_to_global:
+        raw = load_json_file(SERVO_CFG_FILE, default=None)
     if raw is None:
         return None
     return normalize_servo_document(raw)

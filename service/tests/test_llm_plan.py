@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from deskbot_server.infrastructure.llm.utils import parse_llm_reply
+from deskbot_server.infrastructure.llm.utils import llm_pb_moves_prompt_appendix, parse_llm_reply
 from deskbot_server.pb.llm_plan import (
     expand_llm_anims,
     expand_llm_moves,
@@ -134,6 +134,20 @@ def test_expand_llm_moves_look_is_robot_body_frame():
     assert right == _resolve_servo_preset_steps("look_left")
     assert left != right
     # 若去掉 swap（不映射），look_left 会错误执行存储的 look_left（反向）——以上断言即回归防线
+
+
+def test_expand_llm_moves_accepts_markdown_escaped_id():
+    """模型偶尔把下划线写成 Markdown 转义；执行前应恢复真实预设 id。"""
+    expected = expand_llm_moves(["look_down"])
+    assert expected
+    assert expand_llm_moves([r"look\_down"]) == expected
+    assert expand_llm_moves([{"move": r"look\_down", "ms": 500}])
+
+
+def test_move_prompt_uses_global_presets_for_new_device():
+    appendix = llm_pb_moves_prompt_appendix(device_id="__device_without_servo_file__")
+    assert "center" in appendix
+    assert "look_down" in appendix
 
 
 def test_expand_llm_anims_string_uses_scene_default_ms():

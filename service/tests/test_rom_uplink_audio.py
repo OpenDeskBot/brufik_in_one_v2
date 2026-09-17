@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import opuslib_next
 
+from deskbot_server.service.application.asr_chat_uplink import coerce_audio_flush
 from deskbot_server.service.pipeline.audio import AudioConfig, ConnectionSession
 from deskbot_server.service.pipeline.opus_uplink import decode_opus_uplink
 from deskbot_server.service.pipeline.silero_vad import SileroVadConfig, SileroVadStream
@@ -120,6 +121,11 @@ def test_rom_uplink_flush_discards_silence():
         assert session.flush() is None
 
     asyncio.run(_run())
+
+
+def test_flush_only_audio_metadata_is_recognized_without_binary():
+    assert coerce_audio_flush({"type": "audio", "next_bin_len": 0, "frames": 0, "flush": 1}) is True
+    assert coerce_audio_flush({"type": "audio", "next_bin_len": 0}) is False
 
 
 def test_post_flush_accepts_new_audio():

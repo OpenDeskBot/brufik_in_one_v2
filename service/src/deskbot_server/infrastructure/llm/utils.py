@@ -71,7 +71,7 @@ def llm_pb_moves_prompt_appendix(*, device_id: str | None = None) -> str:
 
     def _build() -> str:
         try:
-            cfg = load_servo_cfg_file(device_id=device_id)
+            cfg = load_servo_cfg_file(device_id=device_id, fallback_to_global=True)
         except (OSError, ValueError):
             return ""
         if not cfg:
@@ -94,6 +94,8 @@ def llm_pb_moves_prompt_appendix(*, device_id: str | None = None) -> str:
         )
 
     mtime_path = resolve_json_path(SERVO_CFG_FILE, device_id)
+    if device_id and not os.path.isfile(mtime_path):
+        mtime_path = SERVO_CFG_FILE
     cache_key = f"moves:{device_id or ''}"
     return _cached_appendix(cache_key, mtime_path, _build)
 
@@ -275,8 +277,10 @@ def llm_social_active_tasks_prompt_appendix(*, device_id: str | None = None) -> 
         "同一时段问候过（今日记录里已有）就不重复问候。\n"
         "- 早/中/晚饭时间(约 7:00-9:00/11:00-13:00/17:00-19:00)，可以自然地问对方吃饭了没、"
         "打算吃什么或已经吃了什么；同一餐问过并记账后不要重复问。\n"
-        "- 距与该用户上一次对话时间超过 5 分钟再次见到时，可表达思念/又见到你的亲近之情；"
-        "开口前先 update_daily_task 记账，同一意图 30 分钟内不重复。\n"
+        "- 几分钟没有交谈、或用户一直在镜头前，只表示暂时冷场，不表示用户离开后又回来；"
+        "系统主动问候轮不得据此说「又见到你」「回来啦」「好久不见」或表达想念，也不得为这类意图记账。"
+        "只有用户明确说自己回来了，或当前输入明确提供了用户真实离开较长时间后重新出现的事实，"
+        "才能自然回应重逢；不要自行推断。\n"
         "- 语气自然口语化、像真人聊天，禁止「已问候/已汇报」式的汇报腔；"
         "用户正在提问、剧情任务轮或定时提醒轮进行中时，以当前事务为先，不要插话问候。\n"
         "- 若此刻没有任何需要主动表达的情形（如刚问候过、刚聊过不久且不在饭点），"

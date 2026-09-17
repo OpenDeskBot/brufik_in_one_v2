@@ -92,6 +92,9 @@ def test_both_face_and_voice_users_injected_with_files(env, monkeypatch):
     assert "我叫小明，今年10岁，喜欢乐高" in sp
     assert "我问了小红中午吃了什么" in sp
     assert "你的当前任务" in sp
+    assert "几分钟没有交谈" in sp
+    assert "不表示用户离开后又回来" in sp
+    assert "超过 5 分钟再次见到" not in sp
     # 上一次对话行拼在当前时间之后
     assert sp.rfind("与小明上一次对话的时间是2026-09-03 08:00:00") > sp.rfind("当前时间是:")
 

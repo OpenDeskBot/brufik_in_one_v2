@@ -1,11 +1,16 @@
+import json
+
+from deskbot_server.dao import servo_config_store
 from deskbot_server.dao.servo_config_store import (
     DEFAULT_SERVO_LIMITS,
     clamp_servo_step,
+    load_servo_cfg_file,
     logical_step_to_protocol,
     normalize_perspective,
     resolve_move_for_perspective,
     servo_limits,
 )
+from deskbot_server.utils import device_data
 
 
 def test_default_servo_limits_x_0_180():
@@ -55,3 +60,35 @@ def test_normalize_perspective_default():
     assert normalize_perspective(None) == "viewer"
     assert normalize_perspective("robot") == "robot"
     assert normalize_perspective("invalid") == "viewer"
+
+
+def test_missing_device_servo_config_falls_back_to_global(tmp_path, monkeypatch):
+    global_path = tmp_path / "servo.json"
+    global_path.write_text(
+        json.dumps(
+            {
+                "xMin": 10,
+                "xMax": 170,
+                "yMin": 70,
+                "yMax": 110,
+                "xReverse": 0,
+                "yReverse": 0,
+                "perspective": "viewer",
+                "presets": [
+                    {
+                        "id": "center",
+                        "label": "回中",
+                        "steps": [{"x": 90, "y": 90, "xm": 0, "ym": 0, "ms": 320}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(device_data, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(servo_config_store, "SERVO_CFG_FILE", str(global_path))
+
+    cfg = load_servo_cfg_file(device_id="new_device_without_local_config", fallback_to_global=True)
+
+    assert cfg is not None
+    assert cfg["presets"][0]["id"] == "center"

@@ -23,6 +23,11 @@ _FRAME_MS_MIN = 40
 _FRAME_MS_MAX = 30_000
 
 
+def _normalize_llm_move_id(move_id: object) -> str:
+    r"""清理模型偶尔生成的 Markdown 标识符转义，如 ``look\_down``。"""
+    return str(move_id or "").strip().replace("\\_", "_").replace("\\-", "-")
+
+
 def _scale_ms_values(raw_ms: list[int], target_ms: int) -> list[int]:
     """按 ``target_ms / sum(raw_ms)`` 比例缩放各段时长，总和精确等于 ``target_ms``。"""
     n = len(raw_ms)
@@ -63,11 +68,11 @@ def _scale_ms_values(raw_ms: list[int], target_ms: int) -> list[int]:
 
 
 def _resolve_servo_preset_steps(preset_id: str, *, device_id: str | None = None) -> list[dict[str, Any]]:
-    want = str(preset_id or "").strip()
+    want = _normalize_llm_move_id(preset_id)
     if not want:
         return []
     try:
-        cfg = load_servo_cfg_file(device_id=device_id)
+        cfg = load_servo_cfg_file(device_id=device_id, fallback_to_global=True)
     except (OSError, ValueError):
         return []
     if not cfg:
@@ -115,7 +120,7 @@ def _llm_look_id_to_storage(move_id: str) -> str:
     实测 look_left 的步骤物理上让机器人转向右边）。LLM 侧是机器人人格
     （它说 look_left = 自己向左看），故下发前把左右对调后再取预设 steps。
     """
-    want = str(move_id or "").strip()
+    want = _normalize_llm_move_id(move_id)
     if want.lower() in VIEWER_LR_SWAP:
         return VIEWER_LR_SWAP[want.lower()]
     return want

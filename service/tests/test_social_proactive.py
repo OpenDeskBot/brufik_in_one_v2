@@ -227,6 +227,9 @@ def test_social_runner_full_path(monkeypatch):
     assert asyncio.run(runner.attempt("dev1")) is True
     assert captured["user_text"].startswith("[系统主动问候]")
     assert "小明" in captured["user_text"] and "小红" in captured["user_text"]
+    assert "这只是冷场，不代表对方离开后回来" in captured["user_text"]
+    assert "禁止说「又见到你」" in captured["user_text"]
+    assert "表达思念" not in captured["user_text"]
     assert captured["kw"]["force_voice"] is True
     assert captured["kw"]["device_id"] == "dev1"
     assert captured["publish"] == ("dev1", "social_proactive")
