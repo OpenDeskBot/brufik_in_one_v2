@@ -696,16 +696,18 @@ def fake_tts_engine():
 
 def test_tts_test_info(tmp_path, monkeypatch):
     from deskbot_server.client.tts.doubao import DEFAULT_SPEAKER
+    from deskbot_server.service import robot_capability
 
     monkeypatch.delenv("DOUBAO_TTS_SPEAKER", raising=False)
+    voices = tmp_path / "demo.jsonl"
+    voices.write_text('{"name":"测试音色"}\n', encoding="utf-8")
+    monkeypatch.setattr(robot_capability, "MOSS_VOICES_FILE", voices)
     p = tmp_path / "config.yaml"
     p.write_text(yaml.safe_dump(MINIMAL_CONFIG, allow_unicode=True, sort_keys=False), encoding="utf-8")
     svc = RobotCapabilityService(config_path=p)
     info = svc.tts_test_info()
     assert info["text"] == "你好，这是语音合成测试。"
-    assert info["voices"], "moss-tts-nano 音色列表应从 demo.jsonl 枚举"
-    assert info["voices"][0]["id"] == "demo-1"
-    assert info["voices"][0]["name"]
+    assert info["voices"] == [{"id": "demo-1", "name": "测试音色"}]
     assert info["demo_id"] == "demo-1"  # 设备无 tts_param → 默认 demo-1
     assert info["doubao_speaker"] == DEFAULT_SPEAKER  # 空字段回落内置默认（无 env 回填）
     assert info["doubao_voices"], "豆包音色预设应从 data/doubao_tts_speakers.json 枚举"
