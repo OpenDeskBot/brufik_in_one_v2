@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+from deskbot_server.dao.decorators import delete as db_delete
+from deskbot_server.dao.decorators import insert as db_insert
+from deskbot_server.dao.decorators import select, select_one
+from deskbot_server.dao.decorators import update as db_update
 from deskbot_server.db.models import QuestInstance
-from deskbot_server.db.sql_decorators import execute, select, select_one
 
 
 @select_one(
@@ -25,15 +28,12 @@ def list_instances(device_id: str, playbook: str) -> list[QuestInstance]:
     """列出设备在某个剧本下的所有任务实例。"""
 
 
-@select(
-    "SELECT * FROM quest_instance WHERE playbook = :playbook ORDER BY device_id, task_id",
-    model=QuestInstance,
-)
+@select("SELECT * FROM quest_instance WHERE playbook = :playbook ORDER BY device_id, task_id", model=QuestInstance)
 def list_by_playbook(playbook: str) -> list[QuestInstance]:
     """列出某剧本下所有设备的实例（删除剧本时清理用）。"""
 
 
-@execute(
+@db_insert(
     """
     INSERT INTO quest_instance
         (id, device_id, playbook, task_id, status,
@@ -41,7 +41,8 @@ def list_by_playbook(playbook: str) -> list[QuestInstance]:
     VALUES
         (:id, :device_id, :playbook, :task_id, :status,
          :started_at, :finished_at, :result, :created_at, :updated_at)
-    """
+    """,
+    id_param="id",
 )
 def insert_instance(
     id: str,
@@ -54,11 +55,11 @@ def insert_instance(
     result: str | None,
     created_at: str,
     updated_at: str,
-) -> int:
+) -> str:
     """插入任务实例（时间列传 ISO 字符串）。"""
 
 
-@execute(
+@db_update(
     """
     UPDATE quest_instance
     SET status = :status, started_at = :started_at,
@@ -67,17 +68,12 @@ def insert_instance(
     """
 )
 def update_instance(
-    id: str,
-    status: str,
-    started_at: str | None,
-    finished_at: str | None,
-    result: str | None,
-    updated_at: str,
+    id: str, status: str, started_at: str | None, finished_at: str | None, result: str | None, updated_at: str
 ) -> int:
     """更新实例运行态字段。"""
 
 
-@execute(
+@db_update(
     "UPDATE quest_instance SET task_id = :new_task_id, updated_at = datetime('now') "
     "WHERE device_id = :device_id AND playbook = :playbook AND task_id = :old_task_id"
 )
@@ -85,23 +81,21 @@ def rename_instance(device_id: str, playbook: str, old_task_id: str, new_task_id
     """任务改名后同步实例（不破坏运行态）。"""
 
 
-@execute("DELETE FROM quest_instance WHERE device_id = :device_id AND playbook = :playbook")
+@db_delete("DELETE FROM quest_instance WHERE device_id = :device_id AND playbook = :playbook")
 def delete_instances(device_id: str, playbook: str) -> int:
     """删除设备在某个剧本下的全部实例（重置用）。"""
 
 
-@execute("DELETE FROM quest_instance WHERE device_id = :device_id")
+@db_delete("DELETE FROM quest_instance WHERE device_id = :device_id")
 def delete_instances_by_device(device_id: str) -> int:
     """删除设备全部剧本实例（跨 playbook，设备清除数据用）。"""
 
 
-@execute(
-    "DELETE FROM quest_instance WHERE device_id = :device_id AND playbook = :playbook AND task_id = :task_id"
-)
+@db_delete("DELETE FROM quest_instance WHERE device_id = :device_id AND playbook = :playbook AND task_id = :task_id")
 def delete_instance(device_id: str, playbook: str, task_id: str) -> int:
     """删除单条实例（任务被删除时清理）。"""
 
 
-@execute("DELETE FROM quest_instance WHERE playbook = :playbook")
+@db_delete("DELETE FROM quest_instance WHERE playbook = :playbook")
 def delete_by_playbook(playbook: str) -> int:
     """删除某剧本下所有实例（删除剧本时清理）。"""

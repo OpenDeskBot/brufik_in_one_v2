@@ -1,0 +1,55 @@
+name: llm-realtime
+version: "1.0.0"
+type: llm
+port: 9108
+description: realtime_agent 同款 Qwen3-4B-Instruct-2507 Q4_K_M（本地实时对话）
+install:
+  - bash externals/llm-realtime/install.sh
+uninstall:
+  - rm -rf externals/llm-realtime/bin externals/llm-realtime/models
+start:
+  command:
+    - bin/llama-server
+    - --host
+    - 127.0.0.1
+    - --port
+    - "9108"
+    - --model
+    - models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+    - --alias
+    - realtime-local
+    - --ctx-size
+    - "16384"
+    - --n-gpu-layers
+    - "99"
+    - --parallel
+    - "2"
+    - --cont-batching
+    - --jinja
+    - -ctk
+    - q8_0
+    - -ctv
+    - q8_0
+    - -fa
+    - "on"
+  workdir: ./externals/llm-realtime
+  env: {}
+healthcheck:
+  type: http
+  url: http://127.0.0.1:9108/health
+  interval_s: 5
+  startup_grace_s: 180
+  timeout_s: 3
+  max_failures: 3
+auto_start: false
+test:
+  path: /v1/chat/completions
+  method: POST
+  json:
+    model: realtime-local
+    messages:
+      - role: user
+        content: 请用一句话打招呼。
+    max_tokens: 64
+  expect:
+    - choices

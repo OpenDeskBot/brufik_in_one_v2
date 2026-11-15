@@ -136,6 +136,41 @@ def test_user_turn_cancels_system_turn_and_goes_next():
     asyncio.run(_run())
 
 
+def test_latest_user_cancels_playing_user_and_discards_intermediate_waiter():
+    async def run():
+        arbiter = DeviceInteractionArbiter()
+        started, cleaning, release_cleanup = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        acquired = []
+        async def first():
+            lease = await arbiter.acquire("d", kind=InteractionKind.USER, request_id="old")
+            async with lease:
+                arbiter.mark_current_speaking("d")
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cleaning.set()
+                    await release_cleanup.wait()
+        async def user(rid):
+            lease = await arbiter.acquire("d", kind=InteractionKind.USER, request_id=rid)
+            async with lease:
+                acquired.append(rid)
+        old = asyncio.create_task(first())
+        await started.wait()
+        middle = asyncio.create_task(user("middle"))
+        await cleaning.wait()
+        latest = asyncio.create_task(user("latest"))
+        await asyncio.sleep(0)
+        assert not latest.done()
+        release_cleanup.set()
+        await asyncio.wait_for(latest, 1)
+        await asyncio.gather(old, middle, return_exceptions=True)
+        assert old.cancelled() and middle.cancelled()
+        assert acquired == ["latest"]
+        assert not arbiter.is_busy("d")
+    asyncio.run(run())
+
+
 def test_preempted_playback_is_not_reported_as_voice_success():
     result = ChatTurnResult(
         t_llm_end=1.0,
@@ -191,3 +226,37 @@ def test_ordinary_playback_appends_and_records_real_outcome(monkeypatch):
     assert captured["seq_action"] == PbAction.APPEND
     assert result.playback_completed is True
     assert result.playback_status == "completed"
+
+
+def test_cancelling_playback_joins_next_phrase_prefetch(monkeypatch):
+    import deskbot_server.service.application.chat_flow as flow
+
+    async def run():
+        pending, cancelled, playing = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        class Chat:
+            settings = SimpleNamespace(pb_random_servo_cfg=lambda: None)
+            tts_cfg = {"sample_rate": 16000}
+            async def tts_phoneme_segments(self, text, **_kwargs):
+                if text == "第二句话。":
+                    pending.set()
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        cancelled.set()
+                return 16000, [{"pcm": b"\x01\0" * 640, "ms": 40, "phoneme": "a"}]
+        class Device:
+            async def send_and_wait(self, _dev, _seq):
+                playing.set()
+                await asyncio.Event().wait()
+        task = asyncio.create_task(flow._run_pb_playback(
+            Chat(), reply_text="第一句话。第二句话。", parsed={"moves": [], "anims": []},
+            llm_scenes=[], request_id="r", device_id="dev", result=ChatTurnResult(),
+            t_asr_start=None, device_ws=Device(),
+        ))
+        await asyncio.wait_for(playing.wait(), 1)
+        await asyncio.wait_for(pending.wait(), 1)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        assert cancelled.is_set()
+    asyncio.run(run())

@@ -36,7 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from deskbot_server.db.engine import default_db_path  # noqa: E402
-from deskbot_server.infrastructure.llm.utils import strip_llm_preamble  # noqa: E402
+from deskbot_server.service.llm_context import strip_llm_preamble  # noqa: E402
 from deskbot_server.service.application.chat_flow import _session_user_text  # noqa: E402
 
 

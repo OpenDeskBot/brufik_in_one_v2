@@ -1,5 +1,7 @@
 # 外部服务设计模式与后台交互规范（以 insightface-engine 为例）
 
+> 2026-11-15：本地服务管理页面、API 和自动启停已移除。本文为历史设计记录；当前接入方式见 [外部 Agent 实时语音](../README.md#外部-agent-实时语音)。
+
 > 面向后续「新增/改造外部独立进程服务」任务的实践指南：设计原理、配置自治、
 > 后台界面交互要点、落地清单与踩坑记录。
 > 框架层面的 manifest 契约/状态机/API 见 [external_services.md](./external_services.md)。
@@ -73,7 +75,7 @@
 ## 二、后台界面交互设计要点
 
 后台路径：侧边栏高级分组 → 独立服务管理（`/services`）。页面为
-`templates/app2c/services.html` + `blueprints/services_bp.py`，Vue 3 + Jinja2。
+`public/admin/views/app2c/services.html` + `web/blueprints/services_bp.py`，静态浏览器视图 + JSON API。
 
 ### 1. 表格设计
 
@@ -141,7 +143,7 @@
 
 ### 3. 生效机制
 
-Jinja2 模板每次请求重读磁盘 → **前端改动刷新即生效**；后端
+前端视图修改后执行 `python tools/build_public.py`，再刷新浏览器；后端
 （manager.py / services_bp.py / contract.py）需重启主服务。
 
 ## 三、新增同类服务落地清单

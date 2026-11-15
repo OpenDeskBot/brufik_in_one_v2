@@ -53,10 +53,15 @@ class SileroVadStream:
         self._pre_roll = bytearray()
         self._pre_roll_cap = max(0, sample_rate * cfg.pre_speech_ms // 1000 * 2)
         self._speech_pcm = bytearray()
+        self.speech_starts = 0
+        self._onset_reported = False
+        self._voiced_ms = 0.0
 
     def _reset_utterance(self) -> None:
         self._speech_pcm.clear()
         self._client_have_voice = False
+        self._onset_reported = False
+        self._voiced_ms = 0.0
 
     def _append_pre_roll(self, chunk: bytes) -> None:
         if self._pre_roll_cap <= 0:
@@ -122,6 +127,10 @@ class SileroVadStream:
                 self._speech_pcm.extend(self._pre_roll)
                 self._pre_roll.clear()
                 self._client_have_voice = True
+            self._voiced_ms += self._chunk_ms
+            if not self._onset_reported and self._voiced_ms >= self.cfg.min_speech_ms:
+                self.speech_starts += 1
+                self._onset_reported = True
             self._speech_pcm.extend(chunk)
             self._last_voice_audio_ms = self._audio_ms_processed
             return None
@@ -149,6 +158,24 @@ class SileroVadStream:
                 utterance = finished
 
         return utterance
+
+    def preview_pcm(self, max_ms: int = 900) -> bytes:
+        """Recent voiced PCM for interruption recognition; retain full state."""
+        if self._voiced_ms < self.cfg.min_speech_ms:
+            return b""
+        cap = self.sample_rate * max_ms // 1000 * 2
+        return bytes(self._speech_pcm[-cap:])
+
+    def reset(self) -> None:
+        """Reuse the loaded model for a new, confirmed user's speech timeline."""
+        self._reset_utterance()
+        self._pending_pcm.clear()
+        self._pre_roll.clear()
+        self._voice_window.clear()
+        self._last_is_voice = False
+        self._audio_ms_processed = self._last_voice_audio_ms = 0.0
+        self._state.fill(0)
+        self._context.fill(0)
 
     def flush(self) -> bytes | None:
         if self._pending_pcm:

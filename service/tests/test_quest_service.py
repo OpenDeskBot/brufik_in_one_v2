@@ -51,7 +51,7 @@ def _bind_device(device_id: str, quest_id: str | None = "demo") -> None:
 
 def _redirect_data_dir(monkeypatch, base: Path) -> None:
     """把 per-user 记录文件的 data 根目录指到 base（镜像 test_user_social_store.py）。"""
-    from deskbot_server.utils import device_data as dd
+    from deskbot_server.service import device_data_paths as dd
 
     d = base / "data"
     d.mkdir()

@@ -91,8 +91,6 @@ def _hold_scene(name: str, title: str, frames: list[dict[str, Any]]) -> dict[str
 
 def builtin_emotion_scenes() -> list[dict[str, Any]]:
     """常见内置情绪表情（供模板或测试）。"""
-    e_open_l = [{"shape": "ellipse_fill", "x": 40, "y": 10, "rw": 6, "rh": 6}]
-    e_open_r = [{"shape": "ellipse_fill", "x": 80, "y": 10, "rw": 6, "rh": 6}]
     return [
         _hold_scene(
             "angry",

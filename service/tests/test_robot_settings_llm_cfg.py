@@ -76,7 +76,7 @@ def test_llm_config_info_ark_empty_without_device_param(tmp_path):
 
 def test_llm_config_info_ark_masks_device_param(tmp_path, device):
     from deskbot_server.dao.device_mapper import update_llm_param
-    from deskbot_server.infrastructure.asr.doubao import _mask_secret
+    from deskbot_server.client.asr.doubao import _mask_secret
 
     update_llm_param(
         "deskbot_llm",
@@ -100,6 +100,10 @@ def test_llm_config_info_local_readonly_no_device_needed(tmp_path):
     assert info["readonly"] is True
     assert info["base_url"] == "http://127.0.0.1:9106/v1"
     assert info["model_name"] == "qwen3.8-2b"
+    info = svc.llm_config_info("unee", None)
+    assert info["readonly"] is True
+    assert info["base_url"] == "http://127.0.0.1:9107/v1"
+    assert info["model_name"] == "unee"
 
 
 def test_llm_config_info_unknown_provider_rejected(tmp_path):
@@ -111,7 +115,7 @@ def test_llm_config_info_unknown_provider_rejected(tmp_path):
 def test_llm_config_info_siliconflow_presets_and_never_echoes_key(tmp_path, device, monkeypatch):
     """siliconflow 的密钥是服务端公共凭证：只回状态与变量名，不回显、不可编辑。"""
     from deskbot_server.dao.device_mapper import update_llm_param
-    from deskbot_server.infrastructure.llm.runtime import (
+    from deskbot_server.client.llm.runtime import (
         SILICONFLOW_API_KEY_ENV,
         SILICONFLOW_BASE_URL,
         SILICONFLOW_DEFAULT_MODEL,
@@ -201,7 +205,7 @@ def test_save_llm_config_writes_device_llm_param_only(tmp_path, device):
 
 def test_save_llm_config_masked_key_keeps_existing_and_preserves_other_keys(tmp_path, device):
     from deskbot_server.dao.device_mapper import get_llm_param, update_llm_param
-    from deskbot_server.infrastructure.asr.doubao import _mask_secret
+    from deskbot_server.client.asr.doubao import _mask_secret
 
     update_llm_param(
         "deskbot_llm",
@@ -309,7 +313,7 @@ def test_llm_test_ark_falls_back_to_device_param(tmp_path, device, monkeypatch):
 
 def test_llm_test_ark_masked_override_keeps_device_key(tmp_path, device, monkeypatch):
     from deskbot_server.dao.device_mapper import update_llm_param
-    from deskbot_server.infrastructure.asr.doubao import _mask_secret
+    from deskbot_server.client.asr.doubao import _mask_secret
 
     update_llm_param("deskbot_llm", json.dumps({"ark": {"api_key": "dev-key", "model_name": "ep-dev"}}))
     captured: dict = {}
@@ -351,7 +355,7 @@ def test_llm_test_local_no_api_key_needed(tmp_path, monkeypatch):
 
 def test_llm_test_siliconflow_needs_no_device(tmp_path, monkeypatch):
     """密钥在服务端 .env，所以试聊**不需要 device_id**（ark 则必须有）。"""
-    from deskbot_server.infrastructure.llm.runtime import (
+    from deskbot_server.client.llm.runtime import (
         SILICONFLOW_API_KEY_ENV,
         SILICONFLOW_BASE_URL,
         SILICONFLOW_DEFAULT_MODEL,
@@ -376,7 +380,7 @@ def test_llm_test_siliconflow_needs_no_device(tmp_path, monkeypatch):
 def test_llm_test_siliconflow_model_priority(tmp_path, device, monkeypatch):
     """模型优先级：表单覆盖 > 设备 llm_param > 预设默认；R1 款不带 enable_thinking。"""
     from deskbot_server.dao.device_mapper import update_llm_param
-    from deskbot_server.infrastructure.llm.runtime import SILICONFLOW_API_KEY_ENV, SILICONFLOW_DEFAULT_MODEL
+    from deskbot_server.client.llm.runtime import SILICONFLOW_API_KEY_ENV, SILICONFLOW_DEFAULT_MODEL
 
     captured: dict = {}
     monkeypatch.setattr("deskbot_server.service.robot_capability.chat_acompletion", _fake_chat(captured))

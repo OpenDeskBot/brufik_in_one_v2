@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, TypeVar
 
-from deskbot_server.utils.device_data import device_data_dir
+from deskbot_server.service.device_data_paths import device_data_dir
 
 logger = logging.getLogger("deskbot-server")
 

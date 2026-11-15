@@ -61,6 +61,10 @@ def normalize_row_anim_list(row: dict[str, Any]) -> list[dict[str, Any]]:
         for one in anim:
             if not isinstance(one, dict):
                 continue
+            if one.get("anim_id"):
+                out.append({"anim_id": one["anim_id"], "frame": int(one.get("frame", 0)),
+                            "ms": max(1, int(one.get("ms") or chunk_ms))})
+                continue
             els = one.get("elements")
             if not isinstance(els, dict):
                 continue
@@ -378,7 +382,7 @@ def apply_random_pb_servo_actions(
 
     n = len(pairs)
     added = 0
-    for i, (msg, binaries) in enumerate(pairs):
+    for i, (msg, _binaries) in enumerate(pairs):
         if not int((msg.get("audio") or {}).get("next_bin_len") or 0):
             continue
         if skip_first and i == 0:
@@ -519,18 +523,20 @@ def pb_json_messages(
             typ = "pb_chunk"
         pcm = pcm_per_idx[i] if i < len(pcm_per_idx) else b""
         anim_list = normalize_anim_list_for_wire(normalize_row_anim_list(row))
-        if not anim_list:
-            anim_list = [make_anim_item({}, int(row.get("chunk_ms") or 1))]
+        # Empty poses are internal timing carriers, not downstream drawing commands.
+        if all(not a.get("elements") and not a.get("anim_id") and not a.get("phoneme_id") for a in anim_list):
+            anim_list = []
         msg: dict[str, Any] = {
             "type": typ,
             "req": pb_req,
             "idx": i,
             "chunk_ms": int(row.get("chunk_ms") or 0),
-            "anim": anim_list,
             "pb_ver": 2,
             "action": action,
             "level": int(level),
         }
+        if anim_list:
+            msg["anim"] = anim_list
         servos = row.get("servo")
         if isinstance(servos, list) and servos:
             msg["servo"] = copy.deepcopy(servos)

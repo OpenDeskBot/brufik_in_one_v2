@@ -1,33 +1,7 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Any
-
-
-def _env_bool(name: str) -> bool | None:
-    raw = (os.environ.get(name) or "").strip().lower()
-    if raw in ("1", "true", "yes", "on"):
-        return True
-    if raw in ("0", "false", "no", "off"):
-        return False
-    return None
-
-
-def _env_str(name: str, default: str = "") -> str:
-    """读取环境变量字符串，未设置返回 default。"""
-    return os.environ.get(name, default).strip() or default
-
-
-def _env_int(name: str, default: int = 0) -> int:
-    """读取环境变量整数，未设置或解析失败返回 default。"""
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
 
 
 @dataclass(frozen=True)
@@ -120,24 +94,9 @@ class AppSettings:
         tts = dict(config.get("tts") or {})
         tf = dict(asr.get("text_filter") or {})
 
-        pb_only_env = _env_bool("DESKBOT_ASR_CHAT_DEVICE_PB_ONLY")
-        pb_only = pb_only_env if pb_only_env is not None else bool(srv.get("asr_chat_device_pb_only", True))
-
-        minimal_env = _env_bool("DESKBOT_ASR_CHAT_MINIMAL_DOWNLINK")
-        minimal = minimal_env if minimal_env is not None else bool(srv.get("asr_chat_minimal_device_downlink", False))
-
-        face_info_env = _env_bool("DESKBOT_SEND_FACE_INFO")
-        face_info = face_info_env if face_info_env is not None else bool(srv.get("send_face_info_to_asr_chat", False))
-
-        # TTS provider 由 device 表 tts_provider 决定（设备级），不再读 TTS_PROVIDER 环境变量
-        if env := _env_str("TTS_WS_URL"):
-            tts["ws_url"] = env
-        if env := _env_int("TTS_SPK_ID"):
-            tts["spk_id"] = env
-        if env := _env_int("TTS_SAMPLE_RATE"):
-            tts["sample_rate"] = env
-        if env := _env_str("ASR_EXTERNAL_URL"):
-            asr["external_url"] = env
+        pb_only = bool(srv.get("asr_chat_device_pb_only", True))
+        minimal = bool(srv.get("asr_chat_minimal_device_downlink", False))
+        face_info = bool(srv.get("send_face_info_to_asr_chat", False))
 
         tts_extra = {
             k: v
@@ -157,13 +116,13 @@ class AppSettings:
 
         return cls(
             server=ServerSettings(
-                host=os.environ.get("DESKBOT_SERVER_HOST") or str(srv.get("host", "0.0.0.0")),
-                port=int(os.environ.get("DESKBOT_SERVER_PORT") or srv.get("port", 9000)),
-                ws_path=os.environ.get("DESKBOT_WS_PATH") or str(srv.get("ws_path", "/asr_chat")),
+                host=str(srv.get("host", "0.0.0.0")),
+                port=int(srv.get("port", 9000)),
+                ws_path=str(srv.get("ws_path", "/asr_chat")),
                 ws_ping_interval=_parse_ping_interval(
-                    os.environ.get("DESKBOT_WS_PING_INTERVAL"), srv.get("ws_ping_interval", 20)
+                    None, srv.get("ws_ping_interval", 20)
                 ),
-                ws_ping_timeout=float(os.environ.get("DESKBOT_WS_PING_TIMEOUT") or srv.get("ws_ping_timeout", 20)),
+                ws_ping_timeout=float(srv.get("ws_ping_timeout", 20)),
                 asr_chat_device_pb_only=pb_only,
                 asr_chat_minimal_device_downlink=minimal,
                 send_face_info_to_asr_chat=face_info and not pb_only,
@@ -215,12 +174,7 @@ class AppSettings:
 
     def pb_random_servo_cfg(self) -> dict[str, Any] | None:
         sub = self.tts.pb_random_servo
-        env = _env_bool("DESKBOT_PB_RANDOM_SERVO")
         enabled = bool(sub.get("enabled", False))
-        if env is True:
-            enabled = True
-        if env is False:
-            enabled = False
         if not enabled:
             return None
         out = dict(sub)

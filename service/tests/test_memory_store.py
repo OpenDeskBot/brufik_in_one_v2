@@ -3,14 +3,8 @@ from __future__ import annotations
 
 def test_memory_crud():
     """device_memory_mapper 高层 API CRUD 测试（需要 DB）。"""
-    from deskbot_server.dao.device_memory_mapper import (
-        add_memory,
-        delete_by_device,
-        delete_memory,
-        get_memory,
-        list_memory_for_device,
-        update_memory,
-    )
+    from deskbot_server.service.memory_service import add_memory, delete_memory, get_memory, list_memory_for_device, update_memory
+    from deskbot_server.dao.device_memory_mapper import delete_by_device
 
     delete_by_device("test_dev_mem")
 

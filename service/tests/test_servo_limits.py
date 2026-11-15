@@ -10,7 +10,7 @@ from deskbot_server.dao.servo_config_store import (
     resolve_move_for_perspective,
     servo_limits,
 )
-from deskbot_server.utils import device_data
+from deskbot_server.service import device_data_paths as device_data
 
 
 def test_default_servo_limits_x_0_180():

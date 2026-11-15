@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 
+from deskbot_server.controller.decorators import access
 from deskbot_server.web.deps import load_session_user
+from deskbot_server.web.pages import page
 from deskbot_server.web.view_helpers import ViewAPIRoute, render_template
 
 router = APIRouter(route_class=ViewAPIRoute, tags=["site"])
 
 
 @router.get("/")
+@access('public')
+@page('landing.html')
 def index(request: Request):
     """产品落地页：未登录展示宣传与登录入口，已登录直接进控制台。
 
@@ -27,10 +30,6 @@ def index(request: Request):
     )
 
 
-@router.get("/health")
-def health(request: Request):
-    del request
-    return JSONResponse({"ok": True, "service": "deskbot-web"})
 
 
 ENDPOINTS = {"site.index": "/", "site.health": "/health"}

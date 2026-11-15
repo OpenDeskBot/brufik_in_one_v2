@@ -6,7 +6,7 @@ import os
 
 import uvicorn
 
-from deskbot_server.config import load_config
+from deskbot_server.config import configure_runtime, load_config
 from deskbot_server.constants import CAMERA_VIEW_PATH, DEVICE_PIPELINE_PATH
 from deskbot_server.controller.app import create_fastapi_app
 from deskbot_server.controller.runtime import AppRuntime
@@ -40,6 +40,7 @@ def build_runtime() -> AppRuntime:
     init_database()
     logger.info("[server] auth DB ready path=%s", default_db_path())
     config = load_config(os.environ.get("DESKBOT_SERVER_CONFIG", "config.yaml"))
+    configure_runtime(config, os.environ.get("DESKBOT_SERVER_CONFIG", "config.yaml"))
     app_settings = AppSettings.from_config(config)
     audio_cfg = AudioConfig(
         input_codec=app_settings.audio.input_codec,
@@ -108,15 +109,9 @@ def build_runtime() -> AppRuntime:
         ws_path = f"/{ws_path}"
 
     scheduler = ScheduledTaskScheduler(
-        chat=pipeline, device_ws=device_ws, bus_service=bus_service
-    )
-    scheduler.start()
-
-    from deskbot_server.service.external.manager import ExternalServiceManager
-
-    external_manager = ExternalServiceManager()
-    external_manager.discover()
-    logger.info("[external] 发现 %d 个外部服务", len(external_manager.names()))
+        chat=pipeline, device_ws=device_ws, bus_service=bus_service,
+        poll_interval_sec=config.get("scheduler", {}).get("poll_interval_sec", 60.0),
+    ) if config.get("scheduler", {}).get("enabled", True) else None
 
     return AppRuntime(
         settings=app_settings,
@@ -126,15 +121,7 @@ def build_runtime() -> AppRuntime:
         bus_service=bus_service,
         device_ws=device_ws,
         scheduler=scheduler,
-        external_manager=external_manager,
     )
-
-
-async def _apply_auto_start_safe(external_manager) -> None:
-    try:
-        await external_manager.apply_auto_start()
-    except Exception:
-        logger.exception("[external] auto_start 拉起失败")
 
 
 async def main():
@@ -178,14 +165,6 @@ async def main():
     )
     server = uvicorn.Server(config)
 
-    external_manager = runtime.external_manager
-    if external_manager is not None:
-        external_manager.start_watchdog()
-        # 非阻塞拉起 auto_start 服务；失败仅记日志，不阻塞主服务启动
-        asyncio.create_task(
-            _apply_auto_start_safe(external_manager),
-            name="external-auto-start",
-        )
     try:
         await server.serve()
     finally:

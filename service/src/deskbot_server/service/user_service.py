@@ -8,8 +8,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from deskbot_server.dao import device_mapper, user_mapper
 from deskbot_server.db.models import Device, User, _new_id
-from deskbot_server.utils.singleton import SingletonMeta
+from deskbot_server.db.transaction import transaction as db_transaction
+from deskbot_server.model.errors import DataAccessError
 from deskbot_server.service.device_ws_service import DeviceWsService
+from deskbot_server.utils.singleton import SingletonMeta
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _DEVICE_ID_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
@@ -46,15 +48,17 @@ class UserService(metaclass=SingletonMeta):
             raise ValueError("邮箱格式无效")
         if len(password) < 8:
             raise ValueError("密码至少 8 位")
-        is_first_user = not user_mapper.has_any_user()
+        password_hash = generate_password_hash(password)
         try:
-            user_mapper.create(_new_id(), email_norm, generate_password_hash(password), is_first_user)
-        except Exception as exc:
-            err = str(exc).lower()
-            if "email" in err or "unique" in err:
+            with db_transaction() as tx:
+                is_first_user = not user_mapper.has_any_user(transaction=tx)
+                uid = _new_id()
+                user_mapper.create(uid, email_norm, password_hash, is_first_user, transaction=tx)
+                user = user_mapper.get_by_id(uid, transaction=tx)
+        except DataAccessError as exc:
+            if exc.kind == "conflict":
                 raise ValueError("该邮箱已注册") from exc
-            raise ValueError("注册失败，请稍后重试") from exc
-        user = user_mapper.get_by_email(email_norm)
+            raise
         if user is None:
             raise ValueError("注册失败，请稍后重试")
         return user  # 返回 User 对象（auth_bp 注册登录流程依赖 .id）
@@ -110,13 +114,14 @@ class UserService(metaclass=SingletonMeta):
         return user_mapper.count_developers(is_dev=True)
 
     def set_developer(self, user_id: str, *, is_developer: bool) -> User:
-        user = user_mapper.get_by_id(user_id)
-        if user is None:
-            raise ValueError("用户不存在")
-        if user.is_developer and not is_developer and self.count_developers() <= 1:
-            raise ValueError("至少保留一名开发者")
-        user_mapper.set_developer(user_id, is_developer)
-        user.is_developer = is_developer
+        with db_transaction() as tx:
+            user = user_mapper.get_by_id(user_id, transaction=tx)
+            if user is None:
+                raise ValueError("用户不存在")
+            if user.is_developer and not is_developer and user_mapper.count_developers(True, transaction=tx) <= 1:
+                raise ValueError("至少保留一名开发者")
+            user_mapper.set_developer(user_id, is_developer, transaction=tx)
+            user.is_developer = is_developer
         return user
 
     # ---- 设备（直接调 mapper）----
@@ -139,12 +144,10 @@ class UserService(metaclass=SingletonMeta):
 
     def user_owns_device(self, user_id: str, device_id: str) -> bool:
         dev = self.get_device(device_id)
-        if dev is None or dev.owner_user_id != user_id:
-            return False
-        return True
+        return not (dev is None or dev.owner_user_id != user_id)
 
     def bind_device(self, user_id: str, device_id: str, *, display_name: str | None = None) -> Device:
-        from deskbot_server.utils.device_data import ensure_device_data_initialized
+        from deskbot_server.service.device_data_paths import ensure_device_data_initialized
 
         did = _normalize_device_id(device_id)
         if not _validate_device_id(did):
@@ -184,15 +187,20 @@ class UserService(metaclass=SingletonMeta):
         new_device_id = old_device_id[:prefix_end] + mac + str(random.randint(1000, 9999))
         # 重命名数据目录
         import shutil
-        from pathlib import Path
+
         from deskbot_server.utils.paths import DATA_DIR
 
         old_dir = DATA_DIR / old_device_id
         new_dir = DATA_DIR / new_device_id
         if old_dir.is_dir():
             shutil.move(str(old_dir), str(new_dir))
-        device_mapper.update_device_id(old_device_id, new_device_id)
-        # 更新设备 display_name 中的旧 device_id
-        if dev.display_name == old_device_id:
-            device_mapper.update_owner(dev.id, dev.owner_user_id, new_device_id)
+        try:
+            with db_transaction() as tx:
+                device_mapper.update_device_id(old_device_id, new_device_id, transaction=tx)
+                if dev.display_name == old_device_id:
+                    device_mapper.update_owner(dev.id, dev.owner_user_id, new_device_id, transaction=tx)
+        except Exception:
+            if new_dir.is_dir() and not old_dir.exists():
+                shutil.move(str(new_dir), str(old_dir))
+            raise
         return new_device_id

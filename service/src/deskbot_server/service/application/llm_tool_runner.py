@@ -5,15 +5,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory
-from deskbot_server.dao.device_session_mapper import execute_session_tool
 from deskbot_server.dao.user_social_store import append_daily_task_line, append_user_info_line
 from deskbot_server.service.application.face_registration import register_face_for_device
 from deskbot_server.service.application.voice_registration import register_voice_for_device
 from deskbot_server.service.camera_face_service import capture_camera_for_device_async
+from deskbot_server.service.memory_service import add_memory, delete_memory
 from deskbot_server.service.miot_tools import execute_miot_tool
 from deskbot_server.service.quest_service import QuestService
 from deskbot_server.service.scheduled_task_service import execute_schedule_task_tool
+from deskbot_server.service.session_service import execute_session_tool
 from deskbot_server.service.web_tools import webfetch, websearch
 
 logger = logging.getLogger("deskbot-server")

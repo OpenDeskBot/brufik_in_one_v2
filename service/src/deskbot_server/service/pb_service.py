@@ -9,22 +9,12 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import replace
 from typing import Any
 
-from deskbot_server.dao.face_expr_scenes_store import (
-    design_frames_to_pb_chain,
-    find_design_scene_by_name,
-    load_face_expr_scenes_file,
-)
-from deskbot_server.model.pb_seq import PbAction, PbBlock, PbSeq
-from deskbot_server.pb.servo_pcm import attach_pb_device_hints_from_config
-from deskbot_server.pb.shapes import (
-    PB_ACTION_APPEND,
-    PB_ACTION_REPLACE,
-    PB_LEVEL_IDLE,
-    PB_LEVEL_TASK,
-    apply_pb_dispatch_fields,
-)
+from deskbot_server.dao.face_expr_scenes_store import find_design_scene_by_name, load_face_expr_scenes_file
+from deskbot_server.model.pb_seq import PbAction, PbAnim, PbBlock, PbSeq, PbType
+from deskbot_server.pb.shapes import PB_ACTION_REPLACE, PB_LEVEL_IDLE, PB_LEVEL_TASK
 from deskbot_server.pb.wire import build_pb_wire_pairs
 from deskbot_server.utils.singleton import SingletonMeta
 
@@ -32,11 +22,39 @@ logger = logging.getLogger("deskbot-server")
 
 
 class PbService(metaclass=SingletonMeta):
-    """PbSeq 构建服务。零 IO（TTS 合成由调用方完成），纯数据组装。"""
+    """构建播放序列；资源经 DAO 查询，合成和网络发送由调用方负责。"""
 
     # ------------------------------------------------------------------
     # 功能1：按场景名获取 PbSeq
     # ------------------------------------------------------------------
+
+    def build_servo_pb_seq(self, head: PbBlock, *, level: int, action: PbAction, scene_name: str = "") -> PbSeq:
+        """Compose one command with a single request and one completion barrier.
+
+        The initial display hold aligns the optional scene after the servo.
+        Render primitives stay in the downloaded package, just as with speech.
+        An unavailable optional scene does not discard the servo command.
+        """
+        from deskbot_server.dao.face_asset_catalog import find_face_asset
+
+        local = find_face_asset(scene_name) if scene_name else None
+        if local is None:
+            return PbSeq(req=head.req, entries=(head,), level=level, action=action)
+        asset, version = local
+        frames = asset["frame_ms"]
+        entries = [replace(head, type=PbType.START, idx=0, anim=(PbAnim(ms=head.chunk_ms),))]
+        for i, duration in enumerate(frames):
+            entries.append(
+                PbBlock(
+                    type=PbType.END if i == len(frames) - 1 else PbType.CHUNK,
+                    req=head.req,
+                    idx=i + 1,
+                    chunk_ms=duration,
+                    anim=(PbAnim(anim_id=asset["id"], frame=i, ms=duration),),
+                    anim_version=version,
+                )
+            )
+        return PbSeq(req=head.req, entries=tuple(entries), level=level, action=action)
 
     def get_scene_pb_seq(
         self,
@@ -63,24 +81,27 @@ class PbService(metaclass=SingletonMeta):
             logger.debug("[pb_service] 场景 %r 未找到 device_id=%s", scene_name, device_id)
             return None
 
+        from deskbot_server.dao.face_asset_catalog import find_face_asset
+
+        local = find_face_asset(scene_name)
+        if local is None:
+            raise ValueError(f"animation {scene_name!r} is not compiled into the firmware")
+        asset, version = local
         req_id = uuid.uuid4().hex[:16]
-        pairs = design_frames_to_pb_chain(ent.get("frames") or [], runtime_req=req_id)
-        if not pairs:
-            logger.debug("[pb_service] 场景 %r 无有效帧 device_id=%s", scene_name, device_id)
-            return None
-
-        frames = [msg for msg, _bins in pairs]
-        apply_pb_dispatch_fields(frames, action=PB_ACTION_APPEND, level=level)
-        attach_pb_device_hints_from_config(frames)
-
-        pb_seq = PbSeq.from_wire_pairs(pairs, level=level)
-        # 覆盖 action 为调用方指定值（from_wire_pairs 从 wire 读取，可能不一致）
-        object.__setattr__(pb_seq, "action", action)
-        logger.info(
-            "[pb_service] scene=%s device_id=%s req=%s blocks=%d level=%d action=%s",
-            scene_name, device_id, req_id, pb_seq.block_count, level, action.wire,
+        return PbSeq(
+            req=req_id,
+            level=level,
+            action=action,
+            entries=(
+                PbBlock(
+                    type=PbType.SINGLE,
+                    req=req_id,
+                    anim_id=asset["id"],
+                    anim_version=version,
+                    chunk_ms=asset["duration_ms"],
+                ),
+            ),
         )
-        return pb_seq
 
     # ------------------------------------------------------------------
     # 功能2：通过 LLM + TTS 结果组装 PbSeq
@@ -103,10 +124,10 @@ class PbService(metaclass=SingletonMeta):
         random_servo_cfg: dict[str, Any] | None = None,
         servo_plan: list[dict[str, Any]] | None = None,
     ) -> PbSeq | None:
-        """将 TTS 音素分片 + LLM moves/anims 组装为可直接入队的 ``PbSeq``。
+        """将 TTS 音频分片 + LLM moves/anims 组装为可直接入队的 ``PbSeq``。
 
         Args:
-            segs: TTS 音素分片列表（含 ``pcm`` / ``ms`` / ``phoneme``）。
+            segs: TTS 音频分片列表（含 ``pcm`` / ``ms``；忽略音素标签）。
             tts_cfg: TTS 配置（含 ``sample_rate`` 等）。
             moves: LLM 返回的舵机动作列表。
             anims: LLM 返回的表情动画列表。
@@ -142,12 +163,14 @@ class PbService(metaclass=SingletonMeta):
         )
         if not pairs:
             return None
-
         # 从 wire 帧中读取实际 level（build_pb_wire_pairs 可能写入了不同值）
-        task_level = int((pairs[0][0].get("level") or level)) if pairs else level
+        task_level = int(pairs[0][0].get("level") or level) if pairs else level
         pb_seq = PbSeq.from_wire_pairs(pairs, level=task_level)
         logger.info(
             "[pb_service] tts assembled req=%s level=%d blocks=%d sr=%d",
-            pb_seq.req, pb_seq.level, pb_seq.block_count, sr_pb,
+            pb_seq.req,
+            pb_seq.level,
+            pb_seq.block_count,
+            sr_pb,
         )
         return pb_seq

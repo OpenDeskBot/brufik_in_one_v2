@@ -24,16 +24,12 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from deskbot_server.dao import device_mapper, quest_mapper
-from deskbot_server.dao.user_social_store import (
-    append_quest_daily_line,
-    append_quest_progress_line,
-    validate_user_name,
-)
+from deskbot_server.dao.user_social_store import append_quest_daily_line, append_quest_progress_line, validate_user_name
 from deskbot_server.utils.paths import DATA_DIR
 from deskbot_server.utils.singleton import SingletonMeta
 
@@ -72,7 +68,7 @@ class QuestError(Exception):
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _new_id() -> str:

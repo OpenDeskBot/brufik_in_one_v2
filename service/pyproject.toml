@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "websockets==14.2",
+    "httpx==0.28.1",
     "PyYAML==6.0.2",
     "numpy==1.26.4",
     "opuslib_next==1.1.5",
@@ -27,8 +28,6 @@ dependencies = [
     "pyserial>=3.5",
     # werkzeug.security 用户密码哈希（scrypt，登录/改密用）
     "Werkzeug==3.1.8",
-    # jinja2 Web 控制台模板渲染（web/mount.py 顶层 import Jinja2Templates）
-    "Jinja2==3.1.6",
     # itsdangerous 调试 WS token（auth/debug_ws_token.py 顶层 import）
     "itsdangerous==2.2.0",
 ]
@@ -73,3 +72,6 @@ ignore = ["E501", "E741"]
 
 [tool.ruff.lint.isort]
 split-on-trailing-comma = false
+
+[tool.setuptools.package-data]
+deskbot_server = ["public/**/*", "pb/data/*.json"]

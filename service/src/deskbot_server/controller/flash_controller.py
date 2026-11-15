@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from deskbot_server.controller.decorators import access
+from deskbot_server.controller.decorators.http import SopAPIRoute
 from deskbot_server.infrastructure.flash.rom_flash import flash_manager, validate_port
 from deskbot_server.service.user_service import UserService
 
 logger = logging.getLogger("deskbot-server")
 
-router = APIRouter(tags=["flash-ws"])
+router = APIRouter(route_class=SopAPIRoute, tags=["flash-ws"])
 
 
 def _session_user_id(websocket: WebSocket) -> str | None:
@@ -27,6 +30,7 @@ def _session_user_id(websocket: WebSocket) -> str | None:
 
 
 @router.websocket("/api/flash/serial/ws")
+@access('user')
 async def flash_serial_ws(websocket: WebSocket) -> None:
     if _session_user_id(websocket) is None:
         await websocket.close(code=4401)
@@ -76,18 +80,14 @@ async def flash_serial_ws(websocket: WebSocket) -> None:
                     await asyncio.to_thread(flash_manager.serial.write, msg["text"])
         finally:
             pump_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await pump_task
-            except asyncio.CancelledError:
-                pass
     except WebSocketDisconnect:
         pass
     except Exception:
         logger.exception("flash serial ws failed")
-        try:
+        with contextlib.suppress(Exception):
             await websocket.send_json({"ok": False, "error": "serial_ws_failed"})
-        except Exception:
-            pass
     finally:
         flash_manager.serial.remove_listener(_on_serial)
         flash_manager.serial.stop()

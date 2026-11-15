@@ -36,7 +36,7 @@ def _env(tts: str) -> str:
 
 
 def _round(content: str = "", tool_calls: list | None = None, raw: dict | None = None):
-    from deskbot_server.infrastructure.llm.openai_compat import LlmToolRoundResult
+    from deskbot_server.service.llm_service import LlmToolRoundResult
 
     return LlmToolRoundResult(
         content=content,
@@ -145,7 +145,7 @@ def test_loop_no_override_keeps_plain_kwargs(temp_db):
 
 
 def test_complete_llm_with_tool_loop_single_round(monkeypatch):
-    from deskbot_server.infrastructure.llm.openai_compat import LlmToolRoundResult
+    from deskbot_server.service.llm_service import LlmToolRoundResult
     from deskbot_server.service.application.chat_flow import complete_llm_with_tool_loop
 
     answer = _env("你好")

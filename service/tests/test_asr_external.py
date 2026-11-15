@@ -6,14 +6,17 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.error import HTTPError
 
 import pytest
 
-from deskbot_server.infrastructure.asr.doubao_adapter import DoubaoAsrAdapter
-from deskbot_server.infrastructure.asr.funasr_adapter import FunAsrAdapter
+from deskbot_server.client.asr.doubao_adapter import DoubaoAsrAdapter
+from deskbot_server.client.asr.funasr_adapter import FunAsrAdapter
+from deskbot_server.client.asr.protocol import AsrProtocolError
 from deskbot_server.infrastructure.bootstrap import build_asr_adapter
 from deskbot_server.model.settings import AppSettings, AsrTextFilterSettings
 
@@ -75,6 +78,47 @@ def fake_engine():
 # ------------------------------------------------------------------ FunAsrAdapter
 
 
+@pytest.mark.parametrize(
+    ("status", "code", "message"),
+    [
+        (503, "model_not_ready", "模型尚未就绪"),
+        (400, "invalid_sample_rate", "invalid sample rate"),
+        (500, "transcribe_failed", "transcription failed"),
+    ],
+)
+def test_funasr_adapter_preserves_protocol_error(monkeypatch, status, code, message):
+    body = json.dumps({"error": {"code": code, "message": message}}).encode()
+    error = HTTPError("http://funasr/transcribe", status, "engine error", {}, io.BytesIO(body))
+
+    def fail_request(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_request)
+    adapter = FunAsrAdapter("http://funasr", AsrTextFilterSettings())
+    with pytest.raises(AsrProtocolError) as caught:
+        asyncio.run(adapter.transcribe(b"\x00\x00", 16000))
+    assert caught.value.code == code
+    assert caught.value.message == message
+    assert caught.value.http_status == status
+    assert caught.value.__cause__ is error
+
+
+@pytest.mark.parametrize("body", [b"<html>Bad Gateway</html>", b"", b"{broken", b'{"detail":"bad gateway"}'])
+def test_funasr_adapter_non_protocol_error_falls_back(monkeypatch, body):
+    error = HTTPError("http://funasr/transcribe", 502, "Bad Gateway", {}, io.BytesIO(body))
+
+    def fail_request(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_request)
+    adapter = FunAsrAdapter("http://funasr", AsrTextFilterSettings())
+    with pytest.raises(AsrProtocolError) as caught:
+        asyncio.run(adapter.transcribe(b"\x00\x00", 16000))
+    assert caught.value.code == "http_error"
+    assert caught.value.http_status == 502
+    assert "HTTP 502" in caught.value.message
+
+
 def test_funasr_adapter_transcribe(fake_engine):
     adapter = FunAsrAdapter("http://127.0.0.1:9201", AsrTextFilterSettings())
 
@@ -114,7 +158,7 @@ def test_provider_switch(monkeypatch):
     assert isinstance(build_asr_adapter("funasr", settings), FunAsrAdapter)
     assert isinstance(build_asr_adapter("bogus", settings), FunAsrAdapter)  # 未知回落
     monkeypatch.setenv("DOUBAO_ASR_API_KEY", "test")  # ASR 2.0 只需 API Key
-    assert isinstance(build_asr_adapter("doubao", settings), DoubaoAsrAdapter)
+    assert isinstance(build_asr_adapter("doubao", settings, overrides={"api_key": "test"}), DoubaoAsrAdapter)
 
 
 # ------------------------------------------------------------------ funasr server 路由

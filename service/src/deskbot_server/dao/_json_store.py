@@ -10,7 +10,7 @@ import logging
 import os
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -85,10 +85,8 @@ def atomic_save_json(path: str | Path, data: Any) -> None:
         os.replace(tmp_path, p)
     except BaseException:
         # 写入失败时清理临时文件
-        try:
+        with suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
 

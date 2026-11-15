@@ -48,6 +48,10 @@ def _migrate_devices_schema(engine) -> None:
             conn.execute(text("ALTER TABLE devices ADD COLUMN live_mode BOOLEAN NOT NULL DEFAULT 1"))
         if "asr_provider" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN asr_provider VARCHAR(32) NOT NULL DEFAULT 'funasr'"))
+        if "conversation_provider" not in cols:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN conversation_provider VARCHAR(32) NOT NULL DEFAULT 'local'"))
+        if "conversation_param" not in cols:
+            conn.execute(text("ALTER TABLE devices ADD COLUMN conversation_param TEXT"))
         if "asr_param" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN asr_param TEXT"))
         if "tts_provider" not in cols:
@@ -58,6 +62,13 @@ def _migrate_devices_schema(engine) -> None:
             conn.execute(text("ALTER TABLE devices ADD COLUMN llm_provider VARCHAR(64) NOT NULL DEFAULT ''"))
         if "llm_param" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN llm_param TEXT"))
+        if "decision_llm_provider" not in cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE devices ADD COLUMN decision_llm_provider "
+                    "VARCHAR(64) NOT NULL DEFAULT 'unee'"
+                )
+            )
         if "quest_id" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN quest_id VARCHAR(64)"))
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from deskbot_server.service.camera_face_service import CameraFaceService, capture_camera_for_device_async
-from deskbot_server.infrastructure.llm.utils import parse_llm_reply
+from deskbot_server.service.llm_context import parse_llm_reply
 
 
 def _fake_jpeg() -> bytes:

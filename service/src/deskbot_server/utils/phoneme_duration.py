@@ -10,7 +10,7 @@
         ...
     ]
 
-拆分规则（与 ``infrastructure/tts/doubao_words_phoneme`` 一致）：
+拆分规则（与 ``client/tts/doubao_words_phoneme`` 一致）：
 中文按拼音拆声母/韵母（pypinyin），英文用 G2P（g2p_en）转 ARPA 再映射
 到口型键；标点视为停顿 ``_``。时长按单元权重（声母 0.35 / 韵母 0.65、
 元音 0.65 / 辅音 0.35、停顿 0.25）在 ``total_ms`` 内比例分配。
@@ -265,11 +265,8 @@ def _allocate_durations(units: list[tuple[str, float]], *, total_ms: int) -> lis
     out: list[TimedPhoneme] = []
     cursor = 0
     n = len(units)
-    for i, (ph, w) in enumerate(units):
-        if i == n - 1:
-            end = total_ms
-        else:
-            end = int(total_ms * (sum(x[1] for x in units[: i + 1]) / total_w))
+    for i, (ph, _w) in enumerate(units):
+        end = total_ms if i == n - 1 else int(total_ms * (sum(x[1] for x in units[:i + 1]) / total_w))
         end = max(end, cursor + _MIN_SEGMENT_MS)
         end = min(end, total_ms)
         out.append(TimedPhoneme(phoneme=ph, start_ms=cursor, end_ms=end))

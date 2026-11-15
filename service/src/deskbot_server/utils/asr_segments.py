@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from deskbot_server.infrastructure.tts.text_split import split_tts_by_punctuation
+from deskbot_server.utils.text_split import split_tts_by_punctuation
 
 MIN_SEGMENT_MS = 1  # 防止音频过短/文本过长时出现零宽段
 
@@ -37,10 +37,7 @@ def complete_segments(text: str, pcm_bytes: bytes, sample_rate: int) -> list[dic
     cursor = 0
     n = len(sentences)
     for i, sentence in enumerate(sentences):
-        if i == n - 1:
-            end = total_ms
-        else:
-            end = int(total_ms * sum(len(s) for s in sentences[: i + 1]) / total_weight)
+        end = total_ms if i == n - 1 else int(total_ms * sum(len(s) for s in sentences[:i + 1]) / total_weight)
         end = min(total_ms, max(end, cursor + MIN_SEGMENT_MS))
         segments.append({"start_ms": cursor, "end_ms": end, "text": sentence})
         cursor = end

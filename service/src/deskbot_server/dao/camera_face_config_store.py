@@ -7,7 +7,7 @@ import os
 from typing import Any
 
 from deskbot_server.constants import CAMERA_FACE_CFG_FILE
-from deskbot_server.utils.device_data import resolve_json_path
+from deskbot_server.service.device_data_paths import resolve_json_path
 
 
 def normalize_camera_face_document(raw: object) -> dict[str, Any]:

@@ -1,7 +1,8 @@
 """ASR 通过后的「对话注意力」门控（闲聊过滤）。
 
-判定：相机最近画面无人 **且** 本句声纹判定不是认识的人 → 视为周围人在闲聊，
-跳过后续 LLM/TTS 流程（不理会）。相机里有人 或 声纹是认识的人 → 正常应答。
+未明确寻址的空闲输入：相机最近画面无人 **且** 本句声纹判定不是认识的人 →
+视为周围人在闲聊。明确机器人指令、已确认插话和当前对话由调用层优先放行，
+不依赖相机看见人脸，也不串行等声纹/人脸落地。
 
 - 人脸侧数据源 ``face_snapshot_cache``：最近一次检测帧的判定 + 完成时刻
   （``face_snapshot_ts``）。仅当该时刻落在 ``FACE_PRESENCE_WINDOW_S`` 窗口内且
@@ -19,17 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
 
 from deskbot_server.service.application import face_snapshot_cache
-from deskbot_server.service.application.voice_snapshot_cache import (
-    STATE_DEGRADED,
-    STATE_FOUND,
-    STATE_IDENTIFYING,
-    STATE_UNKNOWN,
-)
+from deskbot_server.service.application.voice_snapshot_cache import STATE_FOUND, STATE_UNKNOWN
 
 logger = logging.getLogger("deskbot-server")
 
@@ -47,6 +44,15 @@ ENGAGE_FACE_SEEN = "face_seen"
 ENGAGE_VOICE_KNOWN = "voice_known"
 ENGAGE_VOICE_INCONCLUSIVE = "voice_inconclusive"
 IGNORE_NO_FACE_AND_UNKNOWN = "no_face_and_unknown_speaker"
+
+
+def is_explicit_robot_request(text: str) -> bool:
+    """An addressed command must not depend on a face being in the camera."""
+    compact = re.sub(r"[\s，。！？,.!?]", "", text or "")
+    return bool(re.match(
+        r"^(?:小歪|你好|在吗|你在吗|请问|麻烦你|请你|你能|你会|能给我|能帮我|可以给我|"
+        r"给我|帮我|陪我|讲|背|唱|播放|暂停|停止|我想听|现在几点|几点了|能听见|听得到)", compact
+    ))
 
 
 @dataclass(frozen=True)

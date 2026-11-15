@@ -30,6 +30,17 @@ server:
   asr_chat_device_pb_only: true
   asr_chat_minimal_device_downlink: false
   max_concurrent_asr: 6
+conversation:
+  flecket:
+    # 外部 Agent 服务；迁移至云端时修改主机名，或设置 FLECKET_URL。
+    url: ws://127.0.0.1:9110/v1/realtime?model=agent_265823d9ffd34dd7
+    agents:
+      - name: 豆包llm_tts
+        model: agent_265823d9ffd34dd7
+      - name: 豆包 Turbo Fast · 本机中文语音
+        model: agent_0fe464d97c384816
+      - name: 豆包 Lite Fast · 本机中文语音
+        model: agent_98c0730893184056
 audio:
   input_codec: opus
   output_codec: opus
@@ -50,36 +61,15 @@ asr:
     min_text_len: 2
     min_chinese_ratio: 0.0
 llm:
-  # 系统默认 = 硅基流动（免费云端，OpenAI 兼容）。所有 llm_provider 为空的设备
-  # （含新绑定设备）都用它；密钥由 api_key_env 指名的服务端环境变量提供，
-  # 见 .env 的 SILICONFLOW_API_KEY。回滚成火山方舟：protocol: ark_responses +
-  # base_url: https://ark.cn-beijing.volces.com/api/v3 + model_name: <接入点 ep-…>。
+  # 本地模型组合的系统默认 LLM；flecket 在独立「对话方式」中选择。
   protocol: openai
   base_url: https://api.siliconflow.cn/v1
   model_name: Qwen/Qwen3-8B
   api_key_env: SILICONFLOW_API_KEY
-  # Qwen3-8B 在硅基流动是 32k 上下文；不写则历史预算回退 8192//2=4096（对话会莫名变笨）
   context_window: 32768
   system_prompt_file: data/global/llm_system.txt
-  system_prompt: '你是"小歪"，桌面上活泼俏皮、温柔体贴的小型陪伴机器人。情绪用眼睛、表情、动作明显表达，不只靠说话。识别到用户名就称呼那个名字；说话口语化、简短自然，像好朋友，不书面腔、不客套、不自我介绍。
-
-
-    你的回复会转成语音（TTS）播报，请注意：
-
-    - tts 只写适合朗读的口语短句：不要富文本——不输出 markdown、列表条目、emoji 表情，也不用 ~ * # 等会被读错的符号。
-
-    - 回答要短：一句话讲完、50 字以内；一般不反问、不追问。不确定就说「不太清楚」，严禁编造事实/数据/新闻；无可靠来源的实时信息不装知道。
-
-    - 每轮只输出一个 JSON 对象（不要代码围栏、不要多余文字）：
-
-    {"need_reply": true, "tts": "给主人听的简短口语", "gesture": [], "expression": []}
-
-    - need_reply=false：不出声，仅做动作/表情（用户没说话或只是误识别声音时用）。
-
-    - 其余字段与合法 id 见文末附录，不需要就写 []。每轮 user 消息以「[图像识别:…]」列出画面中的人物；本条用户正文由语音 ASR 转写而来，真正说话人以用户正文括号内的「声纹判定」注记为准——画面里的人不等于说话人，身份不一致时按声纹判定称呼；判定为陌生人/判定中时，不要硬套画面里的人名。
-
-
-    用户正文以[系统定时任务]开头：必须 need_reply=true，tts 直接写说给主人听的提醒语。'
+  # 文件（system_prompt_file）优先；这里只保留文件缺失时的纯文本兜底
+  system_prompt: '你是"小歪"，桌面上活泼俏皮、温柔体贴的小型陪伴机器人。直接输出要说给主人听的口语纯文本，不要输出 JSON、字段名、动作/表情信息，也不要输出括号内的思考/规则说明；不要原样复述用户刚说的话；无需开口时输出完全空白。回复会转成语音（TTS）播报，简短自然，不使用 markdown、列表或 emoji。'
 tts:
   sample_rate: 16000
   pb_random_servo:

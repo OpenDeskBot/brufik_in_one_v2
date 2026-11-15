@@ -1,4 +1,4 @@
-from deskbot_server.web.app import app, web_debug_enabled
+from deskbot_server.web.app import create_app, web_debug_enabled
 
 
 def test_web_debug_enabled_default_false(monkeypatch):
@@ -19,7 +19,7 @@ def test_web_debug_enabled_falsy_values(monkeypatch):
 
 
 def test_static_css_accessible_without_login():
-    client = app.test_client()
+    client = create_app().test_client()
     resp = client.get("/static/theme.css")
     assert resp.status_code == 200
     assert "text/css" in (resp.content_type or "")

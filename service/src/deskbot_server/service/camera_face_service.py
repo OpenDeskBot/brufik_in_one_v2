@@ -8,6 +8,7 @@ v1.1.0 起主服务不再做进程内人脸推理（进程池与推理模块已�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -15,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from deskbot_server.client.face.fr_http_client import FrHttpClient
 from deskbot_server.service.application.face_tracker import FaceTracker
 from deskbot_server.utils.singleton import SingletonMeta
 
@@ -129,7 +131,7 @@ class CameraFaceService(metaclass=SingletonMeta):
             self._fr_client = None
             logger.info("[camera_face] 人脸识别已关闭（mode=none）")
             return
-        from deskbot_server.infrastructure.face.fr_http_client import FrHttpClient
+        from deskbot_server.client.face.fr_http_client import FrHttpClient
 
         self._fr_client = FrHttpClient(runtime.external_url, timeout_s=runtime.external_timeout_s)
 
@@ -143,10 +145,8 @@ class CameraFaceService(metaclass=SingletonMeta):
         return self._runtime
 
     def _note_loop(self) -> None:
-        try:
+        with contextlib.suppress(RuntimeError):
             self._loop = asyncio.get_running_loop()
-        except RuntimeError:
-            pass
 
     # ----- 核心：多进程识别 -----
 
@@ -170,8 +170,8 @@ class CameraFaceService(metaclass=SingletonMeta):
     ) -> dict[str, Any]:
         """将 embedding 写入 ``face_profiles``，并刷新 tracker。"""
         from deskbot_server.dao.camera_face_config_store import load_camera_face_cfg_file
-        from deskbot_server.service.face_profile_service import upsert_profile
         from deskbot_server.service.application.face_tracker import reload_all_trackers
+        from deskbot_server.service.face_profile_service import upsert_profile
 
         name = str(name or "").strip()
         if not name:

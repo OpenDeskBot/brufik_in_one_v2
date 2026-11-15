@@ -7,6 +7,7 @@ import base64
 import copy
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -23,8 +24,10 @@ from deskbot_server.controller.auth import (
     require_web_ws_pipeline_auth,
     require_web_ws_subscriber_auth,
 )
+from deskbot_server.controller.decorators import access
+from deskbot_server.controller.decorators.http import SopAPIRoute
 from deskbot_server.controller.runtime import get_runtime
-from deskbot_server.pb.scenes import _pb_scene_entry_by_name, _pb_scene_keys_sorted, _prepare_pb_scene_chain_frames
+from deskbot_server.pb.scenes import _pb_scene_entry_by_name, _pb_scene_keys_sorted
 from deskbot_server.pb.servo_pcm import attach_pb_device_hints_from_config
 from deskbot_server.pb.shapes import PB_ACTION_APPEND, PB_ACTION_DEFAULT, PB_ACTION_REPLACE, PB_LEVEL_DEBUG
 from deskbot_server.service.camera_face_service import CameraFaceService
@@ -37,16 +40,16 @@ from deskbot_server.service.config_service import (
     save_servo_cfg_file,
     servo_limits,
 )
+from deskbot_server.service.device_data_paths import resolve_json_path
+from deskbot_server.service.device_ws_service import DeviceWsService
 from deskbot_server.utils.async_helpers import run_blocking
-from deskbot_server.utils.device_data import resolve_json_path
 from deskbot_server.utils.util import _extract_device_id, _json_msg
 from deskbot_server.utils.ws_utils import WsUtils
 from deskbot_server.ws.device_pipeline import handle_device_pipeline
-from deskbot_server.service.device_ws_service import DeviceWsService
 
 logger = logging.getLogger("deskbot-server")
 
-router = APIRouter(tags=["web"])
+router = APIRouter(route_class=SopAPIRoute, tags=["web"])
 
 
 def _config_device_id(qargs: dict, body: object = None) -> str | None:
@@ -74,14 +77,9 @@ def _request_peer(request: Request) -> str:
     return "?"
 
 
-@router.get("/health")
-async def health() -> JSONResponse:
-    logger.info("[HTTP] GET /health -> 200")
-    return JSONResponse(status_code=200, content={"ok": True})
-
-
 @router.get("/api/devices")
 @require_api_auth
+@access("user")
 async def api_devices(request: Request) -> JSONResponse:
     from deskbot_server.controller.runtime import get_runtime
 
@@ -91,7 +89,7 @@ async def api_devices(request: Request) -> JSONResponse:
     if request.state.user_id:
         from deskbot_server.service.user_service import UserService
 
-        allowed = UserService().device_ids_for_user(request.state.user_id)
+        allowed = await run_blocking(UserService().device_ids_for_user, request.state.user_id)
         snap = [d for d in snap if str(d.get("device_id") or "") in allowed]
     device_ids = [d.get("device_id") for d in snap]
     logger.info("[HTTP] GET /api/devices peer=%s -> %d 台设备 device_ids=%s", peer, len(snap), device_ids)
@@ -100,173 +98,103 @@ async def api_devices(request: Request) -> JSONResponse:
 
 @router.get("/api/asr_auto_reply")
 @require_api_auth
+@access("user")
 async def api_asr_auto_reply(request: Request) -> JSONResponse:
-    from deskbot_server.dao.device_mapper import get_auto_reply, set_auto_reply
+    from deskbot_server.service.device_preferences import preferences, update_preferences
     from deskbot_server.web.session_device import get_current_device_id
 
     qargs = _request_qargs(request)
-    peer = _request_peer(request)
-    device_id = _extract_device_id(qargs) or get_current_device_id(request)
-    raw_e = qargs.get("enabled")
-    if raw_e is None:
-        # GET：无 device_id 返回默认值
-        enabled = get_auto_reply(device_id) if device_id else True
-        logger.info("[HTTP] GET /api/asr_auto_reply -> enabled=%s peer=%s", enabled, peer)
-        return JSONResponse(status_code=200, content={"ok": True, "enabled": enabled})
-    # SET：需要 device_id
-    if not device_id:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "请先选择设备"})
-    se = str(raw_e).strip().lower()
-    if se in ("1", "true", "yes", "on"):
-        set_auto_reply(device_id, True)
-    elif se in ("0", "false", "no", "off"):
-        set_auto_reply(device_id, False)
-    else:
-        return JSONResponse(
-            status_code=400, content={"ok": False, "error": "invalid enabled; use 1/0 or true/false"}
+    device_id = _extract_device_id(qargs) or await run_blocking(get_current_device_id, request)
+    denied = await run_blocking(device_access_denied, request.state.user_id, device_id)
+    if denied is not None:
+        return denied
+    raw = qargs.get("enabled")
+    try:
+        result = (
+            await run_blocking(update_preferences, device_id, asr_auto_reply=raw)
+            if raw is not None
+            else await run_blocking(preferences, device_id)
         )
-    logger.info("[HTTP] /api/asr_auto_reply set enabled=%s peer=%s", get_auto_reply(device_id), peer)
-    return JSONResponse(status_code=200, content={"ok": True, "enabled": get_auto_reply(device_id)})
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "enabled": result["asr_auto_reply"]})
 
 
 @router.get("/api/live_service")
 @require_api_auth
+@access("user")
 async def api_live_service(request: Request) -> JSONResponse:
-    from deskbot_server.dao.device_mapper import get_live_mode, set_live_mode
+    from deskbot_server.service.device_preferences import preferences, update_preferences
     from deskbot_server.web.session_device import get_current_device_id
 
     qargs = _request_qargs(request)
-    peer = _request_peer(request)
-    device_id = _extract_device_id(qargs) or get_current_device_id(request)
-    raw_e = qargs.get("enabled")
-    if raw_e is None:
-        # GET：无 device_id 返回默认值
-        enabled = get_live_mode(device_id) if device_id else True
-        logger.info("[HTTP] GET /api/live_service -> enabled=%s peer=%s", enabled, peer)
-        return JSONResponse(status_code=200, content={"ok": True, "enabled": enabled})
-    # SET：需要 device_id
-    if not device_id:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "请先选择设备"})
-    se = str(raw_e).strip().lower()
-    if se in ("1", "true", "yes", "on"):
-        set_live_mode(device_id, True)
-    elif se in ("0", "false", "no", "off"):
-        set_live_mode(device_id, False)
-    else:
-        return JSONResponse(
-            status_code=400, content={"ok": False, "error": "invalid enabled; use 1/0 or true/false"}
+    device_id = _extract_device_id(qargs) or await run_blocking(get_current_device_id, request)
+    denied = await run_blocking(device_access_denied, request.state.user_id, device_id)
+    if denied is not None:
+        return denied
+    raw = qargs.get("enabled")
+    try:
+        result = (
+            await run_blocking(update_preferences, device_id, live_service=raw)
+            if raw is not None
+            else await run_blocking(preferences, device_id)
         )
-    logger.info("[HTTP] /api/live_service set enabled=%s peer=%s", get_live_mode(device_id), peer)
-    return JSONResponse(status_code=200, content={"ok": True, "enabled": get_live_mode(device_id)})
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "enabled": result["live_service"]})
 
 
 @router.get("/api/camera_servo_auto_mode")
 @require_api_auth
+@access("user")
 async def api_camera_servo_auto_mode(request: Request) -> JSONResponse:
-    from deskbot_server.dao.device_mapper import (
-        get_camera_servo_auto_mode,
-        normalize_camera_servo_auto_mode,
-        set_camera_servo_auto_mode,
-    )
+    from deskbot_server.service.device_preferences import preferences, update_preferences
     from deskbot_server.web.session_device import get_current_device_id
 
     qargs = _request_qargs(request)
-    peer = _request_peer(request)
-    device_id = _extract_device_id(qargs) or get_current_device_id(request)
-    raw_m = qargs.get("mode")
-    if raw_m is None:
-        # GET：无 device_id 返回默认值
-        mode = get_camera_servo_auto_mode(device_id) if device_id else ""
-        logger.info("[HTTP] GET /api/camera_servo_auto_mode -> mode=%r peer=%s", mode, peer)
-        return JSONResponse(status_code=200, content={"ok": True, "mode": mode})
-    # SET：需要 device_id
-    if not device_id:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "请先选择设备"})
-    norm = normalize_camera_servo_auto_mode(raw_m)
-    if str(raw_m).strip() and not norm and str(raw_m).strip().lower() not in ("", "off", "none"):
-        return JSONResponse(
-            status_code=400,
-            content={"ok": False, "error": "invalid mode; use follow, follow_frontal, gaze or empty"},
+    device_id = _extract_device_id(qargs) or await run_blocking(get_current_device_id, request)
+    denied = await run_blocking(device_access_denied, request.state.user_id, device_id)
+    if denied is not None:
+        return denied
+    raw = qargs.get("mode")
+    try:
+        result = (
+            await run_blocking(update_preferences, device_id, camera_servo_auto_mode=raw)
+            if raw is not None
+            else await run_blocking(preferences, device_id)
         )
-    if str(raw_m).strip().lower() in ("", "off", "none"):
-        norm = set_camera_servo_auto_mode(device_id, "")
-    else:
-        norm = set_camera_servo_auto_mode(device_id, norm)
-    logger.info("[HTTP] /api/camera_servo_auto_mode set mode=%r peer=%s", norm, peer)
-    return JSONResponse(status_code=200, content={"ok": True, "mode": get_camera_servo_auto_mode(device_id)})
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "mode": result["camera_servo_auto_mode"]})
 
 
 @router.get("/api/debug_prefs")
 @require_api_auth
+@access("user")
 async def api_debug_prefs(request: Request) -> JSONResponse:
-    from deskbot_server.dao.device_mapper import (
-        get_auto_reply,
-        get_camera_servo_auto_mode,
-        get_live_mode,
-        normalize_camera_servo_auto_mode,
-        set_auto_reply,
-        set_camera_servo_auto_mode,
-        set_live_mode,
-    )
+    from deskbot_server.service.device_preferences import preferences, update_preferences
     from deskbot_server.web.session_device import get_current_device_id
 
     qargs = _request_qargs(request)
-    device_id = _extract_device_id(qargs) or get_current_device_id(request)
-    raw_ar = qargs.get("asr_auto_reply")
-    raw_live = qargs.get("live_service")
-    raw_mode = qargs.get("camera_servo_auto_mode")
-    if raw_ar is None and raw_live is None and raw_mode is None:
-        # GET：无 device_id 返回默认值
-        if device_id:
-            snap = {
-                "asr_auto_reply": get_auto_reply(device_id),
-                "live_service": get_live_mode(device_id),
-                "camera_servo_auto_mode": get_camera_servo_auto_mode(device_id),
-            }
-        else:
-            snap = {
-                "asr_auto_reply": True,
-                "live_service": True,
-                "camera_servo_auto_mode": "",
-            }
-        return JSONResponse(status_code=200, content={"ok": True, **snap})
-    # SET：需要 device_id
-    if not device_id:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "请先选择设备"})
-    if raw_ar is not None:
-        se = str(raw_ar).strip().lower()
-        if se in ("1", "true", "yes", "on"):
-            set_auto_reply(device_id, True)
-        elif se in ("0", "false", "no", "off"):
-            set_auto_reply(device_id, False)
-        else:
-            return JSONResponse(status_code=400, content={"ok": False, "error": "invalid asr_auto_reply"})
-    if raw_live is not None:
-        se = str(raw_live).strip().lower()
-        if se in ("1", "true", "yes", "on"):
-            set_live_mode(device_id, True)
-        elif se in ("0", "false", "no", "off"):
-            set_live_mode(device_id, False)
-        else:
-            return JSONResponse(status_code=400, content={"ok": False, "error": "invalid live_service"})
-    if raw_mode is not None:
-        if str(raw_mode).strip().lower() in ("", "off", "none"):
-            set_camera_servo_auto_mode(device_id, "")
-        else:
-            norm = normalize_camera_servo_auto_mode(raw_mode)
-            if not norm:
-                return JSONResponse(status_code=400, content={"ok": False, "error": "invalid camera_servo_auto_mode"})
-            set_camera_servo_auto_mode(device_id, norm)
-    snap = {
-        "asr_auto_reply": get_auto_reply(device_id),
-        "live_service": get_live_mode(device_id),
-        "camera_servo_auto_mode": get_camera_servo_auto_mode(device_id),
-    }
-    return JSONResponse(status_code=200, content={"ok": True, **snap})
+    device_id = _extract_device_id(qargs) or await run_blocking(get_current_device_id, request)
+    denied = await run_blocking(device_access_denied, request.state.user_id, device_id)
+    if denied is not None:
+        return denied
+    updates = {field: qargs.get(field) for field in ("asr_auto_reply", "live_service", "camera_servo_auto_mode")}
+    try:
+        result = (
+            await run_blocking(update_preferences, device_id, **updates)
+            if any(v is not None for v in updates.values())
+            else await run_blocking(preferences, device_id)
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, **result})
 
 
 @router.get("/api/pipeline_recent")
 @require_api_auth
+@access("user")
 async def api_pipeline_recent(request: Request) -> JSONResponse:
     from deskbot_server.controller.runtime import get_runtime
 
@@ -275,7 +203,7 @@ async def api_pipeline_recent(request: Request) -> JSONResponse:
     rt = get_runtime()
     bus = rt.bus_service
     dev = _extract_device_id(qargs)
-    denied = device_access_denied(request.state.user_id, dev)
+    denied = await run_blocking(device_access_denied, request.state.user_id, dev)
     if denied is not None:
         return denied
     try:
@@ -283,7 +211,13 @@ async def api_pipeline_recent(request: Request) -> JSONResponse:
     except ValueError:
         limit = bus.max_events
     limit = max(1, min(bus.max_events, limit))
-    items = bus.snapshot(dev, limit)
+    if dev:
+        items = bus.snapshot(dev, limit)
+    else:
+        from deskbot_server.service.user_service import UserService
+
+        allowed = await run_blocking(UserService().device_ids_for_user, request.state.user_id)
+        items = [item for item in bus.snapshot(None, bus.max_events) if item.get("device_id") in allowed][:limit]
     logger.info("[HTTP] GET /api/pipeline_recent peer=%s device_id=%s limit=%d -> %d 条", peer, dev, limit, len(items))
     return JSONResponse(
         status_code=200,
@@ -296,6 +230,7 @@ _PIPELINE_MEDIA_TYPES = {"asr": "audio/wav", "tts": "audio/wav", "face": "image/
 
 @router.get("/api/pipeline_audio")
 @require_api_auth
+@access("user")
 async def api_pipeline_audio(request: Request):
     """实时对话媒体回放：按 request_id 取内存仓库内容（asr/tts=WAV，face=最近帧 jpeg）。"""
     from deskbot_server.service.application.convo_audio_store import ConvoAudioStore
@@ -303,7 +238,7 @@ async def api_pipeline_audio(request: Request):
     qargs = _request_qargs(request)
     peer = _request_peer(request)
     dev = _extract_device_id(qargs)
-    denied = device_access_denied(request.state.user_id, dev)
+    denied = await run_blocking(device_access_denied, request.state.user_id, dev)
     if denied is not None:
         return denied
     rid = str(qargs.get("request_id") or "").strip()
@@ -322,6 +257,7 @@ async def api_pipeline_audio(request: Request):
 
 @router.get("/api/device_servo")
 @require_api_auth
+@access("user")
 async def api_device_servo(request: Request) -> JSONResponse:
     from deskbot_server.controller.runtime import get_runtime
 
@@ -331,12 +267,14 @@ async def api_device_servo(request: Request) -> JSONResponse:
     dev = (qargs.get("device_id") or "").strip()
     if not dev:
         return JSONResponse(status_code=400, content={"error": "missing device_id", "t": time.time()})
-    denied = device_access_denied(request.state.user_id, dev)
+    denied = await run_blocking(device_access_denied, request.state.user_id, dev)
     if denied is not None:
         return denied
     try:
         dyaw = float(qargs.get("dyaw") or 0.0)
         dpitch = float(qargs.get("dpitch") or 0.0)
+        if not math.isfinite(dyaw) or not math.isfinite(dpitch):
+            raise ValueError("non-finite servo angle")
     except (TypeError, ValueError):
         return JSONResponse(status_code=400, content={"error": "invalid dyaw or dpitch", "t": time.time()})
     try:
@@ -395,35 +333,19 @@ async def api_device_servo(request: Request) -> JSONResponse:
     attach_pb_device_hints_from_config(payload)
 
     with_scene = (qargs.get("with_scene") or qargs.get("append_scene") or "").strip()
-    tail_frames: list[dict] | None = None
-    scene_req: str | None = None
-    if with_scene:
-        if _pb_scene_entry_by_name({}, with_scene):
-            scene_req = uuid.uuid4().hex[:16]
-            tail_frames = _prepare_pb_scene_chain_frames(with_scene, runtime_req=scene_req)
-            if not tail_frames:
-                tail_frames = None
-                scene_req = None
-        else:
-            logger.warning(
-                "[/api/device_servo] with_scene=%r 未知或空帧，仅下发 pb_single device_id=%s", with_scene, dev
-            )
+    from deskbot_server.model.pb_seq import PbAction, PbBlock
+    from deskbot_server.service.pb_service import PbService
 
+    pb_seq = PbService().build_servo_pb_seq(
+        PbBlock.from_wire(payload), level=pb_level, action=PbAction.from_wire(act), scene_name=with_scene,
+    )
+    scene_frames = len(pb_seq.entries)-1
+    scene_req = req_id if scene_frames else None
+    if with_scene and not scene_frames:
+        logger.warning("[/api/device_servo] unknown optional scene=%r device_id=%s", with_scene, dev)
     try:
-        logger.info(
-            "[/api/device_servo] 发往 device_id=%s（/asr_chat WebSocket）文本帧: %s%s",
-            dev,
-            json.dumps(payload, ensure_ascii=False),
-            f" +scene={with_scene!r} frames={len(tail_frames)}" if tail_frames else "",
-        )
-        from deskbot_server.model.pb_seq import PbBlock, PbSeq
-
-        head_entry = PbBlock.from_wire(payload)
-        if tail_frames:
-            tail_entries = tuple(PbBlock.from_wire(f) for f in tail_frames)
-            pb_seq = PbSeq(req=payload.get("req", ""), entries=(head_entry,) + tail_entries, level=pb_level)
-        else:
-            pb_seq = PbSeq(req=payload.get("req", ""), entries=(head_entry,), level=pb_level)
+        logger.info("[/api/device_servo] enqueue device_id=%s req=%s action=%s blocks=%d",
+                    dev, req_id, act, len(pb_seq.entries))
         n = await device_ws.send(dev, pb_seq)
     except Exception:
         logger.exception("[HTTP] /api/device_servo 下发异常 device_id=%s", dev)
@@ -450,7 +372,7 @@ async def api_device_servo(request: Request) -> JSONResponse:
         content={
             "ok": True,
             "device_id": dev,
-            "type": "pb_single",
+            "type": pb_seq.entries[0].type.wire,
             "action": act,
             "level": pb_level,
             "servo": payload["servo"],
@@ -458,7 +380,7 @@ async def api_device_servo(request: Request) -> JSONResponse:
             "delivered": n,
             "with_scene": with_scene or None,
             "scene_req": scene_req,
-            "scene_frames": len(tail_frames) if tail_frames else 0,
+            "scene_frames": scene_frames,
             "t": time.time(),
         },
     )
@@ -466,6 +388,7 @@ async def api_device_servo(request: Request) -> JSONResponse:
 
 @router.get("/api/device_pb_scenes")
 @require_api_auth
+@access("user")
 async def api_device_pb_scenes(request: Request) -> JSONResponse:
     peer = _request_peer(request)
     keys = _pb_scene_keys_sorted(None)
@@ -478,6 +401,7 @@ async def api_device_pb_scenes(request: Request) -> JSONResponse:
 
 @router.get("/api/device_face_catalog")
 @require_api_auth
+@access("user")
 async def api_device_face_catalog(request: Request) -> JSONResponse:
     from deskbot_server.service.config_service import build_face_expression_catalog
 
@@ -506,6 +430,7 @@ async def api_device_face_catalog(request: Request) -> JSONResponse:
 
 @router.get("/api/device_face_play")
 @require_api_auth
+@access("user")
 async def api_device_face_play(request: Request) -> JSONResponse:
     if request.method.upper() != "GET":
         return JSONResponse(status_code=405, content={"ok": False, "error": "method not allowed", "t": time.time()})
@@ -527,7 +452,7 @@ async def api_device_face_play(request: Request) -> JSONResponse:
     name_q = (qargs.get("name") or qargs.get("scene") or "").strip()
     if not dev:
         return JSONResponse(status_code=400, content={"ok": False, "error": "missing device_id", "t": time.time()})
-    denied = device_access_denied(request.state.user_id, dev)
+    denied = await run_blocking(device_access_denied, request.state.user_id, dev)
     if denied is not None:
         return denied
     if kind_q not in ("phoneme", "emotion"):
@@ -609,6 +534,7 @@ async def api_device_face_play(request: Request) -> JSONResponse:
 
 @router.api_route("/api/device_tts", methods=["GET", "POST"])
 @require_api_auth
+@access("user")
 async def api_device_tts(request: Request) -> JSONResponse:
     from deskbot_server.controller.runtime import get_runtime
     from deskbot_server.infrastructure.ws.downlink_adapter import WsDownlinkAdapter
@@ -645,7 +571,7 @@ async def api_device_tts(request: Request) -> JSONResponse:
         pb_level = int(qargs.get("level", PB_LEVEL_DEBUG))
     if not dev:
         return JSONResponse(status_code=400, content={"ok": False, "error": "missing device_id", "t": time.time()})
-    denied = device_access_denied(request.state.user_id, dev)
+    denied = await run_blocking(device_access_denied, request.state.user_id, dev)
     if denied is not None:
         return denied
     if not text:
@@ -689,8 +615,14 @@ async def api_device_tts(request: Request) -> JSONResponse:
         downlink = WsDownlinkAdapter(ws, settings=settings, device_id=dev, bus_service=rt.bus_service)
         try:
             turn = await run_device_tts_only(
-                downlink, chat, text, request_id=req_id, device_id=dev, scenes=[scene_q] if scene_q else None,
-                device_ws=device_ws, task_level=pb_level,
+                downlink,
+                chat,
+                text,
+                request_id=req_id,
+                device_id=dev,
+                scenes=[scene_q] if scene_q else None,
+                device_ws=device_ws,
+                task_level=pb_level,
             )
             await publish_ws_chat_turn(
                 rt.bus_service,
@@ -736,6 +668,7 @@ async def api_device_tts(request: Request) -> JSONResponse:
 
 @router.api_route("/api/scene_playbook/run", methods=["GET", "POST"])
 @require_api_auth
+@access("user")
 async def api_scene_playbook_run(request: Request) -> JSONResponse:
     from deskbot_server.controller.runtime import get_runtime
     from deskbot_server.infrastructure.ws.downlink_adapter import WsDownlinkAdapter
@@ -777,7 +710,7 @@ async def api_scene_playbook_run(request: Request) -> JSONResponse:
             playbook_raw = find_playbook_by_name(rows, name_q)
     if not dev:
         return JSONResponse(status_code=400, content={"ok": False, "error": "missing device_id", "t": time.time()})
-    denied = device_access_denied(request.state.user_id, dev)
+    denied = await run_blocking(device_access_denied, request.state.user_id, dev)
     if denied is not None:
         return denied
     if not playbook_raw:
@@ -807,8 +740,9 @@ async def api_scene_playbook_run(request: Request) -> JSONResponse:
     async def _playbook_job() -> None:
         downlink = WsDownlinkAdapter(ws, settings=settings, device_id=dev, bus_service=rt.bus_service)
         try:
-            turn = await run_device_playbook(downlink, chat, playbook, request_id=req_id, device_id=dev,
-                                              device_ws=device_ws)
+            turn = await run_device_playbook(
+                downlink, chat, playbook, request_id=req_id, device_id=dev, device_ws=device_ws
+            )
             ok = (turn.status or "ok") == "ok" and not turn.error
             logger.info(
                 "[HTTP] /api/scene_playbook/run done device_id=%s req=%s name=%s ok=%s err=%s",
@@ -846,6 +780,7 @@ async def api_scene_playbook_run(request: Request) -> JSONResponse:
 
 @router.get("/api/device_pb_scene")
 @require_api_auth
+@access("user")
 async def api_device_pb_scene(request: Request) -> JSONResponse:
     from deskbot_server.controller.runtime import get_runtime
 
@@ -856,7 +791,7 @@ async def api_device_pb_scene(request: Request) -> JSONResponse:
     scene_q = (qargs.get("scene") or "").strip()
     if not dev:
         return JSONResponse(status_code=400, content={"error": "missing device_id", "t": time.time()})
-    denied = device_access_denied(request.state.user_id, dev)
+    denied = await run_blocking(device_access_denied, request.state.user_id, dev)
     if denied is not None:
         return denied
     if not scene_q:
@@ -930,11 +865,15 @@ async def api_device_pb_scene(request: Request) -> JSONResponse:
 
 @router.api_route("/api/servo_config", methods=["GET", "POST"])
 @require_api_auth
+@access("user")
 async def api_servo_config(request: Request) -> JSONResponse:
     qargs = _request_qargs(request)
     peer = _request_peer(request)
     method = request.method.upper()
     cfg_dev = _config_device_id(qargs)
+    denied = await run_blocking(device_access_denied, request.state.user_id, cfg_dev)
+    if denied is not None:
+        return denied
     cfg_path = resolve_json_path(SERVO_CFG_FILE, cfg_dev)
     if method == "GET":
         try:
@@ -975,6 +914,9 @@ async def api_servo_config(request: Request) -> JSONResponse:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return JSONResponse(status_code=400, content={"ok": False, "error": "invalid JSON body", "t": time.time()})
         cfg_dev = _config_device_id(qargs, payload if isinstance(payload, dict) else None)
+        denied = await run_blocking(device_access_denied, request.state.user_id, cfg_dev)
+        if denied is not None:
+            return denied
         cfg_path = resolve_json_path(SERVO_CFG_FILE, cfg_dev)
         try:
             cfg = normalize_servo_document(payload, require_presets=True)
@@ -1000,6 +942,7 @@ async def api_servo_config(request: Request) -> JSONResponse:
 
 @router.api_route("/api/device_pb_anim", methods=["GET", "POST"])
 @require_api_auth
+@access("user")
 async def api_device_pb_anim(request: Request) -> JSONResponse:
     from deskbot_server.controller.runtime import get_runtime
 
@@ -1064,7 +1007,7 @@ async def api_device_pb_anim(request: Request) -> JSONResponse:
 
     if not dev:
         return JSONResponse(status_code=400, content={"ok": False, "error": "missing device_id", "t": time.time()})
-    denied = device_access_denied(request.state.user_id, dev)
+    denied = await run_blocking(device_access_denied, request.state.user_id, dev)
     if denied is not None:
         return denied
     if not isinstance(anim, (dict, list)):
@@ -1121,8 +1064,9 @@ async def api_device_pb_anim(request: Request) -> JSONResponse:
         json.dumps(payload, ensure_ascii=False),
     )
     try:
-        from deskbot_server.model.pb_seq import PbBlock, PbSeq
-        pb_seq = PbSeq(req=req_id, entries=(PbBlock.from_wire(payload),), level=pb_level)
+        from deskbot_server.model.pb_seq import PbSeq
+
+        pb_seq = PbSeq.from_wire_pairs([(payload, [])], level=pb_level)
         n = await device_ws.send(dev, pb_seq)
     except Exception:
         logger.exception("[HTTP] /api/device_pb_anim 下发异常 device_id=%s", dev)
@@ -1157,6 +1101,7 @@ async def api_device_pb_anim(request: Request) -> JSONResponse:
 
 @router.get("/api/device_pb_expr_scene")
 @require_api_auth
+@access("user")
 async def api_device_pb_expr_scene(request: Request) -> JSONResponse:
     if request.method.upper() != "GET":
         return JSONResponse(status_code=405, content={"ok": False, "error": "method not allowed", "t": time.time()})
@@ -1170,7 +1115,7 @@ async def api_device_pb_expr_scene(request: Request) -> JSONResponse:
     scene_q = (qargs.get("scene") or qargs.get("name") or "").strip()
     if not dev:
         return JSONResponse(status_code=400, content={"ok": False, "error": "missing device_id", "t": time.time()})
-    denied = device_access_denied(request.state.user_id, dev)
+    denied = await run_blocking(device_access_denied, request.state.user_id, dev)
     if denied is not None:
         return denied
     if not scene_q:
@@ -1225,6 +1170,7 @@ async def api_device_pb_expr_scene(request: Request) -> JSONResponse:
 
 @router.websocket("/camera_view")
 @require_web_ws_subscriber_auth
+@access("subscriber")
 async def camera_view(websocket: WebSocket) -> None:
     st = websocket.state
     ws = st.ws
@@ -1285,6 +1231,7 @@ async def camera_view(websocket: WebSocket) -> None:
 
 @router.websocket("/device_pipeline")
 @require_web_ws_pipeline_auth
+@access("pipeline")
 async def device_pipeline(websocket: WebSocket) -> None:
     rt = get_runtime()
     st = websocket.state

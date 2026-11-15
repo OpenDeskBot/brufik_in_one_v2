@@ -243,7 +243,7 @@ def test_social_runner_full_path(monkeypatch):
 @pytest.fixture()
 def temp_env(monkeypatch, tmp_path):
     """临时 data 目录 + 临时数据库（run_chat_turn 会话链）。"""
-    from deskbot_server.utils import device_data as dd
+    from deskbot_server.service import device_data_paths as dd
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -272,7 +272,7 @@ class _FakeChat:
         self.settings = SimpleNamespace()
 
     async def llm_tool_round(self, text, **kw):
-        from deskbot_server.infrastructure.llm.openai_compat import LlmToolRoundResult
+        from deskbot_server.service.llm_service import LlmToolRoundResult
 
         return LlmToolRoundResult(content=self.llm_json, tool_calls=[], meta={})
 

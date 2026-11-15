@@ -12,10 +12,10 @@ except ImportError:
     ZoneInfo = None  # type: ignore[misc, assignment]
 
 from croniter import croniter
-from sqlalchemy import delete, func, select, update
 
-from deskbot_server.db.engine import get_session
+from deskbot_server.dao import scheduled_task_mapper as mapper
 from deskbot_server.db.models import ScheduledTask, _new_id
+from deskbot_server.db.transaction import transaction as db_transaction
 
 _STATUS_ACTIVE = "active"
 _STATUS_RUNNING = "running"
@@ -80,10 +80,7 @@ def _repair_llm_cron_parts(parts: list[str]) -> list[str]:
     return parts
 
 
-if ZoneInfo is not None:
-    CST = ZoneInfo("Asia/Shanghai")
-else:
-    CST = timezone(timedelta(hours=8))
+CST = ZoneInfo("Asia/Shanghai") if ZoneInfo is not None else timezone(timedelta(hours=8))
 
 
 def cst_now() -> datetime:
@@ -215,57 +212,22 @@ def create_scheduled_task(
     if nxt <= cst_now():
         nxt = compute_next_run(expr, base=cst_now() + timedelta(seconds=1))
 
-    session = get_session()
     sid = str(session_id or "").strip() or None
-    # Deterministic idempotency only: do not guess semantic similarity here.
-    # Repeated tool calls with the same normalized fields reuse the active task;
-    # near-duplicates remain an explicit user/data decision.
-    existing = session.scalar(
-        select(ScheduledTask).where(
-            ScheduledTask.device_id == dev,
-            ScheduledTask.description == desc,
-            ScheduledTask.cron_expr == expr,
-            ScheduledTask.task_kind == kind,
-            ScheduledTask.enabled.is_(True),
-            ScheduledTask.status.in_((_STATUS_ACTIVE, _STATUS_RUNNING)),
-        )
-    )
-    if existing is not None:
-        out = _task_to_dict(existing)
-        out["deduped"] = True
-        return out
-    row = ScheduledTask(
-        id=_new_id(),
-        device_id=dev,
-        description=desc,
-        cron_expr=expr,
-        task_kind=kind,
-        enabled=True,
-        next_run_at=nxt,
-        session_id=sid,
-        status=_STATUS_ACTIVE,
-    )
-    session.add(row)
-    try:
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    session.refresh(row)
-    out = _task_to_dict(row)
-    out["deduped"] = False
-    return out
+    with db_transaction() as tx:
+        existing = mapper.find_active(dev, desc, expr, kind, transaction=tx)
+        if existing is not None:
+            return {**_task_to_dict(existing), "deduped": True}
+        uid = _new_id()
+        mapper.create(uid, dev, desc, expr, kind, _sql_time(nxt), sid, _sql_time(cst_now()), transaction=tx)
+        return {**_task_to_dict(mapper.get(uid, transaction=tx)), "deduped": False}
 
 
 def get_scheduled_task(task_id: str, *, device_id: str | None = None) -> dict[str, Any] | None:
     tid = str(task_id or "").strip()
     if not tid:
         return None
-    session = get_session()
-    row = session.scalar(select(ScheduledTask).where(ScheduledTask.id == tid))
-    if row is None:
-        return None
-    if device_id is not None and row.device_id != str(device_id).strip():
+    row = mapper.get(tid)
+    if row is None or (device_id is not None and row.device_id != str(device_id).strip()):
         return None
     return _task_to_dict(row)
 
@@ -274,105 +236,60 @@ def list_scheduled_tasks_for_device(device_id: str, *, limit: int = 100, offset:
     dev = str(device_id or "").strip()
     if not dev:
         return []
-    session = get_session()
-    rows = session.scalars(
-        select(ScheduledTask)
-        .where(ScheduledTask.device_id == dev)
-        .order_by(ScheduledTask.next_run_at.asc())
-        .offset(max(0, int(offset)))
-        .limit(max(1, min(int(limit), 500)))
-    ).all()
-    return [_task_to_dict(r) for r in rows]
+    return [_task_to_dict(row) for row in mapper.list_for_device(dev, max(1, min(int(limit), 500)), max(0, int(offset)))]
 
 
 def count_scheduled_tasks_for_device(device_id: str) -> int:
     dev = str(device_id or "").strip()
-    if not dev:
-        return 0
-    session = get_session()
-    return int(
-        session.scalar(select(func.count()).select_from(ScheduledTask).where(ScheduledTask.device_id == dev)) or 0
-    )
+    return mapper.count_for_device(dev) if dev else 0
 
 
-def update_scheduled_task(
-    task_id: str,
-    *,
-    device_id: str | None = None,
-    description: str | None = None,
-    cron: str | None = None,
-    cron_expr: str | None = None,
-    task_kind: str | None = None,
-    enabled: bool | None = None,
-    session_id: str | None = None,
-) -> dict[str, Any] | None:
+def update_scheduled_task(task_id: str, *, device_id: str | None = None, description: str | None = None,
+                          cron: str | None = None, cron_expr: str | None = None, task_kind: str | None = None,
+                          enabled: bool | None = None, session_id: str | None = None, transaction=None):
     tid = str(task_id or "").strip()
     if not tid:
         raise ValueError("id 不能为空")
-    session = get_session()
-    row = session.scalar(select(ScheduledTask).where(ScheduledTask.id == tid))
-    if row is None:
-        return None
-    if device_id is not None and row.device_id != str(device_id).strip():
-        return None
-
-    if description is not None:
-        desc = str(description).strip()
-        if not desc:
-            raise ValueError("任务描述不能为空")
-        row.description = desc
-    expr_in = str(cron or cron_expr or "").strip()
-    if expr_in:
-        row.cron_expr = normalize_cron_expr(expr_in)
-        row.next_run_at = compute_next_run(row.cron_expr)
-    if task_kind is not None:
-        row.task_kind = validate_task_kind(task_kind)
-    if enabled is not None:
-        row.enabled = bool(enabled)
-        if row.enabled and row.status in (_STATUS_COMPLETED, _STATUS_FAILED):
-            row.status = _STATUS_ACTIVE
-    if session_id is not None:
-        row.session_id = str(session_id).strip() or None
-    if row.enabled and row.status == _STATUS_ACTIVE:
-        if _as_cst(row.next_run_at) <= cst_now():
+    with db_transaction(transaction) as tx:
+        row = mapper.get(tid, transaction=tx)
+        if row is None or (device_id is not None and row.device_id != str(device_id).strip()):
+            return None
+        if description is not None:
+            if not description.strip():
+                raise ValueError("任务描述不能为空")
+            row.description = description.strip()
+        expr = str(cron or cron_expr or "").strip()
+        if expr:
+            row.cron_expr = normalize_cron_expr(expr)
+            row.next_run_at = compute_next_run(row.cron_expr)
+        if task_kind is not None:
+            row.task_kind = validate_task_kind(task_kind)
+        if enabled is not None:
+            row.enabled = bool(enabled)
+            if row.enabled and row.status in (_STATUS_COMPLETED, _STATUS_FAILED):
+                row.status = _STATUS_ACTIVE
+        if session_id is not None:
+            row.session_id = session_id.strip() or None
+        if row.enabled and row.status == _STATUS_ACTIVE and _as_cst(row.next_run_at) <= cst_now():
             row.next_run_at = compute_next_run(row.cron_expr, base=cst_now() + timedelta(seconds=1))
-    session.commit()
-    session.refresh(row)
-    return _task_to_dict(row)
+        _save_task(row, tx)
+        return _task_to_dict(row)
 
 
-def delete_scheduled_tasks_for_device(device_id: str) -> int:
-    """删除设备全部定时任务，返回删除条数（重复调用返回 0）。"""
+def delete_scheduled_tasks_for_device(device_id: str, *, transaction=None) -> int:
     dev = str(device_id or "").strip()
-    if not dev:
-        return 0
-    session = get_session()
-    result = session.execute(delete(ScheduledTask).where(ScheduledTask.device_id == dev))
-    try:
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    return int(result.rowcount or 0)
+    return mapper.delete_for_device(dev, transaction=transaction) if dev else 0
 
 
-def delete_scheduled_task(task_id: str, *, device_id: str | None = None) -> bool:
+def delete_scheduled_task(task_id: str, *, device_id: str | None = None, transaction=None) -> bool:
     tid = str(task_id or "").strip()
     if not tid:
         return False
-    session = get_session()
-    row = session.scalar(select(ScheduledTask).where(ScheduledTask.id == tid))
-    if row is None:
-        return False
-    if device_id is not None and row.device_id != str(device_id).strip():
-        return False
-    session.delete(row)
-    try:
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    return True
+    with db_transaction(transaction) as tx:
+        row = mapper.get(tid, transaction=tx)
+        if row is None or (device_id is not None and row.device_id != str(device_id).strip()):
+            return False
+        return mapper.delete_one(tid, transaction=tx) > 0
 
 
 def execute_schedule_task_tool(
@@ -436,76 +353,58 @@ def expire_overdue_active_tasks(*, lookback_minutes: float = 5.0) -> int:
     """一次性任务超过回溯窗口未执行则标为失败；周期性任务跳到下一触发点。"""
     now = cst_now()
     cutoff = now - timedelta(minutes=max(1.0, float(lookback_minutes)))
-    session = get_session()
-    rows = session.scalars(
-        select(ScheduledTask).where(
-            ScheduledTask.enabled.is_(True), ScheduledTask.status == _STATUS_ACTIVE, ScheduledTask.next_run_at < cutoff
-        )
-    ).all()
-    n = 0
-    for row in rows:
-        if row.task_kind == _TASK_RECURRING:
-            row.next_run_at = compute_next_run(row.cron_expr, base=now)
-        else:
-            row.status = _STATUS_FAILED
-            row.enabled = False
-            row.executed_at = now
-            row.result_summary = "超过执行窗口未执行"
-        n += 1
-    if n:
-        session.commit()
-    return n
+    with db_transaction() as tx:
+        rows = mapper.pending(_sql_time(cutoff), None, 10000, transaction=tx)
+        for row in rows:
+            if row.task_kind == _TASK_RECURRING:
+                row.next_run_at = compute_next_run(row.cron_expr, base=now)
+            else:
+                row.status, row.enabled = _STATUS_FAILED, False
+                row.executed_at, row.result_summary = now, "超过执行窗口未执行"
+            _save_task(row, tx)
+        return len(rows)
 
 
 def claim_due_tasks(*, limit: int = 10, lookback_minutes: float = 5.0) -> list[dict[str, Any]]:
     now = cst_now()
     cutoff = now - timedelta(minutes=max(1.0, float(lookback_minutes)))
-    session = get_session()
-    rows = session.scalars(
-        select(ScheduledTask)
-        .where(
-            ScheduledTask.enabled.is_(True),
-            ScheduledTask.status == _STATUS_ACTIVE,
-            ScheduledTask.next_run_at <= now,
-            ScheduledTask.next_run_at >= cutoff,
-        )
-        .order_by(ScheduledTask.next_run_at.asc())
-        .limit(max(1, min(int(limit), 50)))
-    ).all()
-    claimed: list[dict[str, Any]] = []
-    for row in rows:
-        result = session.execute(
-            update(ScheduledTask)
-            .where(ScheduledTask.id == row.id, ScheduledTask.status == _STATUS_ACTIVE, ScheduledTask.enabled.is_(True))
-            .values(status=_STATUS_RUNNING)
-        )
-        if result.rowcount:
-            session.commit()
-            session.refresh(row)
-            claimed.append(_task_to_dict(row))
-        else:
-            session.rollback()
-    return claimed
+    with db_transaction() as tx:
+        rows = mapper.pending(_sql_time(now), _sql_time(cutoff), max(1, min(int(limit), 50)), transaction=tx)
+        claimed = []
+        for row in rows:
+            if mapper.claim(row.id, transaction=tx):
+                row.status = _STATUS_RUNNING
+                claimed.append(_task_to_dict(row))
+        return claimed
 
 
 def finish_scheduled_task(task_id: str, *, ok: bool, summary: str | None = None) -> None:
     tid = str(task_id or "").strip()
     if not tid:
         return
-    session = get_session()
-    row = session.scalar(select(ScheduledTask).where(ScheduledTask.id == tid))
-    if row is None:
-        return
-    now = cst_now()
-    row.executed_at = now
-    row.result_summary = (summary or "")[:4000] or None
-    if row.task_kind == _TASK_RECURRING and row.enabled:
-        row.status = _STATUS_ACTIVE
-        row.next_run_at = compute_next_run(row.cron_expr, base=now + timedelta(seconds=1))
-    else:
-        row.status = _STATUS_COMPLETED if ok else _STATUS_FAILED
-        row.enabled = False
-    session.commit()
+    with db_transaction() as tx:
+        row = mapper.get(tid, transaction=tx)
+        if row is None:
+            return
+        now = cst_now()
+        row.executed_at = now
+        row.result_summary = (summary or "")[:4000] or None
+        if row.task_kind == _TASK_RECURRING and row.enabled:
+            row.status = _STATUS_ACTIVE
+            row.next_run_at = compute_next_run(row.cron_expr, base=now + timedelta(seconds=1))
+        else:
+            row.status = _STATUS_COMPLETED if ok else _STATUS_FAILED
+            row.enabled = False
+        _save_task(row, tx)
+
+
+def _sql_time(value):
+    return _as_cst(value).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S.%f") if value is not None else None
+
+
+def _save_task(row, tx):
+    mapper.save(row.id, row.description, row.cron_expr, row.task_kind, bool(row.enabled), _sql_time(row.next_run_at),
+                row.session_id, row.status, row.result_summary, _sql_time(row.executed_at), transaction=tx)
 
 
 def _task_to_dict(row: ScheduledTask) -> dict[str, Any]:

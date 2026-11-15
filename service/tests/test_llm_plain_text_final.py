@@ -35,7 +35,7 @@ def temp_db(monkeypatch):
 
 
 def _round(content: str = "", tool_calls: list | None = None):
-    from deskbot_server.infrastructure.llm.openai_compat import LlmToolRoundResult
+    from deskbot_server.service.llm_service import LlmToolRoundResult
 
     return LlmToolRoundResult(content=content, tool_calls=list(tool_calls or []), meta={})
 
@@ -51,7 +51,7 @@ def _silent_env() -> str:
 
 def test_strip_llm_preamble_extracts_tts_from_envelope_with_cot():
     """推理前言 + JSON envelope（实测最常见的污染形态）→ 只取 tts。"""
-    from deskbot_server.infrastructure.llm.utils import strip_llm_preamble
+    from deskbot_server.service.llm_context import strip_llm_preamble
 
     raw = (
         "声纹判定为陌生人，画面识别到小明。身份不一致，不硬套小明名字。\n\n"
@@ -63,7 +63,7 @@ def test_strip_llm_preamble_extracts_tts_from_envelope_with_cot():
 
 def test_strip_llm_preamble_silent_envelope_returns_empty():
     """静默轮（tts 空）必须返回空串，绝不能拿整段 JSON 充数。"""
-    from deskbot_server.infrastructure.llm.utils import strip_llm_preamble
+    from deskbot_server.service.llm_context import strip_llm_preamble
 
     raw = '声纹判定为陌生人，保持安静。\n\n{"need_reply": false, "tts": "", "gesture": [], "expression": []}'
     assert strip_llm_preamble(raw) == ""
@@ -72,10 +72,31 @@ def test_strip_llm_preamble_silent_envelope_returns_empty():
 
 def test_strip_llm_preamble_plain_text_takes_last_line():
     """无 envelope 的纯文本：取最后一段非空行，丢掉推理前言。"""
-    from deskbot_server.infrastructure.llm.utils import strip_llm_preamble
+    from deskbot_server.service.llm_context import strip_llm_preamble
 
     assert strip_llm_preamble("这个人我不认识，还在识别中，先不打扰。\n小明，你说啥呀？") == "小明，你说啥呀？"
     assert strip_llm_preamble("小明，你周末一般都爱做点啥呀？") == "小明，你周末一般都爱做点啥呀？"
+
+
+def test_looks_like_meta_reasoning_detects_rule_notes():
+    from deskbot_server.service.llm_context import looks_like_meta_reasoning
+
+    assert looks_like_meta_reasoning(
+        "（系统已识别到小明，且已确认对方为陌生人。按规则，无需重复问候，直接回复。）"
+    )
+    assert looks_like_meta_reasoning("按规则判断：今日该时段已问候过，不重复问候。")
+    # 正常口语里偶然出现「按规则」不算内部说明（普通标记需 ≥2 个）
+    assert not looks_like_meta_reasoning("按规则来说，你今天该休息啦。")
+    assert not looks_like_meta_reasoning("小明，早上好呀！")
+
+
+def test_strip_llm_preamble_skips_meta_lines():
+    """纯文本里混入的规则说明/括号思考不能当口语，整段只有说明则返回空串。"""
+    from deskbot_server.service.llm_context import strip_llm_preamble
+
+    raw = "（系统已识别到小明，按规则不重复问候。）\n小明，今天想聊点什么？"
+    assert strip_llm_preamble(raw) == "小明，今天想聊点什么？"
+    assert strip_llm_preamble("（系统已识别到小明，按规则不重复问候。）") == ""
 
 
 # ────────────────────── 收尾轮分支 ──────────────────────
@@ -120,6 +141,69 @@ def test_plain_text_final_round_strips_cot_preamble(temp_db):
     )
     assert turn.parsed["reply"] == "小明，你再说一遍好不好？"
     chat.llm.assert_not_called()
+
+
+def test_meta_only_final_round_is_silent_without_resend(temp_db):
+    """纯文本收尾若整段是规则/思考说明：不朗读、不归档、不重发。"""
+    from deskbot_server.service.application.chat_flow import complete_llm_with_tool_loop
+
+    chat = AsyncMock()
+    chat.llm_tool_round = AsyncMock(
+        return_value=_round(
+            content="（系统已识别到小明，按规则不重复问候，本轮保持安静。）"
+        )
+    )
+
+    turn = asyncio.run(
+        complete_llm_with_tool_loop(chat, "[系统主动问候] 小明", device_id="deskbot_a", request_id="req_meta")
+    )
+
+    assert turn.parsed["reply"] == ""
+    assert turn.parsed["need_reply"] is False
+    chat.llm.assert_not_called()  # 不能因为「没解析出 JSON」再发一轮
+
+
+def test_mixed_meta_and_spoken_final_keeps_spoken_line(temp_db):
+    from deskbot_server.service.application.chat_flow import complete_llm_with_tool_loop
+
+    chat = AsyncMock()
+    chat.llm_tool_round = AsyncMock(
+        return_value=_round(
+            content="（系统已识别到小明，按规则不重复问候。）\n小明，今天想聊点什么？"
+        )
+    )
+
+    turn = asyncio.run(
+        complete_llm_with_tool_loop(chat, "你好", device_id="deskbot_a", request_id="req_mixed")
+    )
+
+    assert turn.parsed["reply"] == "小明，今天想聊点什么？"
+    assert turn.parsed["need_reply"] is True
+
+
+def test_history_drops_meta_assistant_messages():
+    from deskbot_server.service.application.chat_flow import build_history_messages
+
+    rows = [
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": "（系统已识别到小明，按规则不重复问候。）"},
+        {"role": "user", "content": "今天干嘛"},
+        {"role": "assistant", "content": "今天天气不错。"},
+    ]
+    msgs = build_history_messages(rows)
+    assert [m["content"] for m in msgs] == ["你好", "今天干嘛", "今天天气不错。"]
+
+
+def test_avoid_verbatim_echo():
+    from deskbot_server.service.application.chat_flow import _avoid_verbatim_echo
+
+    # 短 ASR 片段被模型原样复述 → 换成自然接话
+    assert _avoid_verbatim_echo("第 3。", "第3。") == "嗯，我在听，你接着说。"
+    assert _avoid_verbatim_echo("这是……？", "这是。") == "嗯，我在听，你接着说。"
+    # 问候/应答词原样回声是自然的，不替换
+    assert _avoid_verbatim_echo("你好。", "你好。") == "你好。"
+    # 正常回答不是复述，保持原样
+    assert _avoid_verbatim_echo("今天天气不错。", "今天天气怎么样") == "今天天气不错。"
 
 
 def test_broken_json_final_round_still_resends(temp_db):

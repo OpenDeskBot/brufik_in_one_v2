@@ -11,15 +11,15 @@ __all__ = ["DoubaoPhonemeTtsAdapter", "FunAsrAdapter", "OpenAiLlmAdapter", "WsDo
 
 def __getattr__(name: str) -> Any:
     if name == "DoubaoPhonemeTtsAdapter":
-        from deskbot_server.infrastructure.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
+        from deskbot_server.client.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
 
         return DoubaoPhonemeTtsAdapter
     if name == "FunAsrAdapter":
-        from deskbot_server.infrastructure.asr.funasr import FunAsrAdapter
+        from deskbot_server.client.asr.funasr import FunAsrAdapter
 
         return FunAsrAdapter
     if name == "OpenAiLlmAdapter":
-        from deskbot_server.infrastructure.llm.openai_compat import OpenAiLlmAdapter
+        from deskbot_server.service.llm_service import OpenAiLlmAdapter
 
         return OpenAiLlmAdapter
     if name == "WsDownlinkAdapter":
@@ -27,7 +27,7 @@ def __getattr__(name: str) -> Any:
 
         return WsDownlinkAdapter
     if name == "build_tts_adapter":
-        from deskbot_server.infrastructure.tts.factory import build_tts_adapter
+        from deskbot_server.client.tts.factory import build_tts_adapter
 
         return build_tts_adapter
     raise AttributeError(name)

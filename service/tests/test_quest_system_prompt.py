@@ -77,7 +77,7 @@ def _setup_bound(env, device_id: str = "dev1", quest_id: str | None = "demo"):
 
 
 def test_appendix_unbound_empty(env):
-    from deskbot_server.infrastructure.llm.utils import llm_quest_tasks_prompt_appendix
+    from deskbot_server.service.llm_context import llm_quest_tasks_prompt_appendix
 
     assert llm_quest_tasks_prompt_appendix(device_id=None) == ""
     _bind_device("dev1", None)
@@ -90,7 +90,7 @@ def test_appendix_unbound_empty(env):
 
 
 def test_tasks_appendix_contains_running(env):
-    from deskbot_server.infrastructure.llm.utils import llm_quest_tasks_prompt_appendix
+    from deskbot_server.service.llm_context import llm_quest_tasks_prompt_appendix
 
     _setup_bound(env)
     ax = llm_quest_tasks_prompt_appendix(device_id="dev1")
@@ -103,7 +103,7 @@ def test_tasks_appendix_contains_running(env):
 
 
 def test_build_llm_system_prompt_injects_quest_sections(env):
-    from deskbot_server.infrastructure.llm.utils import build_llm_system_prompt
+    from deskbot_server.service.llm_context import build_llm_system_prompt
 
     _setup_bound(env)
     sp = build_llm_system_prompt("你是助手", device_id="dev1")
@@ -122,7 +122,7 @@ def test_build_llm_system_prompt_injects_quest_sections(env):
 
 def test_tasks_appendix_lists_at_most_three(env, monkeypatch):
     """进行中任务超过 3 个时只列前 3（once→long_term→daily，服务端已排序）。"""
-    from deskbot_server.infrastructure.llm.utils import llm_quest_tasks_prompt_appendix
+    from deskbot_server.service.llm_context import llm_quest_tasks_prompt_appendix
     from deskbot_server.service import quest_service
 
     def _fake_tasks(self, device_id):
@@ -141,7 +141,7 @@ def test_tasks_appendix_lists_at_most_three(env, monkeypatch):
 def test_default_binding_applies_when_unset(env):
     """quest_id 为空且默认剧本存在 → 惰性绑定 xiaoy 并注入。"""
     from deskbot_server.dao import device_mapper
-    from deskbot_server.infrastructure.llm.utils import llm_quest_tasks_prompt_appendix
+    from deskbot_server.service.llm_context import llm_quest_tasks_prompt_appendix
     from deskbot_server.service.quest_service import QuestService
 
     svc = QuestService()
@@ -157,7 +157,7 @@ def test_default_binding_applies_when_unset(env):
 def test_default_binding_skipped_when_playbook_missing(env):
     """默认剧本文件不存在 → 不写脏绑定、不注入。"""
     from deskbot_server.dao import device_mapper
-    from deskbot_server.infrastructure.llm.utils import llm_quest_tasks_prompt_appendix
+    from deskbot_server.service.llm_context import llm_quest_tasks_prompt_appendix
 
     _bind_device("dev_missing", None)
     assert llm_quest_tasks_prompt_appendix(device_id="dev_missing") == ""

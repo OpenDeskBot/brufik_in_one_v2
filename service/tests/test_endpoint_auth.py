@@ -198,43 +198,13 @@ def test_dev_menu_apis_require_developer(temp_db):
     assert resp.get_json()["ok"] is True
 
 
-def test_services_api_requires_developer(temp_db, monkeypatch):
-    """独立服务管理：页面与全部 API 仅开发者可访问。"""
-    from tests._auth_compat import create_user, set_user_developer
+def test_local_service_management_is_removed(temp_db):
     from deskbot_server.web.app import create_app
 
-    class FakeService:
-        def to_dict(self):
-            return {"name": "fake-svc", "state": "running"}
-
-    class FakeManager:
-        def status_all(self):
-            return [FakeService()]
-
-    import deskbot_server.web.blueprints.services_bp as services_bp
-
-    monkeypatch.setattr(services_bp, "_manager", lambda: FakeManager())
-
-    admin = create_user("svc-admin@example.com", "password1234")
-    set_user_developer(admin.id, is_developer=True)
-    create_user("svc-bob@example.com", "password1234")
-
     app = create_app()
+    paths = set(app.openapi()["paths"])
+    assert not any(path == "/services" or path.startswith("/api/services")
+                   or path == "/api/pages/services" for path in paths)
     client = app.test_client()
-
-    # 未登录 → 401
-    assert client.get("/api/services").status_code == 401
-
-    # 普通用户：列表 API 403，页面被弹走
-    client.post("/login", data={"email": "svc-bob@example.com", "password": "password1234"})
-    assert client.get("/api/services").status_code == 403
-    page = client.get("/services", follow_redirects=False)
-    assert page.status_code in (302, 307)
-
-    # 开发者：列表 API 与页面均可访问
-    client.post("/logout")
-    client.post("/login", data={"email": "svc-admin@example.com", "password": "password1234"})
-    resp = client.get("/api/services")
-    assert resp.status_code == 200
-    assert resp.get_json()["services"][0]["name"] == "fake-svc"
-    assert client.get("/services").status_code == 200
+    assert client.get("/services").status_code == 404
+    assert client.post("/api/services/funasr/start").status_code == 404

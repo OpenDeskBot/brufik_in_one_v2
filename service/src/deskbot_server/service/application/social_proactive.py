@@ -2,10 +2,10 @@
 
 由 LiveService（on_face_tick 冷场判定，与 quest 共用节流通道）调度调用。识别到
 已知用户时 system prompt 会自动注入按人档案/今日记录与「你的当前任务」规则
-（infrastructure/llm/utils.py 的 llm_user_social_context / llm_social_active_tasks
+（client/llm/utils.py 的 llm_user_social_context / llm_social_active_tasks
 附录），因此这里只需像 QuestProactiveRunner 一样发起一轮 run_chat_turn：LLM
 依据规则自行判断此刻是否该主动问候/关心——该开口就先调 update_daily_task
-记账再口播；无话可说时输出 need_reply=false 静默退出。
+记账再口播；无话可说时不输出任何文字，静默退出。
 
 user_text 以 ``_SOCIAL_PROACTIVE_PREFIX``（[系统主动问候]）开头：chat_flow 对社交
 前缀轮**不**强制开口（区别于定时/剧情轮），并把 meta 汇报类文案兜底为静默，
@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from deskbot_server.infrastructure.ws.downlink_adapter import WsDownlinkAdapter, WsPipelineEventsAdapter
 from deskbot_server.service.application.chat_flow import (
@@ -134,11 +134,13 @@ def _build_user_text(names: list[str]) -> str:
         f"{_SOCIAL_PROACTIVE_PREFIX} 检测到认识的人（{name_text}）仍在面前，最近一段时间"
         "没有交谈。这只是冷场，不代表对方离开后回来。请依据 system 提示中的「你的当前任务」规则判断：\n"
         "- 属于该主动表达的情形（该时段首次问候 / 饭点关心吃饭）："
-        "先调用 update_daily_task 记账，再正常开口（need_reply=true，tts 写直接说给"
-        "对方听的口语，称呼其名），不要复述规则本身。\n"
+        "先调用 update_daily_task 记账，再正常开口（直接输出说给对方听的口语，称呼其名），"
+        "不要复述规则本身。\n"
         "- 不属于任何需要主动表达的情形（如今天该时段已经问候过、刚聊过不久且不在饭点）："
-        "本轮不开口 —— need_reply=false、tts 留空，只输出 JSON。\n"
+        "本轮不开口 —— 不要输出任何文字（留空）。\n"
         "- 禁止把这次冷场描述成重逢，禁止说「又见到你」「又见面」「回来啦」「好久不见」或表达想念；"
         "当前输入没有提供对方真实离开后重新出现的事实，不要自行推断。\n"
-        "禁止输出「已问候/已汇报」类的汇报语。"
+        "禁止输出「已问候/已汇报」类的汇报语。\n"
+        "只输出要对对方说的口语；若判断不开口，输出完全空白。"
+        "禁止复述上述规则、判断过程，禁止输出括号说明或「系统已识别/按规则/不重复问候」这类文字。"
     )

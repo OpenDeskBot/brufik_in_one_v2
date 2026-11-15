@@ -7,8 +7,9 @@ ASR provider 按设备解析（device 表 asr_provider，默认 funasr），每�
 
 from __future__ import annotations
 
-from deskbot_server.infrastructure.asr.resolve import resolve_asr_adapter
+from deskbot_server.model.errors import ServiceNotBoundError
 from deskbot_server.ports.asr import AsrPort
+from deskbot_server.service.asr_routing import resolve_asr_adapter
 from deskbot_server.utils.singleton import SingletonMeta
 
 
@@ -22,18 +23,21 @@ class AsrService(metaclass=SingletonMeta):
     @property
     def asr(self) -> AsrPort:
         if self._asr is None:
-            raise RuntimeError("AsrService 尚未 bind，请先在 bootstrap 中装配")
+            raise ServiceNotBoundError("AsrService 尚未 bind，请先在 bootstrap 中装配")
         return self._asr
 
     def _resolve(self, device_id: str | None) -> AsrPort:
         """优先按设备动态解析；解析失败（如 DB 未就绪）回落到 bind 的兜底。"""
-        try:
-            return resolve_asr_adapter(device_id)
-        except Exception:
-            return self.asr
+        if device_id is None and self._asr is not None:
+            return self._asr
+        return resolve_asr_adapter(device_id)
 
     async def transcribe(self, pcm_bytes: bytes, sample_rate: int, *, device_id: str | None = None) -> str:
         return await self._resolve(device_id).transcribe(pcm_bytes, sample_rate)
+
+    async def transcribe_preview(self, pcm_bytes: bytes, sample_rate: int, *, device_id: str | None = None) -> str:
+        preview = getattr(self._resolve(device_id), "transcribe_preview", None)
+        return await preview(pcm_bytes, sample_rate) if preview is not None else ""
 
     def is_valid_text(self, text: str, *, device_id: str | None = None) -> bool:
         return self._resolve(device_id).is_valid_text(text)

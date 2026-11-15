@@ -1,0 +1,51 @@
+# llm-unee 外部服务契约：本地 unee-0.8B（Q4_K_M GGUF）决策 + OpenAI 兼容聊天
+# 设计：unee 0.3.0 官方 Python 包（独立 venv）作为进程包装器，内部拉起 llama.cpp
+#       llama-server（官方 release 二进制，macOS arm64 Metal / Linux CPU 构建）；
+#       对外同时提供 /v1/systemone（noul/choice/score 决策）与 /v1/chat/completions。
+# 上下文：--ctx 是总上下文，按 --slots 均分；主服务本地 LLM 预算 7000 token，
+#       因此 run.sh 用 slots=2 / ctx=16384（每 slot 8192），不要改成 4/16384（4096/槽）。
+# 注意：unee GGUF 为 qwen35 架构（Gated DeltaNet），需 llama.cpp ≥ b10360，
+#       本服务固定 b10733（与 llm-qwen 一致）；模型参考：
+#       https://huggingface.co/uneeverse/unee-0.8b-GGUF
+name: llm-unee
+version: "0.3.0"
+type: llm
+port: 9107
+description: 本地 unee-0.8B（Q4_K_M · 505MB · 决策 /v1/systemone + OpenAI 兼容 /v1/chat/completions）
+install:
+  # install/uninstall 命令在 service 根目录执行，须用相对根目录的路径
+  - bash externals/llm-unee/install.sh
+uninstall:
+  # 删除独立 venv、二进制、模型与 llama-server 日志（数据目录由管理器自动清理）
+  - rm -rf externals/llm-unee/.venv externals/llm-unee/bin externals/llm-unee/models externals/llm-unee/logs
+start:
+  # run.sh 负责启动 unee serve 并做进程组级回收：unee 0.3.0 自己不会可靠杀掉内部
+  # llama-server（实测会遗留 PPID=1 的孤儿），manager 又只对直接子进程发信号，
+  # 因此必须用 wrapper 把 unee + llama-server 放进同一独立进程组，停止时整组回收。
+  # 模型/端口/slots/ctx 等实际参数见 run.sh 顶部（可用 UNEE_* 环境变量覆盖）。
+  command:
+    - bash
+    - run.sh
+  workdir: ./externals/llm-unee
+  env: {}
+healthcheck:
+  type: http
+  url: http://127.0.0.1:9107/health
+  interval_s: 5
+  startup_grace_s: 180 # 模型加载 + Metal shader 编译；超时后进程仍活只标记 unhealthy 不杀
+  timeout_s: 3
+  max_failures: 3
+auto_start: false
+test:
+  # unee 有真实 OpenAI 端点，但仍无 llm 契约的 /chat；覆盖到 /v1/chat/completions
+  path: /v1/chat/completions
+  method: POST
+  json:
+    model: unee
+    messages:
+      - role: user
+        content: 你好，请用一句话介绍你自己。
+    max_tokens: 32
+    temperature: 0.7
+  expect:
+    - choices

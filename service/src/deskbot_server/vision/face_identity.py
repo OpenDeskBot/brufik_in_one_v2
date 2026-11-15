@@ -15,7 +15,6 @@ v1.2.0 起主服务不再做人脸推理（只调外部 insightface-engine 的 /
 from __future__ import annotations
 
 import math
-from typing import Any
 
 from deskbot_server.vision.geometry import compute_eye_iris_offsets, kps5_from_landmarks
 
@@ -89,7 +88,7 @@ def descriptor_cosine_similarity(a: list[float], b: list[float]) -> float:
     """两特征向量余弦相似度 [-1, 1]；输入须等长。"""
     if not a or not b or len(a) != len(b):
         return -1.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     return max(-1.0, min(1.0, dot))
 
 
@@ -98,7 +97,7 @@ def ema_update_descriptor(prev: list[float] | None, sample: list[float], *, alph
     if prev is None or len(prev) != len(sample):
         return list(sample)
     a = max(0.05, min(0.5, float(alpha)))
-    merged = [(1.0 - a) * p + a * s for p, s in zip(prev, sample)]
+    merged = [(1.0 - a) * p + a * s for p, s in zip(prev, sample, strict=False)]
     norm = math.sqrt(sum(x * x for x in merged))
     if norm < 1e-6:
         return list(sample)

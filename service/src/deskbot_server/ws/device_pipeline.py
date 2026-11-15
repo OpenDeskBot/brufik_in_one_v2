@@ -8,13 +8,7 @@ from typing import TYPE_CHECKING
 
 from websockets.exceptions import ConnectionClosed
 
-from deskbot_server.utils.util import (
-    _extract_device_id,
-    _json_msg,
-    _parse_query,
-    _split_path,
-    _ws_request_path,
-)
+from deskbot_server.utils.util import _extract_device_id, _json_msg, _parse_query, _split_path, _ws_request_path
 from deskbot_server.utils.ws_utils import WsUtils
 
 if TYPE_CHECKING:

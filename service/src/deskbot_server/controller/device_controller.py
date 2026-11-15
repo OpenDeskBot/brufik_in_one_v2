@@ -5,10 +5,12 @@ from __future__ import annotations
 from fastapi import APIRouter, WebSocket
 
 from deskbot_server.controller.auth import require_device_ws
+from deskbot_server.controller.decorators import access
+from deskbot_server.controller.decorators.http import SopAPIRoute
 from deskbot_server.service.device_ws_service import DeviceWsService
 from deskbot_server.utils.ws_utils import WsUtils
 
-router = APIRouter(tags=["device"])
+router = APIRouter(route_class=SopAPIRoute, tags=["device"])
 
 ASR_CHAT_PATH = "/asr_chat"
 CAMERA_UPLINK_PATH = "/camera_uplink"
@@ -16,6 +18,7 @@ CAMERA_UPLINK_PATH = "/camera_uplink"
 
 @router.websocket("/asr_chat")
 @require_device_ws
+@access('device')
 async def asr_chat(websocket: WebSocket) -> None:
     st = websocket.state
     ws = st.ws
@@ -31,6 +34,7 @@ async def asr_chat(websocket: WebSocket) -> None:
 
 @router.websocket(CAMERA_UPLINK_PATH)
 @require_device_ws
+@access('device')
 async def camera_uplink(websocket: WebSocket) -> None:
     st = websocket.state
     ws = st.ws

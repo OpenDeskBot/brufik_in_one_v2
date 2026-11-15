@@ -172,10 +172,7 @@ def compute_frontal_score(landmarks: list) -> float:
     mouth_dx = mrx - mlx
     mouth_dy = mry - mly
     mouth_len = math.hypot(mouth_dx, mouth_dy)
-    if mouth_len < 1e-3:
-        s_mouth_level = 0.0
-    else:
-        s_mouth_level = max(0.0, 1.0 - abs(mouth_dy) / mouth_len * 3.0)
+    s_mouth_level = 0.0 if mouth_len < 0.001 else max(0.0, 1.0 - abs(mouth_dy) / mouth_len * 3.0)
 
     # 5) 纵向比例：鼻尖到眼中点的距离与眼距比例，理想 ~0.55
     eye_cy = (ley + rey) / 2.0
@@ -339,10 +336,7 @@ def compute_face_pitch_deg(landmarks: list) -> float | None:
     t = ((nx - me_x) * vx + (ny - me_y) * vy) / v_sq
     REF = 0.45
     delta = REF - t
-    if delta >= 0:
-        norm = delta / REF
-    else:
-        norm = delta / (1.0 - REF)
+    norm = delta / REF if delta >= 0 else delta / (1.0 - REF)
     norm = max(-1.0, min(1.0, norm))
     pitch_deg = math.degrees(math.asin(norm))
     # 摄像头若做了**垂直**镜像（极少见），把这里改成 -1
@@ -549,9 +543,7 @@ def compute_is_looking_at_camera(
         return None
     if gaze_yaw_deg is not None and abs(gaze_yaw_deg) >= yaw_threshold_deg:
         return False
-    if gaze_pitch_deg is not None and abs(gaze_pitch_deg) >= pitch_threshold_deg:
-        return False
-    return True
+    return not (gaze_pitch_deg is not None and abs(gaze_pitch_deg) >= pitch_threshold_deg)
 
 
 def estimate_camera_matrix_from_fov(width: int, height: int, horizontal_fov_deg: float) -> list[list[float]]:

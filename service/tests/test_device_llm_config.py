@@ -70,7 +70,7 @@ def test_mapper_provider_param_roundtrip(temp_db):
 
 def test_resolve_llm_config_context_window(temp_db):
     from deskbot_server.dao.device_mapper import update_llm_param
-    from deskbot_server.infrastructure.llm.runtime import resolve_llm_config
+    from deskbot_server.service.llm_routing import resolve_llm_config
 
     # 前半段用显式 cfg 隔离真实 config.yaml，只验证「设备覆盖 / 非法回落」语义
     no_win = {"llm": {"protocol": "openai", "model_name": "m"}}
@@ -121,14 +121,8 @@ def test_history_token_budget_follows_context_window(temp_db):
 def test_resolve_llm_config_device_provider_branches(temp_db, monkeypatch):
     """设备级真源：llm_provider 白名单生效，llm_param["ark"] 承载云端密钥/模型，非法值回落系统默认。"""
     from deskbot_server.dao.device_mapper import update_llm_param, update_llm_provider
-    from deskbot_server.infrastructure.llm.runtime import (
-        ARK_OPENAI_BASE_URL,
-        QWEN_LLM_BASE_URL,
-        QWEN_LLM_MODEL,
-        SILICONFLOW_BASE_URL,
-        SILICONFLOW_DEFAULT_MODEL,
-        resolve_llm_config,
-    )
+    from deskbot_server.service.llm_routing import resolve_llm_config
+    from deskbot_server.client.llm.runtime import ARK_OPENAI_BASE_URL, QWEN_LLM_BASE_URL, QWEN_LLM_MODEL, SILICONFLOW_BASE_URL, SILICONFLOW_DEFAULT_MODEL
 
     _bind_device()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import glob
 import logging
 import os
@@ -208,11 +209,8 @@ class _SerialBridge:
             self._listeners.append(cb)
 
     def remove_listener(self, cb: Callable[[bytes], None]) -> None:
-        with self._lock:
-            try:
-                self._listeners.remove(cb)
-            except ValueError:
-                pass
+        with self._lock, contextlib.suppress(ValueError):
+            self._listeners.remove(cb)
 
     def _emit(self, data: bytes) -> None:
         with self._lock:
@@ -262,10 +260,8 @@ class _SerialBridge:
             self._reader.join(timeout=1.5)
         self._reader = None
         if self._ser:
-            try:
+            with contextlib.suppress(Exception):
                 self._ser.close()
-            except Exception:
-                pass
         self._ser = None
         self._port = None
 

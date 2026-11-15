@@ -1,7 +1,7 @@
 """设备「清除数据」：路径护栏 / 全量删库 / 保留绑定与设置 / 重新播种 / 幂等。
 
 注意：``clear_device_data`` 只 import ``device_data`` 里的**函数**（不 import ``DATA_DIR``），
-所以 ``monkeypatch.setattr("deskbot_server.utils.device_data.DATA_DIR", ...)`` 必须生效——
+所以 ``monkeypatch.setattr("deskbot_server.service.device_data_paths.DATA_DIR", ...)`` 必须生效——
 否则这些用例会 rmtree 真实 ``service/data/``。
 """
 
@@ -44,7 +44,7 @@ def data_root(tmp_path, monkeypatch):
     (root / "quest" / "xiaoy.json").write_text('{"playbook": true}', encoding="utf-8")
     (root / OTHER).mkdir()
     (root / OTHER / "user_info_小明.txt").write_text("别人的数据", encoding="utf-8")
-    monkeypatch.setattr("deskbot_server.utils.device_data.DATA_DIR", root)
+    monkeypatch.setattr("deskbot_server.service.device_data_paths.DATA_DIR", root)
     return root
 
 
@@ -177,14 +177,14 @@ def _count(device_id: str) -> dict[str, int]:
 
 @pytest.mark.parametrize("bad", ["..", ".", "...", "", "global", "quest", "services", "test", "device", "a/b"])
 def test_safe_device_data_dir_rejects_unsafe_ids(bad, data_root):
-    from deskbot_server.utils.device_data import safe_device_data_dir
+    from deskbot_server.service.device_data_paths import safe_device_data_dir
 
     with pytest.raises(ValueError):
         safe_device_data_dir(bad)
 
 
 def test_safe_device_data_dir_accepts_real_id(data_root):
-    from deskbot_server.utils.device_data import safe_device_data_dir
+    from deskbot_server.service.device_data_paths import safe_device_data_dir
 
     assert safe_device_data_dir(DID) == data_root / DID
 

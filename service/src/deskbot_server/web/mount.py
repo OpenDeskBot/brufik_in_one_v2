@@ -3,20 +3,15 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from deskbot_server.db import init_database, remove_session
+from deskbot_server.db import init_database
 from deskbot_server.utils.env import load_dotenv
-from deskbot_server.web.deps import load_session_user
-from deskbot_server.web.urls import register_endpoint, url_for
-from deskbot_server.web.view_helpers import set_templates
+from deskbot_server.web.urls import register_endpoint
 
 logger = logging.getLogger("deskbot-server")
 
@@ -33,11 +28,10 @@ def _register_endpoints_from_modules() -> None:
         flash_bp,
         quest_bp,
         robot_settings_bp,
-        services_bp,
         site,
     )
 
-    for mod in (site, auth_bp, app_bp, app2c_bp, debug_bp, flash_bp, services_bp, quest_bp, robot_settings_bp):
+    for mod in (site, auth_bp, app_bp, app2c_bp, debug_bp, flash_bp, quest_bp, robot_settings_bp):
         for name, path in getattr(mod, "ENDPOINTS", {}).items():
             register_endpoint(name, path)
 
@@ -82,13 +76,9 @@ def mount_web(app: FastAPI) -> None:
 
     secret = resolve_web_secret_key()
 
-    templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
-    templates.env.globals["url_for"] = url_for
-    set_templates(templates)
+    from deskbot_server.web.pages import PUBLIC_DIR
 
-    static_dir = _WEB_DIR / "static"
-    if static_dir.is_dir():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    app.mount("/static", StaticFiles(directory=str(PUBLIC_DIR / "shared")), name="static")
 
     _register_endpoints_from_modules()
 
@@ -99,77 +89,23 @@ def mount_web(app: FastAPI) -> None:
     from deskbot_server.web.blueprints.flash_bp import router as flash_router
     from deskbot_server.web.blueprints.quest_bp import router as quest_router
     from deskbot_server.web.blueprints.robot_settings_bp import router as robot_settings_router
-    from deskbot_server.web.blueprints.services_bp import router as services_router
     from deskbot_server.web.blueprints.site import router as site_router
 
     @app.middleware("http")
-    async def web_auth_middleware(request: Request, call_next):
+    async def prepare_legacy_body(request: Request, call_next):
         await _prepare_body(request)
-        try:
-            path = request.url.path or ""
-            if request.method != "OPTIONS":
-                public = path == "/" or path.startswith(_PUBLIC_PREFIXES) or path.startswith("/static/")
-                web_protected = (
-                    path.startswith("/app/")
-                    or path.startswith("/debug/")
-                    or path.startswith("/dev/")
-                    or path.startswith("/home")
-                    or path.startswith("/expr")
-                    or path.startswith("/lab")
-                    or path.startswith("/my/")
-                    or path.startswith("/advanced")
-                    or path.startswith("/flash")
-                    or path.startswith("/services")
-                    or path.startswith("/quest")
-                    or path.startswith("/robot-settings")
-                    or path.startswith("/api/robot-settings")
-                    or path.startswith("/api/quest")
-                    or path.startswith("/api/advanced")
-                    or path.startswith("/api/emotion_expr_map")
-                    or path.startswith("/api/face_expr_scenes")
-                    or path.startswith("/api/face_mouth")
-                    or path.startswith("/api/scene_playbook")
-                    or path.startswith("/api/face_design")
-                    or path.startswith("/api/flash/")
-                    or path.startswith("/api/services")
-                    or path.startswith("/api/debug/")
-                    or path.startswith("/api/llm/")
-                    or path.startswith("/api/tts/")
-                    or path.startswith("/api/doubao_tts/")
-                    or path.startswith("/api/camera_face_config")
-                    or path.startswith("/api/face_profiles")
-                    or path.startswith("/api/user_memory")
-                    or path.startswith("/api/scene_playbooks")
-                )
+        response = await call_next(request)
+        if request.url.path in {"/static/views.json", "/static/page-loader.js", "/static/page-renderer.js"}:
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
-                if web_protected and not public:
-                    user = load_session_user(request)
-                    if user is None:
-                        if path.startswith("/api/") or "application/json" in (request.headers.get("accept") or ""):
-                            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-                        return RedirectResponse(url=f"/login?next={path}", status_code=302)
+    from deskbot_server.controller.registry import register_routers
+    from deskbot_server.web.pages import browser_router
 
-            response = await call_next(request)
-            if path.startswith("/debug/"):
-                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-                response.headers["Pragma"] = "no-cache"
-                response.headers["Expires"] = "0"
-            return response
-        finally:
-            try:
-                remove_session()
-            except Exception:
-                pass
-
-    app.include_router(site_router)
-    app.include_router(auth_router)
-    app.include_router(app_router)
-    app.include_router(app2c_router)
-    app.include_router(flash_router)
-    app.include_router(services_router)
-    app.include_router(quest_router)
-    app.include_router(robot_settings_router)
-    app.include_router(debug_router)
+    register_routers(app, [browser_router(router) for router in (
+        site_router, auth_router, app_router, app2c_router, flash_router,
+        quest_router, robot_settings_router, debug_router,
+    )])
 
     app.add_middleware(
         SessionMiddleware,

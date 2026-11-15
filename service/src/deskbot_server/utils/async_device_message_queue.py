@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
 from deskbot_server.model.pb_seq import PbBlock, PbSeq, PbType
 
@@ -30,9 +32,9 @@ class DeviceContext:
     queue: list[PbSeq] = field(default_factory=list)
     ack_queue: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
     last_activity: float = field(default_factory=time.time)
-    task: Optional[asyncio.Task] = None
+    task: asyncio.Task | None = None
     event: asyncio.Event = field(default_factory=asyncio.Event)
-    sending_seq: Optional[PbSeq] = None
+    sending_seq: PbSeq | None = None
     stopped: bool = False
 
 
@@ -61,8 +63,8 @@ class AsyncDeviceMessageQueue:
         self.idle_timeout = idle_timeout
         self.devices: dict[str, DeviceContext] = {}
         self._lock = asyncio.Lock()
-        self._send_callback: Optional[Callable[[str, PbBlock], Awaitable[bool]]] = None
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self._send_callback: Callable[[str, PbBlock], Awaitable[bool]] | None = None
+        self._cleanup_task: asyncio.Task | None = None
         self._running = False
 
     # -- 配置 / 生命周期 -------------------------------------------------------
@@ -83,12 +85,10 @@ class AsyncDeviceMessageQueue:
         self._running = False
         if self._cleanup_task:
             self._cleanup_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._cleanup_task
-            except asyncio.CancelledError:
-                pass
         async with self._lock:
-            for device_id, ctx in list(self.devices.items()):
+            for _device_id, ctx in list(self.devices.items()):
                 await self._stop_device(ctx)
             self.devices.clear()
         logger.info("[AsyncDeviceMessageQueue] Stopped")
@@ -122,10 +122,8 @@ class AsyncDeviceMessageQueue:
         ctx.stopped = True
         if ctx.task and not ctx.task.done():
             ctx.task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await ctx.task
-            except asyncio.CancelledError:
-                pass
         # 放入哨兵唤醒阻塞的 _wait_ack
         await ctx.ack_queue.put({})
         ctx.event.set()
@@ -240,7 +238,6 @@ class AsyncDeviceMessageQueue:
                     i = 0
                     while i < n and not ctx.stopped and self._running:
                         batch_end = min(i + self.window_size, n)
-                        is_last = batch_end >= n
 
                         # 发送本批次
                         t_batch = time.monotonic()

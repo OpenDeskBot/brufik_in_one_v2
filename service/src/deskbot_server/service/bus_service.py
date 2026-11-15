@@ -10,7 +10,8 @@ import json
 import logging
 import time
 from collections import defaultdict, deque
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from deskbot_server.constants import DEVICE_PIPELINE_MAX_EVENTS
 from deskbot_server.utils.singleton import SingletonMeta
@@ -218,10 +219,7 @@ class BusService(metaclass=SingletonMeta):
 
     def snapshot(self, device_id: str | None = None, limit: int = 100) -> list:
         """返回滚动窗口中的最近事件。"""
-        if device_id:
-            items = [e for e in self._events if e.get("device_id") == device_id]
-        else:
-            items = list(self._events)
+        items = [e for e in self._events if e.get("device_id") == device_id] if device_id else list(self._events)
         if limit > 0:
             items = items[:limit]
         return items

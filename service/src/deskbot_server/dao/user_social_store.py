@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from deskbot_server.utils.device_data import device_data_dir
+from deskbot_server.service.device_data_paths import device_data_dir
 
 try:
     from zoneinfo import ZoneInfo
@@ -167,8 +167,12 @@ def append_quest_daily_line(device_id: str, name: str, task_id: str, reason: str
             lines = []
         if any(marker in ln for ln in lines):
             return {
-                "ok": True, "written": False, "deduped": True, "created": False,
-                "line_count": len(lines), "path": str(path),
+                "ok": True,
+                "written": False,
+                "deduped": True,
+                "created": False,
+                "line_count": len(lines),
+                "path": str(path),
             }
     else:
         lines = []
@@ -189,10 +193,7 @@ def append_quest_progress_line(device_id: str, name: str, task_id: str, reason: 
         raise ValueError("reason 为空")
     vname = validate_user_name(name)
     line = f"{_ts_str()} [{task_id}] {reason_txt}"
-    out = _append_line(
-        _info_path(device_id, vname), line,
-        max_lines=USER_INFO_MAX_LINES, trim_keep=USER_INFO_TRIM_KEEP,
-    )
+    out = _append_line(_info_path(device_id, vname), line, max_lines=USER_INFO_MAX_LINES, trim_keep=USER_INFO_TRIM_KEEP)
     return {**out, "written": not out.get("deduped")}
 
 

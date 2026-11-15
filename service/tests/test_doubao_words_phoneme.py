@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deskbot_server.infrastructure.tts.doubao_words_phoneme import (
+from deskbot_server.client.tts.doubao_words_phoneme import (
     align_doubao_words,
     doubao_words_to_pb_segments,
     map_arpa_to_mouth_phone,

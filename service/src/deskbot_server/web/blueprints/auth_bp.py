@@ -5,9 +5,11 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Request
 
 from deskbot_server.auth.session_user import SessionUser
+from deskbot_server.controller.decorators import access
 from deskbot_server.db.engine import remove_session
 from deskbot_server.service.user_service import UserService
 from deskbot_server.web.deps import RequireUser, load_session_user
+from deskbot_server.web.pages import page
 from deskbot_server.web.urls import flash, url_for
 from deskbot_server.web.view_helpers import ViewAPIRoute, form_get, redirect, render_template
 
@@ -26,6 +28,8 @@ def _safe_next_url(raw: str | None) -> str:
 
 
 @router.get("/login")
+@access('public')
+@page('auth/login.html')
 def login(request: Request):
     if load_session_user(request) is not None:
         return redirect(url_for("app2c.home"))
@@ -33,6 +37,7 @@ def login(request: Request):
 
 
 @router.post("/login")
+@access('public')
 def login_post(request: Request):
     users = UserService()
     email = users.normalize_email(form_get(request, "email") or "")
@@ -53,6 +58,8 @@ def login_post(request: Request):
 
 
 @router.get("/register")
+@access('public')
+@page('auth/register.html')
 def register(request: Request):
     if load_session_user(request) is not None:
         return redirect(url_for("app2c.home"))
@@ -60,6 +67,7 @@ def register(request: Request):
 
 
 @router.post("/register")
+@access('public')
 def register_post(request: Request):
     users = UserService()
     email = users.normalize_email(form_get(request, "email") or "")
@@ -84,6 +92,7 @@ def register_post(request: Request):
 
 
 @router.post("/logout")
+@access('user')
 def logout(request: Request, user: RequireUser):
     from deskbot_server.web.view_helpers import logout_user
 

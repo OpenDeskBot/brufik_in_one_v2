@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture()
 def data_dir(monkeypatch, tmp_path):
-    from deskbot_server.utils import device_data as dd
+    from deskbot_server.service import device_data_paths as dd
 
     d = tmp_path / "data"
     d.mkdir()
@@ -18,7 +18,7 @@ def data_dir(monkeypatch, tmp_path):
 
 
 def test_schemas_registered_without_touching_batch1():
-    from deskbot_server.infrastructure.llm.tool_schema import (
+    from deskbot_server.service.llm_tools_schema import (
         NATIVE_TOOL_NAMES_BATCH1,
         build_native_tool_schemas,
     )

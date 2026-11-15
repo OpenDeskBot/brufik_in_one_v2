@@ -10,16 +10,14 @@ import time
 from fastapi import APIRouter, Request
 
 from deskbot_server.auth.debug_ws_token import issue_debug_ws_token
-from deskbot_server.auth.permissions import RequireDeveloper, current_user_is_developer
+from deskbot_server.auth.permissions import RequireDeveloper
 from deskbot_server.constants import CAMERA_FACE_CFG_FILE, SCENE_PLAYBOOKS_FILE, USER_MEMORY_FILE
+from deskbot_server.controller.decorators import access
 from deskbot_server.dao.camera_face_config_store import (
     load_camera_face_cfg_file,
     normalize_camera_face_document,
     save_camera_face_cfg_file,
 )
-from deskbot_server.service.face_profile_service import load_face_profiles
-from deskbot_server.service.voice_profile_service import load_voice_profiles
-from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory, list_memory_for_device
 from deskbot_server.dao.scene_playbooks_store import (
     collect_missing_expression_scenes,
     collect_missing_servo_presets,
@@ -27,14 +25,16 @@ from deskbot_server.dao.scene_playbooks_store import (
     normalize_scene_playbooks,
     save_scene_playbooks_file,
 )
-from deskbot_server.infrastructure.llm.utils import parse_llm_reply
 from deskbot_server.service.application.face_registration import register_face_for_device
 from deskbot_server.service.application.voice_registration import register_voice_for_device
+from deskbot_server.service.device_data_paths import load_llm_system_prompt, resolve_json_path, save_llm_system_prompt
+from deskbot_server.service.face_profile_service import load_face_profiles
+from deskbot_server.service.memory_service import add_memory, delete_memory, list_memory_for_device
 from deskbot_server.service.user_service import UserService
-from deskbot_server.utils.device_data import load_llm_system_prompt, resolve_json_path, save_llm_system_prompt
+from deskbot_server.service.voice_profile_service import load_voice_profiles
 from deskbot_server.utils.util import pcm_to_wav_bytes
 from deskbot_server.vision.camera_face_tune import apply_camera_face_tune
-from deskbot_server.web.deps import RequireUser, load_session_user
+from deskbot_server.web.deps import RequireUser
 from deskbot_server.web.helpers import (
     ALLOWED_LLM_ROLES,
     camera_view_ws_base,
@@ -43,71 +43,14 @@ from deskbot_server.web.helpers import (
     load_config,
     tcp_alive,
 )
+from deskbot_server.web.pages import page
 from deskbot_server.web.session_device import get_current_device_id
-from deskbot_server.web.urls import flash, url_for
-from deskbot_server.web.view_helpers import (
-    ViewAPIRoute,
-    convert_view_result,
-    files_get,
-    get_json,
-    jsonify,
-    redirect,
-    render_template,
-)
+from deskbot_server.web.view_helpers import ViewAPIRoute, get_json, jsonify, render_template
 
 logger = logging.getLogger("deskbot-server")
 
 
-_CONSUMER_API_PATHS = frozenset(
-    {
-        "/api/debug/ws_token",
-        "/api/health",
-        "/api/llm/chat",
-        "/api/llm/system_prompt",
-        "/api/tts/phoneme_tts",
-    }
-)
-_CONSUMER_API_PREFIXES = ("/api/doubao_tts/",)
-
-
-def _is_consumer_api(path: str) -> bool:
-    return path in _CONSUMER_API_PATHS or any(path.startswith(p) for p in _CONSUMER_API_PREFIXES)
-
-
-def _require_developer_for_debug(request: Request):
-    """Flask before_request 等价逻辑；消费侧白名单路径放行。"""
-    path = request.url.path or ""
-    if path == "/health":
-        return None
-    if _is_consumer_api(path):
-        return None
-    user = load_session_user(request)
-    if user is None:
-        return None
-    if current_user_is_developer(user):
-        return None
-    if path.startswith("/api/"):
-        return jsonify({"ok": False, "error": "需要开发者权限"}), 403
-    flash(request, "需要开发者权限", "error")
-    return redirect(url_for("app2c.home"))
-
-
-class DebugAPIRoute(ViewAPIRoute):
-    """非消费侧 API 路由入口套用开发者权限守卫。"""
-
-    def get_route_handler(self):
-        original = super().get_route_handler()
-
-        async def handler(request: Request):
-            blocked = _require_developer_for_debug(request)
-            if blocked is not None:
-                return convert_view_result(blocked)
-            return await original(request)
-
-        return handler
-
-
-router = APIRouter(route_class=DebugAPIRoute, tags=["debug"])
+router = APIRouter(route_class=ViewAPIRoute, tags=["debug"])
 
 
 def _deny_foreign_device(request: Request, device_id: str, user):
@@ -154,6 +97,7 @@ def _optional_device_id(request: Request, user):
 
 
 @router.get("/api/debug/ws_token")
+@access('user')
 def api_debug_ws_token(request: Request, user: RequireUser):
     """已登录用户获取调试台 WebSocket 令牌（默认 7 天有效）。"""
     info = issue_debug_ws_token(user.id)
@@ -161,12 +105,16 @@ def api_debug_ws_token(request: Request, user: RequireUser):
 
 
 @router.get("/debug/users")
+@access('developer')
+@page('debug_users.html')
 def debug_users(request: Request, user: RequireDeveloper):
     rows = UserService().list_users()
     return render_template(request, "debug_users.html", active_nav="users", users=rows, current_user_id=user.id)
 
 
 @router.get("/dev/users")
+@access('developer')
+@page('app2c/users.html')
 def dev_users_page(request: Request, user: RequireDeveloper):
     """2C 后台「开发者选项 → 用户管理」页面。"""
     rows = UserService().list_users()
@@ -174,6 +122,7 @@ def dev_users_page(request: Request, user: RequireDeveloper):
 
 
 @router.post("/api/debug/users/{user_id}/developer")
+@access('developer')
 def api_set_user_developer(request: Request, user: RequireDeveloper, user_id: str):
     payload = get_json(request, silent=True) or {}
     if not isinstance(payload, dict):
@@ -198,6 +147,8 @@ def api_set_user_developer(request: Request, user: RequireDeveloper, user_id: st
 
 
 @router.get("/debug/devices")
+@access('developer')
+@page('debug_devices.html')
 def debug_devices(request: Request, user: RequireUser):
     from deskbot_server.pb.display import FACE_LCD_HEIGHT, FACE_LCD_WIDTH
     from deskbot_server.pb.shapes import _default_mouth_fallback_shape, default_face_circles
@@ -237,9 +188,11 @@ def debug_devices(request: Request, user: RequireUser):
 
 
 @router.get("/debug/tts")
+@access('developer')
+@page('debug_tts.html')
 def debug_tts(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
-    from deskbot_server.infrastructure.tts.speakers import list_doubao_tts_speaker_presets
+    from deskbot_server.client.tts.doubao import load_doubao_tts_config
+    from deskbot_server.client.tts.speakers import list_doubao_tts_speaker_presets
 
     cfg = load_doubao_tts_config()
     initial = {
@@ -262,8 +215,9 @@ def debug_tts(request: Request, user: RequireUser):
 
 
 @router.get("/api/doubao_tts/speakers")
+@access('user')
 def api_doubao_tts_speakers(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.tts.speakers import (
+    from deskbot_server.client.tts.speakers import (
         list_doubao_tts_consumer_speaker_presets,
         list_doubao_tts_speaker_presets,
     )
@@ -276,17 +230,19 @@ def api_doubao_tts_speakers(request: Request, user: RequireUser):
 
 
 @router.get("/api/doubao_tts/config")
+@access('user')
 def api_doubao_tts_config_get(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
+    from deskbot_server.client.tts.doubao import load_doubao_tts_config
 
     cfg = load_doubao_tts_config()
     return jsonify({"ok": True, "config": cfg.masked(), "t": time.time()})
 
 
 @router.post("/api/doubao_tts/config")
+@access('user')
 def api_doubao_tts_config_post(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config, resolve_optional_secret
-    from deskbot_server.infrastructure.tts.env_store import save_doubao_tts_env
+    from deskbot_server.client.tts.doubao import load_doubao_tts_config, resolve_optional_secret
+    from deskbot_server.client.tts.env_store import save_doubao_tts_env
 
     payload = get_json(request, silent=True)
     if not isinstance(payload, dict):
@@ -305,11 +261,7 @@ def api_doubao_tts_config_post(request: Request, user: RequireUser):
 
 
 def _doubao_cfg_from_payload(payload: dict):
-    from deskbot_server.infrastructure.tts.doubao import (
-        DoubaoTtsConfig,
-        load_doubao_tts_config,
-        resolve_optional_secret,
-    )
+    from deskbot_server.client.tts.doubao import DoubaoTtsConfig, load_doubao_tts_config, resolve_optional_secret
 
     base = load_doubao_tts_config()
     api_key = resolve_optional_secret(payload.get("api_key"), base.api_key)
@@ -330,8 +282,9 @@ def _doubao_cfg_from_payload(payload: dict):
 
 
 @router.post("/api/doubao_tts/synthesize")
+@access('user')
 def api_doubao_tts_synthesize(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.tts.doubao import synthesize_doubao_tts
+    from deskbot_server.client.tts.doubao import synthesize_doubao_tts
 
     payload = get_json(request, force=True, silent=True) or {}
     text = str(payload.get("text") or "").strip()
@@ -370,8 +323,12 @@ def api_doubao_tts_synthesize(request: Request, user: RequireUser):
 
 
 @router.get("/debug/llm")
+@access('developer')
+@page('debug_llm.html')
 def debug_llm(request: Request, user: RequireUser):
-    from deskbot_server.infrastructure.llm.utils import llm_pb_plan_prompt_appendix
+    from deskbot_server.service.application.action_decision import build_systemone_payload
+    from deskbot_server.service.llm_context import build_action_decision_prompt
+    from deskbot_server.service.llm_routing import resolve_device_decision_provider
 
     cfg = load_config()
     llm_cfg = cfg.get("llm", {}) or {}
@@ -382,6 +339,21 @@ def debug_llm(request: Request, user: RequireUser):
     if current and current not in owned_ids:
         current = owned[0].device_id if owned else None
     initial_prompt = load_llm_system_prompt(current) if current else load_llm_system_prompt()
+    try:
+        if current and resolve_device_decision_provider(current) == "unee":
+            payload = build_systemone_payload(
+                device_id=current, user_text="<用户话>", reply_text="<机器人回复>"
+            )
+            decision_appendix = (
+                "unee /v1/systemone choice 决策请求（state = 用户话 + 机器人回复）：\n"
+                + json.dumps(payload, ensure_ascii=False, indent=2)
+                if payload
+                else ""
+            )
+        else:
+            decision_appendix = build_action_decision_prompt(device_id=current or None)
+    except Exception as exc:  # 页面预览失败不影响调试页
+        decision_appendix = f"（决策模型 prompt 预览失败：{exc}）"
 
     return render_template(
         request,
@@ -390,13 +362,15 @@ def debug_llm(request: Request, user: RequireUser):
         llm_model=llm_cfg.get("model_name", ""),
         llm_base_url=llm_cfg.get("base_url", ""),
         llm_system_prompt=initial_prompt,
-        llm_plan_appendix=llm_pb_plan_prompt_appendix(device_id=current or None),
+        llm_plan_appendix=decision_appendix,
         current_device_id=current or "",
         owned_device_rows=owned_device_rows,
     )
 
 
 @router.get("/debug/simulation")
+@access('developer')
+@page('debug_simulation.html')
 def debug_simulation(request: Request, user: RequireUser):
     from deskbot_server.pb.display import FACE_LCD_HEIGHT, FACE_LCD_WIDTH
     from deskbot_server.pb.shapes import default_face_circles
@@ -416,9 +390,10 @@ def debug_simulation(request: Request, user: RequireUser):
 
 
 @router.post("/api/tts/phoneme_tts")
+@access('user')
 def api_tts_phoneme_tts(request: Request, user: RequireUser):
     """TTS 合成 + 音素分片（按当前 tts.provider），供仿真调试等页面使用。"""
-    from deskbot_server.infrastructure.tts.factory import build_tts_adapter
+    from deskbot_server.client.tts.factory import build_tts_adapter
     from deskbot_server.model.settings import AppSettings
 
     payload = get_json(request, force=True, silent=True) or {}
@@ -455,6 +430,7 @@ def api_tts_phoneme_tts(request: Request, user: RequireUser):
 
 
 @router.get("/api/llm/system_prompt")
+@access('user')
 def api_llm_system_prompt_get(request: Request, user: RequireUser):
     device_id, err = _require_device_id(request, user)
     if err:
@@ -471,6 +447,7 @@ def api_llm_system_prompt_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/llm/system_prompt")
+@access('user')
 def api_llm_system_prompt_post(request: Request, user: RequireUser):
     payload = get_json(request, silent=True)
     if not isinstance(payload, dict):
@@ -497,6 +474,7 @@ def api_llm_system_prompt_post(request: Request, user: RequireUser):
 
 
 @router.post("/api/llm/chat")
+@access('user')
 def llm_chat(request: Request, user: RequireUser):
     payload = get_json(request, force=True, silent=True) or {}
     user_text = str(payload.get("text") or "").strip()
@@ -517,12 +495,10 @@ def llm_chat(request: Request, user: RequireUser):
         "system_prompt", "你是中文助手，请简洁回答。每次回答不超过50字"
     )
     raw_sys = payload.get("system_prompt")
-    if isinstance(raw_sys, str) and raw_sys.strip():
-        system_prompt = raw_sys
-    else:
-        system_prompt = default_system_prompt
+    system_prompt = raw_sys if isinstance(raw_sys, str) and raw_sys.strip() else default_system_prompt
 
-    from deskbot_server.infrastructure.llm.runtime import api_key_error_message, resolve_llm_config
+    from deskbot_server.client.llm.runtime import api_key_error_message
+    from deskbot_server.service.llm_routing import resolve_llm_config
 
     try:
         llm_runtime_cfg = resolve_llm_config(debug_device_id or None)
@@ -532,7 +508,7 @@ def llm_chat(request: Request, user: RequireUser):
     if key_error:
         return jsonify({"ok": False, "error": key_error}), 400
 
-    from deskbot_server.infrastructure.llm.utils import build_llm_system_prompt, build_llm_user_message
+    from deskbot_server.service.llm_context import build_llm_system_prompt, build_llm_user_message
 
     sys_content = build_llm_system_prompt(system_prompt, device_id=debug_device_id or None)
 
@@ -564,7 +540,7 @@ def llm_chat(request: Request, user: RequireUser):
     )
 
     try:
-        from deskbot_server.infrastructure.llm.runtime import chat_completion
+        from deskbot_server.client.llm.runtime import chat_completion
 
         t0 = time.monotonic()
         raw, meta = chat_completion(
@@ -572,20 +548,22 @@ def llm_chat(request: Request, user: RequireUser):
             device_id=debug_device_id or None,
             temperature=float(payload.get("temperature", 0.7)),
             config=llm_runtime_cfg,
+            json_mode=False,
         )
         elapsed_ms = int((time.monotonic() - t0) * 1000)
-        parsed = parse_llm_reply(raw)
+        # 对话模型已改为纯文本协议：原文即要说的话；动作/表情由独立决策模型负责
+        reply = str(raw or "").strip()
         return jsonify(
             {
                 "ok": True,
-                "reply": parsed["reply"],
-                "raw": parsed["raw"],
-                "moves": parsed.get("moves") or [],
-                "anims": parsed.get("anims") or [],
-                "servo": parsed.get("servo") or [],
-                "scenes": parsed.get("scenes") or [],
-                "json_ok": parsed["json_ok"],
-                "need_reply": parsed.get("need_reply", True),
+                "reply": reply,
+                "raw": raw,
+                "moves": [],
+                "anims": [],
+                "servo": [],
+                "scenes": [],
+                "json_ok": True,
+                "need_reply": bool(reply),
                 "model": meta.get("model"),
                 "model_source": meta.get("source"),
                 "model_display_name": meta.get("display_name"),
@@ -658,6 +636,7 @@ def _normalize_generated_design(raw: dict) -> dict:
 
 
 @router.post("/api/face_design/generate")
+@access('developer')
 def api_face_design_generate(request: Request, user: RequireUser):
     device_id, err = _optional_device_id(request, user)
     if err:
@@ -689,7 +668,7 @@ def api_face_design_generate(request: Request, user: RequireUser):
     )
 
     try:
-        from deskbot_server.infrastructure.llm.runtime import chat_completion
+        from deskbot_server.client.llm.runtime import chat_completion
 
         t0 = time.monotonic()
         raw, meta = chat_completion(
@@ -724,6 +703,7 @@ def api_face_design_generate(request: Request, user: RequireUser):
 
 
 @router.get("/api/camera_face_config")
+@access('developer')
 def api_camera_face_config_get(request: Request, user: RequireUser):
     device_id, err = _require_device_id(request, user)
     if err:
@@ -753,6 +733,7 @@ def api_camera_face_config_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/camera_face_config")
+@access('developer')
 def api_camera_face_config_post(request: Request, user: RequireUser):
     device_id, err = _require_device_id(request, user)
     if err:
@@ -782,6 +763,7 @@ def api_camera_face_config_post(request: Request, user: RequireUser):
 
 
 @router.get("/api/face_profiles")
+@access('developer')
 def api_face_profiles_get(request: Request, user: RequireUser):
     device_id, err = _require_device_id(request, user)
     if err:
@@ -796,6 +778,7 @@ def api_face_profiles_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/face_profiles/register")
+@access('developer')
 def api_face_profiles_register(request: Request, user: RequireUser):
     payload = get_json(request, silent=True)
     if not isinstance(payload, dict):
@@ -833,6 +816,7 @@ def api_face_profiles_register(request: Request, user: RequireUser):
 
 
 @router.get("/api/voice_profiles")
+@access('developer')
 def api_voice_profiles_get(request: Request, user: RequireUser):
     device_id, err = _require_device_id(request, user)
     if err:
@@ -847,6 +831,7 @@ def api_voice_profiles_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/voice_profiles/register")
+@access('developer')
 def api_voice_profiles_register(request: Request, user: RequireUser):
     """用最近一次 VAD 语音注册声纹档案（样本 = 最近一次成功抽出 embedding 的 utterance）。"""
     payload = get_json(request, silent=True)
@@ -881,6 +866,7 @@ def api_voice_profiles_register(request: Request, user: RequireUser):
 
 
 @router.get("/api/user_memory")
+@access('developer')
 def api_user_memory_get(request: Request, user: RequireUser):
     device_id, err = _require_device_id(request, user)
     if err:
@@ -896,6 +882,7 @@ def api_user_memory_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/user_memory")
+@access('developer')
 def api_user_memory_post(request: Request, user: RequireUser):
     payload = get_json(request, silent=True)
     if not isinstance(payload, dict):
@@ -914,6 +901,7 @@ def api_user_memory_post(request: Request, user: RequireUser):
 
 
 @router.delete("/api/user_memory/{entry_id}")
+@access('developer')
 def api_user_memory_delete(request: Request, user: RequireUser, entry_id: str):
     device_id, err = _require_device_id(request, user)
     if err:
@@ -928,6 +916,7 @@ def api_user_memory_delete(request: Request, user: RequireUser, entry_id: str):
 
 
 @router.get("/api/scene_playbooks")
+@access('developer')
 def api_scene_playbooks_get(request: Request, user: RequireUser):
     device_id, err = _require_device_id(request, user)
     if err:
@@ -950,6 +939,7 @@ def api_scene_playbooks_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/scene_playbooks")
+@access('developer')
 def api_scene_playbooks_post(request: Request, user: RequireUser):
     device_id, err = _require_device_id(request, user)
     if err:
@@ -977,6 +967,7 @@ def api_scene_playbooks_post(request: Request, user: RequireUser):
 
 
 @router.get("/api/health")
+@access('user')
 def health(request: Request):
     cfg = load_config()
     deskbot_host = os.environ.get("DESKBOT_SERVER_HOST") or cfg.get("server", {}).get("host", "127.0.0.1")
@@ -984,7 +975,7 @@ def health(request: Request):
         deskbot_host = "127.0.0.1"
     deskbot_port = int(os.environ.get("DESKBOT_SERVER_PORT") or cfg.get("server", {}).get("port", 9000))
 
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
+    from deskbot_server.client.tts.doubao import load_doubao_tts_config
 
     tts_cfg = load_doubao_tts_config()
     tts_provider = str((cfg.get("tts") or {}).get("provider") or "moss-tts-nano").strip().lower()

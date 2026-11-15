@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from deskbot_server.infrastructure.llm.tool_schema import NATIVE_TOOL_NAMES_BATCH1, build_native_tool_schemas
+from deskbot_server.service.llm_tools_schema import NATIVE_TOOL_NAMES_BATCH1, build_native_tool_schemas
 from deskbot_server.service.application.llm_tool_runner import execute_llm_tools
 
 

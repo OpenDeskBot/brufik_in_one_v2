@@ -23,7 +23,6 @@ from deskbot_server.dao.servo_config_store import (
     servo_limits,
 )
 
-
 __all__ = [
     "_load_face_design_cached",
     "build_face_expression_catalog",

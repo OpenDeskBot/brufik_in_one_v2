@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build:web": "python3 tools/build_public.py",
+    "test:browser": "python3 tools/run_sop_browser.py"
+  },
+  "devDependencies": { "playwright-core": "1.56.1" }
+}

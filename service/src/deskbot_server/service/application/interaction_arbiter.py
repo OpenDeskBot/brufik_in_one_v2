@@ -3,7 +3,7 @@
 The arbiter deliberately knows nothing about dialogue semantics.  It only applies
 deterministic source rules:
 
-* user turns are highest priority and may cancel a system turn;
+* the latest user turn cancels older user/system turns;
 * scheduled reminders wait in a per-device queue;
 * proactive social/quest turns are best-effort and are dropped while busy;
 * ordinary turns never run concurrently for the same device.
@@ -133,6 +133,16 @@ class DeviceInteractionArbiter:
             )
             return None
 
+        if kind == InteractionKind.USER:
+            # Old user utterances have no queueing value after an interruption.
+            # Cancel pending waiters too, including a burst arriving while the
+            # previous owner is still unwinding its child tasks.
+            for old in list(state.waiters):
+                if old.kind == InteractionKind.USER:
+                    state.waiters.remove(old)
+                    old.future.cancel()
+                    old.task.cancel()
+
         future: asyncio.Future[InteractionLease] = loop.create_future()
         waiter = _Waiter(kind=kind, request_id=rid, task=task, future=future, order=next(self._order))
         state.waiters.append(waiter)
@@ -140,7 +150,7 @@ class DeviceInteractionArbiter:
         active = state.active
         should_preempt = False
         if active is not None and not active.task.done():
-            if kind == InteractionKind.USER and active.kind != InteractionKind.USER:
+            if kind == InteractionKind.USER and active.task is not task:
                 should_preempt = True
             elif kind == InteractionKind.SCHEDULED and active.kind in _PROACTIVE and active.phase == "generating":
                 # A reminder may prevent a not-yet-spoken proactive turn, but it
@@ -157,7 +167,8 @@ class DeviceInteractionArbiter:
                 active.kind.value,
                 active.phase,
             )
-            active.task.cancel()
+            if not active.task.cancelling():
+                active.task.cancel()
 
         self._grant_next(key, state)
         try:
@@ -167,9 +178,27 @@ class DeviceInteractionArbiter:
                 future.cancel()
             if waiter in state.waiters:
                 state.waiters.remove(waiter)
+            if state.active is not None and state.active.task is task:
+                state.active.release()
             self._grant_next(key, state)
             self._cleanup_state(key, state)
             raise
+
+    def interrupt(self, device_id: str) -> None:
+        """Speech onset cancels generation now, without creating a new turn."""
+        key = (asyncio.get_running_loop(), str(device_id or "").strip())
+        state = self._states.get(key)
+        if state is None:
+            return
+        for waiter in list(state.waiters):
+            if waiter.kind == InteractionKind.USER:
+                state.waiters.remove(waiter)
+                waiter.future.cancel()
+                waiter.task.cancel()
+        if state.active is not None:
+            task = state.active.task
+            if not task.done() and not task.cancelling():
+                task.cancel()
 
     def mark_current_speaking(self, device_id: str, *, request_id: str | None = None) -> None:
         """Advance the owning lease to its non-preemptible speech phase.

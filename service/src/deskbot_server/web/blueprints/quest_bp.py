@@ -10,18 +10,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from deskbot_server.auth.permissions import RequireDeveloper
-from deskbot_server.service.quest_service import (
-    DESIGN_SANDBOX_DEVICE,
-    QuestError,
-    QuestService,
-)
-from deskbot_server.web.view_helpers import (
-    ViewAPIRoute,
-    args_get,
-    get_json,
-    jsonify,
-    render_template,
-)
+from deskbot_server.controller.decorators import access
+from deskbot_server.service.quest_service import DESIGN_SANDBOX_DEVICE, QuestError, QuestService
+from deskbot_server.web.pages import page
+from deskbot_server.web.view_helpers import ViewAPIRoute, args_get, get_json, jsonify, render_template
 
 router = APIRouter(route_class=ViewAPIRoute, tags=["quest"])
 
@@ -44,6 +36,8 @@ def _pb_error(exc: QuestError) -> tuple[dict, int]:
 
 
 @router.get("/quest")
+@access('developer')
+@page('quests.html')
 def quest_page(request: Request, user: RequireDeveloper):
     return render_template(request, "quests.html", active_nav="quest")
 
@@ -52,11 +46,13 @@ def quest_page(request: Request, user: RequireDeveloper):
 
 
 @router.get("/api/quest/playbooks")
+@access('developer')
 def api_playbooks_list(request: Request, user: RequireDeveloper):
     return jsonify({"ok": True, "playbooks": _service().list_playbooks()})
 
 
 @router.post("/api/quest/playbooks")
+@access('developer')
 def api_playbooks_create(request: Request, user: RequireDeveloper):
     body = get_json(request, silent=True) or {}
     name = str(body.get("name") or "").strip()
@@ -67,6 +63,7 @@ def api_playbooks_create(request: Request, user: RequireDeveloper):
 
 
 @router.get("/api/quest/playbooks/{name}")
+@access('developer')
 def api_playbook_get(request: Request, name: str, user: RequireDeveloper):
     try:
         pb = _service().get_playbook(name)
@@ -78,6 +75,7 @@ def api_playbook_get(request: Request, name: str, user: RequireDeveloper):
 
 
 @router.get("/api/quest/playbooks/{name}/state")
+@access('developer')
 def api_playbook_state(request: Request, name: str, user: RequireDeveloper):
     """设计沙箱状态：{task_id: 实例运行态}，供编辑器叠加显示（与设备无关）。"""
     try:
@@ -89,6 +87,7 @@ def api_playbook_state(request: Request, name: str, user: RequireDeveloper):
 
 
 @router.delete("/api/quest/playbooks/{name}")
+@access('developer')
 def api_playbook_delete(request: Request, name: str, user: RequireDeveloper):
     try:
         if _service().get_playbook(name) is None:
@@ -100,6 +99,7 @@ def api_playbook_delete(request: Request, name: str, user: RequireDeveloper):
 
 
 @router.get("/api/quest/playbooks/{name}/export")
+@access('developer')
 def api_playbook_export(request: Request, name: str, user: RequireDeveloper):
     try:
         pb = _service().get_playbook(name)
@@ -119,6 +119,7 @@ def api_playbook_export(request: Request, name: str, user: RequireDeveloper):
 
 
 @router.post("/api/quest/playbooks/{name}/import")
+@access('developer')
 def api_playbook_import(request: Request, name: str, user: RequireDeveloper):
     """整体覆盖导入：body 为剧本 JSON（含 tasks），校验通过后原子写盘。"""
     data = get_json(request, silent=True)
@@ -134,6 +135,7 @@ def api_playbook_import(request: Request, name: str, user: RequireDeveloper):
 
 
 @router.post("/api/quest/playbooks/{name}/tasks")
+@access('developer')
 def api_task_create(request: Request, name: str, user: RequireDeveloper):
     body = get_json(request, silent=True) or {}
     try:
@@ -143,6 +145,7 @@ def api_task_create(request: Request, name: str, user: RequireDeveloper):
 
 
 @router.put("/api/quest/playbooks/{name}/tasks/{task_id}")
+@access('developer')
 def api_task_update(request: Request, name: str, task_id: str, user: RequireDeveloper):
     body = get_json(request, silent=True) or {}
     try:
@@ -152,6 +155,7 @@ def api_task_update(request: Request, name: str, task_id: str, user: RequireDeve
 
 
 @router.delete("/api/quest/playbooks/{name}/tasks/{task_id}")
+@access('developer')
 def api_task_delete(request: Request, name: str, task_id: str, user: RequireDeveloper):
     try:
         _service().delete_task(name, task_id)
@@ -164,6 +168,7 @@ def api_task_delete(request: Request, name: str, task_id: str, user: RequireDeve
 
 
 @router.put("/api/quest/playbooks/{name}/edges")
+@access('developer')
 def api_edge_set(request: Request, name: str, user: RequireDeveloper):
     body = get_json(request, silent=True) or {}
     from_id = str(body.get("from") or "").strip()
@@ -175,6 +180,7 @@ def api_edge_set(request: Request, name: str, user: RequireDeveloper):
 
 
 @router.delete("/api/quest/playbooks/{name}/edges")
+@access('developer')
 def api_edge_remove(request: Request, name: str, user: RequireDeveloper):
     from_id = args_get(request, "from", "", type=str) or ""
     to_id = args_get(request, "to", "", type=str) or ""
@@ -189,6 +195,7 @@ def api_edge_remove(request: Request, name: str, user: RequireDeveloper):
 
 
 @router.post("/api/quest/playbooks/{name}/simulate/{task_id}")
+@access('developer')
 def api_quest_simulate(request: Request, name: str, task_id: str, user: RequireDeveloper):
     """沙箱模拟：
     action=set_state → 直接改三态状态（status：not_started/running/completed，result 可选）

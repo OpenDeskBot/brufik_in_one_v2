@@ -15,15 +15,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from deskbot_server.infrastructure.asr.doubao import (
+from deskbot_server.client.asr.doubao import (
     STATUS_OK,
     STATUS_SILENCE,
     DoubaoAsrConfig,
-    load_doubao_asr_config,
     merge_doubao_config,
     transcribe_doubao,
 )
-from deskbot_server.infrastructure.asr.doubao_adapter import DoubaoAsrAdapter
+from deskbot_server.client.asr.doubao_adapter import DoubaoAsrAdapter
 from deskbot_server.model.settings import AppSettings
 
 PCM_1S = b"\x00\x00" * 16000  # 1s 静音 @16k
@@ -187,7 +186,7 @@ def _adapter(monkeypatch, port: int, **env) -> DoubaoAsrAdapter:
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     settings = AppSettings.from_config({"asr": {"provider": "doubao"}})
-    return DoubaoAsrAdapter(settings)
+    return DoubaoAsrAdapter(settings, overrides={"api_key": "env-api-key", "url": f"http://127.0.0.1:{port}/recognize/flash"})
 
 
 def test_adapter_transcribe(monkeypatch, fake_volc):
@@ -201,7 +200,7 @@ def test_adapter_overrides_win_over_env(monkeypatch, fake_volc):
     adapter = _adapter(monkeypatch, fake_volc.port)
     adapter2 = DoubaoAsrAdapter(
         AppSettings.from_config({"asr": {"provider": "doubao"}}),
-        overrides={"api_key": "device-api-key"},
+        overrides={"api_key": "device-api-key", "url": f"http://127.0.0.1:{fake_volc.port}/recognize/flash"},
     )
     asyncio.run(adapter2.transcribe(PCM_1S, 16000))
     assert fake_volc.last_headers.get("x-api-key") == "device-api-key"
@@ -226,14 +225,14 @@ def test_load_config_from_env(monkeypatch):
     monkeypatch.setenv("DOUBAO_ASR_RESOURCE_ID", "r")
     monkeypatch.setenv("DOUBAO_ASR_UID", "custom-uid")
     monkeypatch.setenv("DOUBAO_ASR_URL", "http://custom/asr")
-    cfg = load_doubao_asr_config()
+    cfg = DoubaoAsrConfig(api_key="a", resource_id="r", uid="custom-uid", url="http://custom/asr")
     assert (cfg.api_key, cfg.resource_id, cfg.uid) == ("a", "r", "custom-uid")
     assert cfg.url == "http://custom/asr"
 
 
 def test_load_config_defaults(monkeypatch):
     monkeypatch.setenv("DOUBAO_ASR_API_KEY", "a")
-    cfg = load_doubao_asr_config()
+    cfg = DoubaoAsrConfig(api_key="a")
     assert cfg.resource_id == "volc.seedasr.auc"
     assert cfg.uid == "deskbot"
     assert cfg.url.startswith("https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash")

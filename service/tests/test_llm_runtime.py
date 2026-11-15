@@ -20,7 +20,7 @@ class _FakeHttpResponse:
 
 
 def test_build_chat_model_keeps_openai_compatible_model_id():
-    from deskbot_server.infrastructure.llm.runtime import build_chat_model
+    from deskbot_server.client.llm.runtime import build_chat_model
 
     assert build_chat_model("openai", "ep-202607020001") == "ep-202607020001"
     assert build_chat_model("openai", "openai/ep-202607020001") == "ep-202607020001"
@@ -32,7 +32,7 @@ def test_build_chat_model_preserves_real_org_prefixes():
     早先的实现不看协议、只要前缀命中 LEGACY_MODEL_PREFIXES 就剥（``qwen`` 恰在其中），
     会把硅基流动的模型 ID 变成 ``Qwen3-8B`` 发给云端 → 400。
     """
-    from deskbot_server.infrastructure.llm.runtime import build_chat_model
+    from deskbot_server.client.llm.runtime import build_chat_model
 
     assert build_chat_model("openai", "Qwen/Qwen3-8B") == "Qwen/Qwen3-8B"
     assert build_chat_model("openai", "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B") == "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
@@ -48,7 +48,7 @@ def test_build_chat_model_preserves_real_org_prefixes():
 
 def test_cloud_provider_of_base_url_matches_host_suffix_only():
     """host 后缀匹配：``evil-siliconflow.cn`` / ``api.siliconflow.cn.evil.com`` 不算硅基流动。"""
-    from deskbot_server.infrastructure.llm.runtime import cloud_provider_of_base_url as f
+    from deskbot_server.client.llm.runtime import cloud_provider_of_base_url as f
 
     assert f("https://api.siliconflow.cn/v1") == "siliconflow"
     assert f("https://api.siliconflow.cn/v1/") == "siliconflow"
@@ -61,11 +61,12 @@ def test_cloud_provider_of_base_url_matches_host_suffix_only():
 
 def test_resolve_system_llm_config_reads_api_key_env(monkeypatch):
     """系统默认可经 ``llm.api_key_env`` **指名**服务端环境变量取密钥（只认变量名）。"""
-    from deskbot_server.infrastructure.llm.runtime import SILICONFLOW_BASE_URL, resolve_system_llm_config
+    from deskbot_server.service.llm_routing import resolve_system_llm_config
+    from deskbot_server.client.llm.runtime import SILICONFLOW_BASE_URL
 
     monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-sf-test")
     monkeypatch.setattr(
-        "deskbot_server.infrastructure.llm.runtime.load_config",
+        "deskbot_server.service.llm_routing.load_config",
         lambda: {
             "llm": {
                 "protocol": "openai",
@@ -89,10 +90,10 @@ def test_resolve_system_llm_config_reads_api_key_env(monkeypatch):
 
 def test_resolve_system_llm_config_api_key_env_never_inline_secret(monkeypatch):
     """``api_key_env`` 只接受环境变量名；写明文密钥进去取不到值（config.yaml 进 git）。"""
-    from deskbot_server.infrastructure.llm.runtime import resolve_system_llm_config
+    from deskbot_server.service.llm_routing import resolve_system_llm_config
 
     monkeypatch.setattr(
-        "deskbot_server.infrastructure.llm.runtime.load_config",
+        "deskbot_server.service.llm_routing.load_config",
         lambda: {"llm": {"protocol": "openai", "model_name": "m", "api_key_env": "sk-inline-secret"}},
     )
 
@@ -101,11 +102,11 @@ def test_resolve_system_llm_config_api_key_env_never_inline_secret(monkeypatch):
 
 def test_resolve_system_llm_config_api_key_env_missing(monkeypatch):
     """变量名合法但环境未设置 → 空 key，不抛（由 _validate_api_key 在真正调用时报错）。"""
-    from deskbot_server.infrastructure.llm.runtime import resolve_system_llm_config
+    from deskbot_server.service.llm_routing import resolve_system_llm_config
 
     monkeypatch.delenv("NO_SUCH_ENV_XYZ", raising=False)
     monkeypatch.setattr(
-        "deskbot_server.infrastructure.llm.runtime.load_config",
+        "deskbot_server.service.llm_routing.load_config",
         lambda: {"llm": {"protocol": "openai", "model_name": "m", "api_key_env": "NO_SUCH_ENV_XYZ"}},
     )
 
@@ -114,7 +115,7 @@ def test_resolve_system_llm_config_api_key_env_missing(monkeypatch):
 
 def test_siliconflow_extra_body_only_for_thinking_capable_models():
     """R1 蒸馏款的思考被 chat template 固化，下发 enable_thinking 无效（实测仍有 reasoning token）。"""
-    from deskbot_server.infrastructure.llm.runtime import siliconflow_extra_body
+    from deskbot_server.client.llm.runtime import siliconflow_extra_body
 
     assert siliconflow_extra_body("Qwen/Qwen3-8B") == {"enable_thinking": False}
     assert siliconflow_extra_body("deepseek-ai/DeepSeek-R1-0528-Qwen3-8B") is None
@@ -122,7 +123,7 @@ def test_siliconflow_extra_body_only_for_thinking_capable_models():
 
 
 def test_build_completion_payload_merges_extra_body_with_reserved_key_guard():
-    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, _build_completion_payload
+    from deskbot_server.client.llm.runtime import ResolvedLlmConfig, _build_completion_payload
 
     def cfg(**kw):
         base = {
@@ -166,7 +167,7 @@ def test_build_completion_payload_merges_extra_body_with_reserved_key_guard():
 
 
 def test_api_key_error_message_names_siliconflow_env():
-    from deskbot_server.infrastructure.llm.runtime import (
+    from deskbot_server.client.llm.runtime import (
         SILICONFLOW_API_KEY_ENV,
         ResolvedLlmConfig,
         api_key_error_message,
@@ -196,12 +197,12 @@ def test_api_key_error_message_names_siliconflow_env():
 
 def test_resolve_system_llm_config_ignores_env_keys(monkeypatch):
     """系统默认 LLM 不读任何环境变量密钥（密钥仅设备级 llm_param）；只取 config.yaml llm 段。"""
-    from deskbot_server.infrastructure.llm.runtime import resolve_system_llm_config
+    from deskbot_server.service.llm_routing import resolve_system_llm_config
 
     monkeypatch.setenv("ARK_API_KEY", "ark-test-key")
     monkeypatch.setenv("LLM_API_KEY", "llm-test-key")
     monkeypatch.setattr(
-        "deskbot_server.infrastructure.llm.runtime.load_config",
+        "deskbot_server.service.llm_routing.load_config",
         lambda: {"llm": {"protocol": "ark_responses", "model_name": "ep-202607020001"}},
     )
 
@@ -214,7 +215,7 @@ def test_resolve_system_llm_config_ignores_env_keys(monkeypatch):
 
 
 def test_chat_completion_stream_invokes_tts_extractor(monkeypatch):
-    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, chat_acompletion
+    from deskbot_server.client.llm.runtime import ResolvedLlmConfig, chat_acompletion
 
     seen_deltas: list[str] = []
 
@@ -227,7 +228,7 @@ def test_chat_completion_stream_invokes_tts_extractor(monkeypatch):
                 on_delta(c)
         return "".join(chunks), {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
 
-    monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime._request_chat_completion_stream", fake_stream)
+    monkeypatch.setattr("deskbot_server.client.llm.runtime._request_chat_completion_stream", fake_stream)
     cfg = ResolvedLlmConfig(
         model="qwen-flash",
         api_key="test-key",
@@ -254,7 +255,7 @@ def test_chat_completion_stream_invokes_tts_extractor(monkeypatch):
 
 
 def test_chat_completion_posts_to_openai_compatible_endpoint(monkeypatch):
-    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, chat_completion
+    from deskbot_server.client.llm.runtime import ResolvedLlmConfig, chat_completion
 
     seen = {}
 
@@ -270,7 +271,7 @@ def test_chat_completion_posts_to_openai_compatible_endpoint(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deskbot_server.client.llm.runtime.urllib.request.urlopen", fake_urlopen)
     cfg = ResolvedLlmConfig(
         model="openai/ep-202607020001",
         api_key="ark-test-key",
@@ -298,7 +299,7 @@ def test_chat_completion_posts_to_openai_compatible_endpoint(monkeypatch):
 
 
 def test_missing_key_message_points_to_device_config():
-    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, chat_completion
+    from deskbot_server.client.llm.runtime import ResolvedLlmConfig, chat_completion
 
     cfg = ResolvedLlmConfig(
         model="ep-202607020001",
@@ -320,7 +321,7 @@ def test_missing_key_message_points_to_device_config():
 
 
 def test_ark_responses_completion_posts_to_responses_endpoint(monkeypatch):
-    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, chat_completion
+    from deskbot_server.client.llm.runtime import ResolvedLlmConfig, chat_completion
 
     seen = {}
 
@@ -340,7 +341,7 @@ def test_ark_responses_completion_posts_to_responses_endpoint(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deskbot_server.client.llm.runtime.urllib.request.urlopen", fake_urlopen)
     cfg = ResolvedLlmConfig(
         model="ep-20260708093928-299x5",
         api_key="ark-test-key",
@@ -371,7 +372,7 @@ def test_ark_responses_completion_posts_to_responses_endpoint(monkeypatch):
 
 
 def test_ark_responses_stream_parses_output_text_delta(monkeypatch):
-    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, chat_acompletion
+    from deskbot_server.client.llm.runtime import ResolvedLlmConfig, chat_acompletion
 
     class _FakeStreamResponse:
         def __enter__(self):
@@ -398,7 +399,7 @@ def test_ark_responses_stream_parses_output_text_delta(monkeypatch):
     def fake_urlopen(req, timeout):
         return _FakeStreamResponse()
 
-    monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deskbot_server.client.llm.runtime.urllib.request.urlopen", fake_urlopen)
     cfg = ResolvedLlmConfig(
         model="ep-20260708093928-299x5",
         api_key="ark-test-key",
@@ -417,7 +418,7 @@ def test_ark_responses_stream_parses_output_text_delta(monkeypatch):
 
 
 def test_resolve_first_token_timeout_disables_ark_responses_default(monkeypatch):
-    from deskbot_server.infrastructure.llm.runtime import LLM_FIRST_TOKEN_TIMEOUT_SECONDS, resolve_first_token_timeout
+    from deskbot_server.client.llm.runtime import LLM_FIRST_TOKEN_TIMEOUT_SECONDS, resolve_first_token_timeout
 
     monkeypatch.delenv("LLM_FIRST_TOKEN_TIMEOUT", raising=False)
     assert resolve_first_token_timeout("ark_responses") == 0.0
@@ -425,14 +426,14 @@ def test_resolve_first_token_timeout_disables_ark_responses_default(monkeypatch)
 
 
 def test_resolve_first_token_timeout_honors_env(monkeypatch):
-    from deskbot_server.infrastructure.llm.runtime import resolve_first_token_timeout
+    from deskbot_server.client.llm.runtime import resolve_first_token_timeout
 
     monkeypatch.setenv("LLM_FIRST_TOKEN_TIMEOUT", "20")
     assert resolve_first_token_timeout("ark_responses") == 20.0
 
 
 def test_wrap_plain_text_llm_answer():
-    from deskbot_server.infrastructure.llm.openai_compat import _wrap_plain_text_llm_answer
+    from deskbot_server.service.llm_service import _wrap_plain_text_llm_answer
 
     wrapped = _wrap_plain_text_llm_answer("明天是7月16号，星期四。")
     assert wrapped is not None

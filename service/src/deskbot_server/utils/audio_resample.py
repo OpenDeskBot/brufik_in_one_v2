@@ -26,6 +26,18 @@ def _design_lowpass(cutoff: float) -> np.ndarray:
     return h.astype(np.float32)
 
 
+def upsample_pcm16_mono(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linear interpolation for the band-limited 8kHz speech preview."""
+    if dst_rate < src_rate or src_rate <= 0:
+        raise ValueError("invalid preview upsample rates")
+    if not pcm or src_rate == dst_rate:
+        return pcm
+    x = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+    count = max(1, round(len(x) * dst_rate / src_rate))
+    y = np.interp(np.arange(count) * src_rate / dst_rate, np.arange(len(x)), x)
+    return np.rint(y).astype("<i2").tobytes()
+
+
 def resample_pcm16_mono(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
     """mono s16le PCM 由 ``src_rate`` 降采样到 ``dst_rate``。
 

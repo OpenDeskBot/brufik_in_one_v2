@@ -8,8 +8,8 @@ import random
 from contextlib import suppress
 from typing import Any
 
-from deskbot_server.service.application.interaction_feedback import _send_servo_moves
 from deskbot_server.dao.device_mapper import get_auto_reply
+from deskbot_server.service.application.interaction_feedback import _send_servo_moves
 
 logger = logging.getLogger("deskbot-server")
 

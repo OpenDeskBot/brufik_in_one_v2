@@ -113,7 +113,7 @@ def test_2c_advanced_json_apis(temp_db):
 
 def test_2c_tts_config_does_not_reuse_system_ark_key(temp_db, monkeypatch):
     from tests._auth_compat import create_user
-    from deskbot_server.infrastructure.tts import doubao as doubao_mod
+    from deskbot_server.client.tts import doubao as doubao_mod
     from deskbot_server.web.app import create_app
 
     for name in (
@@ -129,8 +129,6 @@ def test_2c_tts_config_does_not_reuse_system_ark_key(temp_db, monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ARK_API_KEY", "ark-shared-key")
-    monkeypatch.setattr(doubao_mod, "load_dotenv", lambda *a, **k: None)
-    monkeypatch.setattr(doubao_mod, "_resolve_tts_api_key", lambda: "")
     create_user("tts-ark2c@example.com", "password1234")
     app = create_app()
     client = app.test_client()
@@ -297,7 +295,7 @@ def test_2c_expr_basic_face_uses_controls_without_second_canvas(temp_db):
 
 def test_2c_expr_layout_collapses_to_balanced_workspace():
     web_dir = Path(__file__).resolve().parents[1] / "src" / "deskbot_server" / "web"
-    css = (web_dir / "static" / "theme_2c.css").read_text(encoding="utf-8")
+    css = (web_dir.parent / "public" / "shared" / "theme_2c.css").read_text(encoding="utf-8")
 
     assert "grid-template-columns:minmax(330px,380px) minmax(0,1fr)" in css
     assert ".expr-editor{max-width:none;min-width:0;width:100%}" in css
@@ -391,7 +389,7 @@ def test_2c_home_integrates_robot_motion_preview(temp_db):
     assert "updateHomeRobotFace" in html
 
     css = (
-        Path(__file__).resolve().parents[1] / "src" / "deskbot_server" / "web" / "static" / "theme_2c.css"
+        Path(__file__).resolve().parents[1] / "src" / "deskbot_server" / "public" / "shared" / "theme_2c.css"
     ).read_text(encoding="utf-8")
     assert ".home-media" in css
     assert ".home-robot-host" in css
@@ -541,9 +539,9 @@ def test_2c_scene_playbook_export_plan_requires_developer(temp_db):
 
 def test_2c_theme_uses_bold_retro_tokens():
     web_dir = Path(__file__).resolve().parents[1] / "src" / "deskbot_server" / "web"
-    css = (web_dir / "static" / "theme_2c.css").read_text(encoding="utf-8")
-    base = (web_dir / "templates" / "base_2c.html").read_text(encoding="utf-8")
-    auth_base = (web_dir / "templates" / "auth_base.html").read_text(encoding="utf-8")
+    css = (web_dir.parent / "public" / "shared" / "theme_2c.css").read_text(encoding="utf-8")
+    base = (web_dir.parent / "public" / "admin" / "views" / "base_2c.html").read_text(encoding="utf-8")
+    auth_base = (web_dir.parent / "public" / "admin" / "views" / "auth_base.html").read_text(encoding="utf-8")
 
     assert "设计语言：Neo-brutalist retro console" in css
     assert "--bg:#e9e7de" in css
@@ -627,7 +625,7 @@ def test_doubao_tts_speakers_api_returns_full_local_preset_file(temp_db):
 
 def test_2c_voice_tts_synthesize_endpoint_returns_wav(temp_db, monkeypatch):
     from tests._auth_compat import create_user
-    from deskbot_server.infrastructure.tts.doubao import DoubaoTtsResult
+    from deskbot_server.client.tts.doubao import DoubaoTtsResult
     from deskbot_server.web.app import create_app
 
     async def fake_synthesize(text, cfg):
@@ -637,7 +635,7 @@ def test_2c_voice_tts_synthesize_endpoint_returns_wav(temp_db, monkeypatch):
         assert cfg.resource_id == "seed-tts-2.0"
         return DoubaoTtsResult(pcm=b"\x00\x00" * 120, sample_rate=16000, elapsed_ms=7)
 
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.doubao.synthesize_doubao_tts", fake_synthesize)
+    monkeypatch.setattr("deskbot_server.client.tts.doubao.synthesize_doubao_tts", fake_synthesize)
     create_user("voice-api2c@example.com", "password1234")
     app = create_app()
     client = app.test_client()
@@ -902,7 +900,7 @@ def test_2c_face_config_read_consumer_but_writes_developer_only(temp_db, tmp_pat
     from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
-    monkeypatch.setattr("deskbot_server.utils.device_data.DATA_DIR", tmp_path)
+    monkeypatch.setattr("deskbot_server.service.device_data_paths.DATA_DIR", tmp_path)
     global_dir = tmp_path / "global"
     global_dir.mkdir()
     (global_dir / "deskbot-face.json").write_text(
@@ -995,7 +993,7 @@ def test_2c_consumer_apis_are_not_developer_locked(temp_db, monkeypatch):
             {"model": "openai/test", "source": "device", "display_name": "Test LLM"},
         )
 
-    monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime.chat_completion", fake_completion)
+    monkeypatch.setattr("deskbot_server.client.llm.runtime.chat_completion", fake_completion)
     admin = create_user("consumer-admin2c@example.com", "password1234")  # 首个注册 → 开发者
     user = create_user("consumer-member2c@example.com", "password1234")
     bind_device_online(user.id, "deskbot_consumer_api")
@@ -1021,7 +1019,7 @@ def test_2c_consumer_apis_are_not_developer_locked(temp_db, monkeypatch):
 
 def test_2c_debug_phoneme_endpoint_returns_json_when_tts_adapter_fails(temp_db, monkeypatch):
     from tests._auth_compat import create_user
-    from deskbot_server.infrastructure.tts import factory
+    from deskbot_server.client.tts import factory
     from deskbot_server.web.app import create_app
 
     def fail_adapter(_settings):
@@ -1039,7 +1037,8 @@ def test_2c_debug_phoneme_endpoint_returns_json_when_tts_adapter_fails(temp_db, 
     assert resp.is_json
     payload = resp.get_json()
     assert payload["ok"] is False
-    assert "no tts adapter" in payload["error"]
+    assert payload["error"] == "upstream_error"
+    assert "no tts adapter" not in resp.text
 
 
 def test_face_design_generate_endpoint_uses_llm_and_returns_design(temp_db, monkeypatch):
@@ -1061,7 +1060,7 @@ def test_face_design_generate_endpoint_uses_llm_and_returns_design(temp_db, monk
             {"model": "openai/test", "source": "device", "display_name": "Test LLM", "usage": {"total_tokens": 12}},
         )
 
-    monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime.chat_completion", fake_completion)
+    monkeypatch.setattr("deskbot_server.client.llm.runtime.chat_completion", fake_completion)
     user = create_user("face-ai2c@example.com", "password1234")
     bind_device_online(user.id, "deskbot_ai")
     app = create_app()
@@ -1101,7 +1100,7 @@ def test_face_design_generate_endpoint_allows_browsing_without_device(temp_db, m
             {"model": "openai/test", "source": "system", "display_name": "Test LLM", "usage": None},
         )
 
-    monkeypatch.setattr("deskbot_server.infrastructure.llm.runtime.chat_completion", fake_completion)
+    monkeypatch.setattr("deskbot_server.client.llm.runtime.chat_completion", fake_completion)
     create_user("face-ai-browse2c@example.com", "password1234")
     app = create_app()
     client = app.test_client()
@@ -1119,7 +1118,7 @@ def test_face_design_generate_endpoint_allows_browsing_without_device(temp_db, m
 
 def test_2c_face_preview_helper_exposes_frame_reader():
     helper = (
-        Path(__file__).resolve().parents[1] / "src" / "deskbot_server" / "web" / "static" / "face_preview_2c.js"
+        Path(__file__).resolve().parents[1] / "src" / "deskbot_server" / "public" / "shared" / "face_preview_2c.js"
     ).read_text(encoding="utf-8")
 
     assert "frameElements," in helper

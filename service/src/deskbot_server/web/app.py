@@ -23,6 +23,3 @@ def create_app() -> FastAPI:
 
     app.test_client = test_client  # type: ignore[attr-defined]
     return app
-
-
-app = create_app()

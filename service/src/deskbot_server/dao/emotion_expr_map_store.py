@@ -4,7 +4,7 @@ import json
 import os
 
 from deskbot_server.constants import EMOTION_EXPR_MAP_FILE
-from deskbot_server.utils.device_data import resolve_json_path
+from deskbot_server.service.device_data_paths import resolve_json_path
 
 
 def _normalize(raw: object) -> dict[str, str]:

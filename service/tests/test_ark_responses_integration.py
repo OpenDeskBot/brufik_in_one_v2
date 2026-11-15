@@ -53,7 +53,7 @@ def _configure_ark_device(device_id: str) -> None:
 
 
 def test_live_ark_responses_chat_completion():
-    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, chat_completion
+    from deskbot_server.client.llm.runtime import ResolvedLlmConfig, chat_completion
 
     cfg = ResolvedLlmConfig(
         model=os.environ["ARK_MODEL"].strip(),
@@ -74,7 +74,7 @@ def test_live_ark_responses_chat_completion():
 def test_live_ark_responses_stream_tts_prefetch():
     import asyncio
 
-    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, chat_acompletion
+    from deskbot_server.client.llm.runtime import ResolvedLlmConfig, chat_acompletion
 
     cfg = ResolvedLlmConfig(
         model=os.environ["ARK_MODEL"].strip(),
@@ -107,7 +107,7 @@ def test_live_ark_responses_stream_tts_prefetch():
 def test_api_device_ark_chat(device_env):
     from tests.device_bind_helpers import bind_device_online
     from tests._auth_compat import create_user
-    from deskbot_server.infrastructure.llm.runtime import resolve_llm_config
+    from deskbot_server.service.llm_routing import resolve_llm_config
     from deskbot_server.web.app import create_app
 
     device_id = device_env
@@ -141,7 +141,7 @@ def test_openai_adapter_with_ark_device(device_env):
     from deskbot_server.auth.service import create_user
     from deskbot_server.config import load_config
     from deskbot_server.model.settings import AppSettings
-    from deskbot_server.infrastructure.llm.openai_compat import OpenAiLlmAdapter
+    from deskbot_server.service.llm_service import OpenAiLlmAdapter
 
     device_id = device_env
     create_user("ark-adapter@example.com", "password1234")
@@ -155,9 +155,9 @@ def test_openai_adapter_with_ark_device(device_env):
         return await adapter.complete("说三个字：测试通过", device_id=device_id)
 
     answer = asyncio.run(_run())
-    parsed = json.loads(answer)
-    assert isinstance(parsed.get("tts"), str)
-    assert len(parsed["tts"]) > 0
+    # 对话模型已改为纯文本协议：直接返回口语，不再包 JSON envelope
+    assert isinstance(answer, str) and answer.strip()
+    assert "tts" not in answer[:40]
 
 
 def test_debug_llm_chat_with_ark_device(device_env):

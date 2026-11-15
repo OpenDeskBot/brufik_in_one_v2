@@ -193,6 +193,7 @@ data/face_live_snapshot.json
 externals/*/.venv/
 externals/*/bin/
 externals/*/checkout/
+externals/*/logs/
 # 剧本任务运行时数据（设计产物留在本机，需要入库用 git add -f）
 data/quest/
 data/quest_playbooks/
@@ -209,3 +210,5 @@ pkg.sh
 .ruff_cache/
 
 .cursor/
+
+/node_modules/

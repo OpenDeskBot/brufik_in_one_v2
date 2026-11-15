@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import secrets
 from collections.abc import Callable
@@ -11,24 +12,10 @@ from urllib.parse import urlparse
 
 from fastapi import Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from fastapi.routing import APIRoute
 from starlette.datastructures import UploadFile
 
 from deskbot_server.auth.session_user import SessionUser
-from deskbot_server.service.user_service import UserService
-from deskbot_server.web.session_device import get_current_device_id
-from deskbot_server.web.urls import get_flashed_messages, url_for
-
-_templates = None
-
-
-def set_templates(templates) -> None:
-    global _templates
-    _templates = templates
-
-
-def get_templates():
-    return _templates
+from deskbot_server.controller.decorators.http import SopAPIRoute
 
 
 def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
@@ -44,6 +31,11 @@ def jsonify(*args: Any, **kwargs: Any) -> JSONResponse:
 
 
 def redirect(location: str, code: int = 302) -> RedirectResponse:
+    from deskbot_server.controller.decorators.http import current_request
+
+    request = current_request.get()
+    if request is not None and "application/json" in request.headers.get("accept", ""):
+        return JSONResponse({"ok": True, "redirect": location})
     return RedirectResponse(url=location, status_code=code)
 
 
@@ -78,10 +70,7 @@ def form_get(request: Request, key: str, default: Any = None) -> Any:
     form = getattr(request.state, "form", None)
     if form is None:
         return default
-    if hasattr(form, "get"):
-        val = form.get(key)
-    else:
-        val = form.get(key) if isinstance(form, dict) else None
+    val = form.get(key) if hasattr(form, "get") else form.get(key) if isinstance(form, dict) else None
     if val is None:
         return default
     return val
@@ -101,10 +90,8 @@ def read_upload_bytes(upload: UploadFile) -> bytes:
     """同步读取上传文件（``UploadFile.read`` 为 async，视图为 sync def）。"""
     raw = getattr(upload, "file", None)
     if raw is not None:
-        try:
+        with contextlib.suppress(Exception):
             raw.seek(0)
-        except Exception:
-            pass
         return raw.read()
     # 兜底：若已有同步 read
     data = upload.read()
@@ -151,29 +138,11 @@ def logout_user(request: Request) -> None:
     request.state.current_user = False
 
 
-def render_template(request: Request, name: str, **context: Any) -> HTMLResponse:
-    if _templates is None:
-        raise RuntimeError("templates not configured")
-    from deskbot_server.web.deps import load_session_user
+def render_template(request: Request, name: str, **context: Any) -> JSONResponse:
+    """兼容页面构造调用，返回 JSON；HTML 渲染只在浏览器执行。"""
+    from deskbot_server.web.pages import page_data
 
-    user = load_session_user(request)
-    display_name = None
-    current_device_id = None
-    is_developer = False
-    if user is not None:
-        display_name = getattr(user, "display_name", None) or user.email
-        current_device_id = get_current_device_id(request)
-        db_user = UserService().get_user(user.id)
-        is_developer = bool(db_user and getattr(db_user, "is_developer", False))
-    context.setdefault("nav_user_email", user.email if user is not None else None)
-    context.setdefault("nav_display_name", display_name)
-    context.setdefault("nav_current_device_id", current_device_id)
-    context.setdefault("nav_is_developer", is_developer)
-    context.setdefault("url_for", url_for)
-    context.setdefault(
-        "get_flashed_messages", lambda with_categories=False: get_flashed_messages(request, with_categories)
-    )
-    return _templates.TemplateResponse(request, name, context)
+    return page_data(request, name, context)
 
 
 def convert_view_result(result: Any) -> Response:
@@ -220,7 +189,7 @@ def _wrap_endpoint(endpoint: Callable) -> Callable:
     return sync_wrapped
 
 
-class ViewAPIRoute(APIRoute):
+class ViewAPIRoute(SopAPIRoute):
     """把视图返回值（含 ``(body, status)``）统一转成 Starlette Response。"""
 
     def __init__(self, *args: Any, **kwargs: Any):

@@ -1,6 +1,6 @@
 # 接口清单
 
-更新时间：2026-08-29
+更新时间：2026-11-10
 
 本文按当前代码实现整理所有对外接口，覆盖 Web 控制台与 deskbot 设备服务。重点列 HTTP / WebSocket 路由、鉴权、主要参数与返回用途；ESP32 pb 字段细节见 [esp32_pb_protocol.md](./esp32_pb_protocol.md)。固件工具链见 [../../hardware/README.md](../../hardware/README.md)。
 
@@ -18,7 +18,8 @@
 | 范围 | 鉴权 |
 |------|------|
 | `/`、`/login`、`/register`、`/health`、`/static/*` | 公开 |
-| 其它页面 | 需要会话登录态；未登录重定向到 `/login` |
+| 已声明的其它页面 | 静态资源公开加载；浏览器取数据失败后跳转登录或展示权限提示 |
+| `/api/pages<页面路径>` | JSON 页面上下文，分别校验普通用户/开发者；未认证 401，权限不足 403 |
 | `/api/*` | 需要会话登录态；未登录返回 `401 {"ok": false, "error": "unauthorized"}` |
 | `/proxy/deskbot/*` | 需要登录态，并按当前用户绑定设备过滤/补全 `device_id` |
 
@@ -27,7 +28,7 @@
 | 范围 | 鉴权 |
 |------|------|
 | `GET /health` | 公开 |
-| `/api/*` | Web 会话或 `debug_token`；无 user_id 时匿名放行 |
+| `/api/*` | 有效用户的 Web 会话或 `debug_token`；未认证、用户已删除或停用返回 `401`；指定设备须属于当前用户，否则返回 `403` |
 | `/asr_chat` | 仅需 `device_id`（无 API Key / PIN）；含语音与 `camera_frame` |
 | `/device_pipeline` 生产者 | 仅需 `device_id` |
 | `/device_pipeline` 订阅者、`/camera_view` | Web 控制台签发的 `debug_token` + 设备归属 |
@@ -46,7 +47,7 @@
 | GET | `/register` | 注册页 | - |
 | POST | `/register` | 注册提交并登录 | form: `email`, `password`, `confirm_password` |
 | POST | `/logout` | 退出登录 | - |
-| GET | `/health` | Web 控制台健康检查 | 返回纯文本 `ok` |
+| GET | `/health` | Web 控制台健康检查 | 固定返回 JSON `{"status":"ok"}` |
 
 ### 2C 用户页面
 
@@ -131,10 +132,12 @@ TTS provider / 音色 / 凭证已移至设备级（devices 表 `tts_provider` / 
 
 | 方法 | 路径 | 用途 | 主要输入 |
 |------|------|------|----------|
-| GET | `/api/robot-settings` | 能力状态（ASR/LLM/TTS/人脸 + 服务快照 + env 覆盖） | session: `device_id` |
+| GET | `/api/robot-settings` | 能力状态（ASR/LLM/决策模型/TTS/人脸 + 服务快照 + env 覆盖） | session: `device_id` |
+| POST | `/api/robot-settings/decision` | 切换设备级「动作/表情决策模型」provider（写 device 表 `decision_llm_provider`，默认 `unee`，立即生效） | JSON: `provider` |
 | GET | `/api/robot-settings/llm/config-info` | LLM 配置对话框元信息：ark 当前值（api_key 掩码）、siliconflow 模型预设 + 服务端密钥状态、本地模型只读固定端点 | query: `provider` |
 | POST | `/api/robot-settings/llm/config` | 保存设备级 LLM 配置到 `devices.llm_param[provider]`（不写 `.env` / `config.yaml`）：ark 存 `api_key`/`model_name`/`base_url`（掩码/空不覆盖），siliconflow **只存 `model_name`**——其密钥是服务端公共凭证（`.env` `SILICONFLOW_API_KEY`），payload 里的 `api_key` 会被字段白名单丢弃 | JSON: `provider`, `api_key`, `model_name`, `base_url` |
 | POST | `/api/robot-settings/llm/test` | LLM 试聊（临时 config 不落盘；overrides 表单覆盖优先，本地模型免 Key；siliconflow 不要求当前设备，只需要模型） | JSON: `provider`, `text`, `overrides`? |
+| POST | `/api/robot-settings/conversation` | 切换本地模型组合 / MOSS Live；保存设备参数后断开主连接，由 ROM 自动重连；需登录并选中本人设备。密钥不回传。 | JSON: `provider` (`local` / `moss-live`), `api_key`?, `voice`?, `prompt`?, `camera`? |
 | POST | `/api/robot-settings/tts` | 切换 TTS provider（写 device 表 tts_provider，立即生效） | JSON: `provider` |
 | GET | `/api/robot-settings/tts/config-info` | TTS 配置对话框元信息：音色列表 + 当前设备参数（api_key 掩码，设备 tts_param 优先回落 .env） | session: `device_id` |
 | POST | `/api/robot-settings/tts/config` | 保存设备级 TTS 参数到 tts_param（JSON：`{"moss": {"demo_id"}, "doubao": {api_key, speaker, resource_id, model, ws_url, sample_rate}}`；空值/掩码按 payload > 设备 > .env 回填） | session: `device_id` |
@@ -266,7 +269,7 @@ ws://<host>:9000/device_pipeline?role=subscriber&device_id=<id>&debug_token=<tok
 
 ## deskbot HTTP API `:9000`
 
-所有 `/api/*` 均支持 `OPTIONS` CORS 预检。除 `/health` 外，鉴权走 Web 会话或 `debug_token`（无 user_id 时匿名放行）。
+所有 `/api/*` 均支持 `OPTIONS` CORS 预检。除 `/health` 外，鉴权走有效用户的 Web 会话或 `debug_token`；未认证返回 `401`，访问他人设备返回 `403`。
 
 | 方法 | 路径 | 用途 | 主要输入 |
 |------|------|------|----------|
@@ -275,8 +278,8 @@ ws://<host>:9000/device_pipeline?role=subscriber&device_id=<id>&debug_token=<tok
 | GET | `/api/asr_auto_reply` | 查询/设置 ASR 自动应答开关 | query: `enabled=1|0|true|false` 可选 |
 | GET | `/api/camera_servo_auto_mode` | 查询/设置相机舵机自动模式 | query: `mode=follow|follow_frontal|gaze|off` 可选 |
 | GET | `/api/debug_prefs` | 查询/批量设置调试偏好 | query: `asr_auto_reply`, `camera_servo_auto_mode` 可选 |
-| GET | `/api/pipeline_recent` | 获取流水线事件滚动窗口 | query: `device_id` 可选，`limit` 默认最多 100 |
-| GET | `/api/device_servo` | 向设备 `/asr_chat` 下发单片舵机 pb | query: `device_id`, `dyaw`, `dpitch`, `ms`, `xm`, `ym`, `action`, `level`, `with_scene`/`append_scene` |
+| GET | `/api/pipeline_recent` | 获取流水线事件滚动窗口；不指定设备时仅返回当前用户绑定设备的事件 | query: `device_id` 可选，`limit` 默认最多 100 |
+| GET | `/api/device_servo` | 向设备 `/asr_chat` 下发舵机，可串接本地表情 | query: `device_id`, `dyaw`, `dpitch`, `ms`, `xm`, `ym`, `action`, `level`, `with_scene`/`append_scene` |
 | GET | `/api/device_pb_scenes` | 列出内置/配置的 pb 场景名 | - |
 | GET/POST | `/api/device_tts` | 跳过 LLM，直接 TTS 并下发到设备 | query 或 JSON: `device_id`, `text`, `scene` 可选 |
 | GET/POST | `/api/scene_playbook/run` | 执行场景 playbook，并与 TTS/表情/舵机交错下发 | GET: `device_id`, `name`; POST JSON: `device_id`, `playbook` 或 `name` |
@@ -286,6 +289,8 @@ ws://<host>:9000/device_pipeline?role=subscriber&device_id=<id>&debug_token=<tok
 | GET/POST | `/api/device_pb_anim` | 下发仅含 `anim` 的单片 `pb_single` | GET: `device_id`, `anim_b64`, `chunk_ms`, `action`, `level`; POST JSON: `device_id`, `anim`, `chunk_ms`, `action`, `level` |
 | GET/POST | `/api/face_expr_scenes` | 读取/写入设计表情场景 | query/JSON: `device_id` 可选；POST body 为场景数组 |
 | GET | `/api/device_pb_expr_scene` | 按设计表情场景名向设备下发 pb 链 | query: `device_id`, `scene` 或 `name` |
+
+`/api/device_servo` 的 `action` 作用于整条任务：`append` 排队，`replace` 按优先级替换，`default` 沿用队列默认规则。角度必须为有限数值。无表情时仍返回 `type=pb_single`；指定有效 `with_scene` / `append_scene` 时，返回 `type=pb_start`，动作与表情共用 `req=scene_req`，序号从 0 连续递增，表情在动作之后播放，最后一个表情块以 `pb_end` 结束。`scene_frames` 为本地表情引用块数，未传输渲染图元；未知可选表情降级为单片舵机任务。
 
 未知 `/api/*` 返回 `404 {"error":"not found","path":"..."}`。不支持的方法返回 `405`。
 
@@ -302,5 +307,14 @@ ws://<host>:9000/device_pipeline?role=subscriber&device_id=<id>&debug_token=<tok
 | `/asr_chat` 会话处理 | `service/src/deskbot_server/service/device_ws_service.py` |
 | `/device_pipeline` 协议 | `service/src/deskbot_server/ws/device_pipeline.py` |
 | `/camera_view` 预览 | `service/src/deskbot_server/controller/web_controller.py` |
-| TTS 适配（豆包 doubao） | `service/src/deskbot_server/infrastructure/tts/` |
+| TTS 适配（豆包 doubao） | `service/src/deskbot_server/client/tts/` |
 | 人脸检测 / 跟随 | `service/src/deskbot_server/vision/`、`service/src/deskbot_server/service/camera_face_service.py` |
+
+
+## SOP 接入约定（2026-11-10）
+
+页面 HTML/JS/CSS 与用户数据分开：例如 `GET /home` 返回静态入口，`GET /api/pages/home` 返回受保护的 JSON 上下文。`GET /dev/users` 的资源同样公开，`GET /api/pages/dev/users` 必须有开发者权限，用户记录不包含密码哈希。
+
+登录、注册、退出保留原表单地址。浏览器发送 `Accept: application/json` 时，成功返回 `{"ok":true,"redirect":"/home"}` 等跳转数据；普通表单仍可使用 302。每个 HTTP 响应都有 `X-Request-ID`；未预期的 5xx 不再返回内部异常明文。
+
+静态 URL 与页面路径沿用旧接口；没有无限定范围的 HTML 回退。其它协议细节见 [架构](ARCHITECTURE.md) 与 [验收记录](SOP_COMPLIANCE.md)。

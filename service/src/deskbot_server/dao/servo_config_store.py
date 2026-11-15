@@ -6,7 +6,7 @@ from typing import Any
 
 from deskbot_server.constants import SERVO_CFG_FILE
 from deskbot_server.dao._json_store import load_json_file, save_json_file
-from deskbot_server.utils.device_data import resolve_json_path
+from deskbot_server.service.device_data_paths import resolve_json_path
 
 DEFAULT_SERVO_LIMITS: dict[str, int] = {"xMin": 0, "xMax": 180, "yMin": 70, "yMax": 110, "xReverse": 0, "yReverse": 0}
 

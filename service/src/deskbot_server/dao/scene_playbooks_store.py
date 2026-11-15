@@ -14,7 +14,7 @@ import uuid
 from typing import Any
 
 from deskbot_server.constants import SCENE_PLAYBOOKS_FILE
-from deskbot_server.utils.device_data import resolve_json_path
+from deskbot_server.service.device_data_paths import resolve_json_path
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$", re.I)
 _TEMP_POSE_PRESET_RE = re.compile(r"^pose_x-?\d+_y-?\d+$", re.I)
@@ -77,9 +77,7 @@ def _normalize_chunk(raw: object) -> dict[str, Any] | None:
     servo = _normalize_servo_part(raw.get("servo"))
     if not text and not expr and not servo:
         servo_raw = raw.get("servo")
-        if isinstance(servo_raw, dict) and _TEMP_POSE_PRESET_RE.fullmatch(
-            str(servo_raw.get("preset") or "").strip()
-        ):
+        if isinstance(servo_raw, dict) and _TEMP_POSE_PRESET_RE.fullmatch(str(servo_raw.get("preset") or "").strip()):
             return None
         raise ValueError("chunk needs text, expr or servo")
     out: dict[str, Any] = {"id": cid, "text": text}

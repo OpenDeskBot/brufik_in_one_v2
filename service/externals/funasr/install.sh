@@ -53,8 +53,8 @@ fi
   PyYAML==6.0.2
 
 # ---------- 3. 校验代码副本（随仓库提交，不在安装期生成；防静默漂移） ----------
-[ -f deskbot_server/infrastructure/asr/funasr.py ] && \
-[ -f deskbot_server/infrastructure/asr/protocol.py ] && \
+[ -f deskbot_server/client/asr/funasr.py ] && \
+[ -f deskbot_server/client/asr/protocol.py ] && \
 [ -f deskbot_server/model/settings.py ] || \
   fail "deskbot_server 运行子集副本缺失（deskbot_server/ 目录不完整）。请 git 恢复后重试"
 
@@ -122,7 +122,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(".").resolve()))   # cwd = externals/funasr，优先本地副本
 import yaml
 from deskbot_server.model.settings import AppSettings
-from deskbot_server.infrastructure.asr.funasr import FunAsrAdapter
+from deskbot_server.client.asr.funasr import FunAsrAdapter
 cfg = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8")) or {}
 a = FunAsrAdapter(AppSettings.from_config({"asr": cfg}))
 print("warmup ok:", a._model_dir, "onnx=", a._onnx_model is not None, "pt=", a._pt_model is not None)

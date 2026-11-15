@@ -93,7 +93,7 @@ def voice_cosine_similarity(a: list[float], b: list[float]) -> float:
     na, nb = _l2_norm(a), _l2_norm(b)
     if na == 0.0 or nb == 0.0:
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     return max(-1.0, min(1.0, dot / (na * nb)))
 
 

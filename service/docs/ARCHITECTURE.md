@@ -1,76 +1,71 @@
-# deskbot-server 架构（概要）
+# deskbot-server 架构
 
-分层：**ws / web**（协议入口）→ **application**（用例）→ **core**（端口 Protocol）← **infrastructure**（ASR / LLM / TTS 实现）。**pb**、**vision** 不依赖 ws。
+本项目按 HTTP 服务工程 SOP v0.4-draft 绑定 Python 3.11、FastAPI、SQLite、SQLAlchemy Core 及原生浏览器页面。整改范围、验收证据和旧测试问题见 [SOP 实施记录](SOP_COMPLIANCE.md)。
 
-## 主链路（语音对话）
+## 分层与目录
 
-```
-/asr_chat
-  → VAD + 外部 funasr 服务（FunAsrAdapter，9102）
-  → run_chat_turn
-      → ensure_active_session（按 device 加载历史）
-      → complete_llm_with_tool_loop（多轮 tools，最多 8 轮）
-      → TTS（豆包 doubao）→ 音素口型
-      → pb.wire 组包
-      → DownlinkPort.send_pb_wire
-```
+| 目录 | 职责 |
+| --- | --- |
+| `controller/`、`web/blueprints/` | HTTP/WS 路由、访问声明、参数接入和响应转换；后者保留既有模块名称 |
+| `controller/decorators/` | 权限、异常转换、请求标识与最终状态统计 |
+| `model/` | 对象与字段转换、共享错误；`db/models.py` 保留数据库表声明及记录类型 |
+| `service/` | 用户、设备、记忆、会话、模型选择、语音与主动交互规则 |
+| `dao/`、`dao/decorators.py` | 具名直接 SQL、记录映射、统一访问异常和事务参与 |
+| `client/` | ASR/TTS/LLM、人脸和声纹的网络协议实现；不自行选择用户设备的 provider |
+| `schedule/` | 稳定任务声明、显式注册、公共执行记录、重入控制和唯一执行者锁 |
+| `config/` | 文件和环境变量合并、校验、启动快照与显式配置更新 |
+| `public/site/`、`public/admin/`、`public/shared/` | 官网、控制台和共用浏览器资源 |
+| `ports/` | ASR、LLM、TTS、下行等 Protocol |
+| `infrastructure/` | 应用装配、本机模型进程监督、烧录和 WebSocket 适配 |
+| `pb/`、`vision/` | 机器人播放协议、表情、口型和视觉辅助 |
 
-摄像头：`camera_frame` + JPEG → `CameraFaceService` → 调试订阅 / 人脸跟踪 / 舵机跟随。
+主链路：Controller / Schedule → Service → DAO / Client。多步数据库操作由 Service 创建事务并显式传给 DAO，只有事务创建者提交或回滚；无事务的独立 DAO 操作自己释放会话。SQLAlchemy 用于驱动、表声明和记录构造，业务数据访问不使用 ORM 查询与持久化。
 
-## 定时任务
+## HTTP 与权限
 
-```
-ScheduledTaskScheduler（60s 轮询）
-  → claim_due_tasks（SQLite scheduled_tasks，东八区 cron）
-  → run_chat_turn（reuse_session_id，强制 TTS 提醒）
-  → finish_scheduled_task
-```
+- 每个路由显式 `@access(...)`；公开、普通用户和开发者分别声明。设备和订阅 WebSocket 有独立访问类别。
+- 启动通过显式模块列表注册，缺访问声明、重复方法与路径立即失败；自定义 WS 别名也经过同一校验。
+- HTTP 执行顺序为统计 → 异常转换 → 身份与权限 → 接口。同步入口由 FastAPI 线程池执行；异步路径的同步数据访问使用 `run_blocking`。
+- 成功、权限拒绝、422、404/405 和异常都带 `X-Request-ID`，日志记录同一 ID、方法、路由模板、最终状态和耗时。
+- 主服务只有一个公开 `GET /health`，固定返回 `200 application/json {"status":"ok"}`，不探测模型或数据库。
+- 普通 JSON 保留旧项目的 `ok/error` 契约。未预期错误返回固定消息，内部原因留在日志。
+- Web 会话或签名 debug token 必须对应有效用户；设备访问仍检查归属。开发者 API 不因前端隐藏菜单而放松权限。
 
-任务由 LLM `schedule_task` 工具创建；**不由服务端从用户话术正则推断**。
+## 浏览器页面
 
-## 模块一览
+页面 URL 保留 `/`、`/home`、`/expr` 等既有路径。每个已声明页面只返回静态入口 HTML；页面加载后读取 `/api/pages<页面路径>` 的 JSON。页面资源允许匿名加载，数据接口仍校验相应用户或开发者身份。
 
-| 目录 / 模块 | 职责 |
-|-------------|------|
-| `src/deskbot_server/ws/` | WebSocket 会话与流水线（`/asr_chat`、`/device_pipeline`、`/camera_view`）、pb 下行队列、鉴权门禁（device_id / debug_token） |
-| `src/deskbot_server/web/` | FastAPI 控制台（`auth_bp`/`app_bp` 设备/任务/记忆/人脸，`app2c_bp` 2C 页面，`debug_bp` 调试） |
-| `src/deskbot_server/controller/` | HTTP/WS 路由与鉴权装饰器（`require_device_ws` / `require_api_auth` / debug_token） |
-| `src/deskbot_server/db/` | SQLAlchemy 模型（User、Device、ScheduledTask、DeviceUsage、DeviceProfileFace、DeviceMemory、DeviceSession 等） |
-| `src/deskbot_server/service/user_service.py` | 注册/登录、设备绑定解绑、用户与设备列表 |
-| `src/deskbot_server/service/live_service.py` | 在线设备 live 状态（wander/sleep/gaze），对话时暂停 |
-| `src/deskbot_server/service/application/chat_flow.py` | 单轮对话编排（LLM + TTS + pb） |
-| `src/deskbot_server/service/application/llm_tool_loop.py` | LLM 多轮 tool-call |
-| `src/deskbot_server/service/application/llm_tool_runner.py` | 执行 `tools` 指令 |
-| `src/deskbot_server/service/application/scheduled_task_scheduler.py` | 到期任务调度 |
-| `src/deskbot_server/dao/device_session_mapper.py` | 对话 session（SQLite `device_session` 表） |
-| `src/deskbot_server/utils/device_data.py` | 按设备解析 `data/{device_id}/` 数据目录；共享配置在 `data/global/` |
-| `src/deskbot_server/pb/` | 表情、口型、舵机、wire 组包 |
-| `src/deskbot_server/vision/` | 人脸检测、embedding、跟随 |
-| `src/deskbot_server/infrastructure/` | ASR / LLM / TTS 适配实现 |
+`web/pages.py` 只组织 JSON 上下文及静态文件映射，不执行模板。27 份浏览器视图源码由 `tools/build_public.py` 打包为 `public/shared/views.json`，浏览器用固定版本的 Nunjucks 渲染，再启动既有 Vue 页面。运行服务不需要 Node 或 Jinja2。Node 22 用于页面回归与可选浏览器验收。
 
-## WebSocket
+静态挂载映射：`/static/` → `public/shared/`；官网入口 → `public/site/index.html`；已声明控制台页面 → `public/admin/index.html`。没有全局 HTML 回退；未知 API、缺失资源和未声明页面均保持 404。
 
-| 路径 | 生产必需 |
-|------|----------|
-| `/asr_chat?device_id=` | 是（`device_id` 必须，仅此一项鉴权） |
-| `/camera_view`、`/device_pipeline` | 否（调试；Web 侧 debug token + 设备归属） |
+## 语音与客户端
 
-单进程 asyncio；ASR 推理在外部 funasr 独立进程（funasr 完全独立化，v1.2.0 起主服务不再加载 FunASR）。重 CPU 走 `asyncio.to_thread`；人脸推理由 `max_concurrent_face_infer` 限流。
+设备采音 → `/asr_chat` → VAD → ASR Client → 对话 Service / 工具 → TTS Client → pb → 设备。
 
-## 装配（`main.py`）
+设备 provider、历史与提示词组织位于 Service。无状态 ASR/TTS Client 按配置复用，持久连接在应用正常停止时关闭；网络失败不通过换用默认客户端进行隐式重发。豆包 TTS 默认单次尝试。设备配置和控制台显式更新是运行中配置更新的已启用范围；普通文件修改需要重启。
 
-```
-init_database()
-build_chat_service()
-DeviceWsService + LiveService + CameraFaceService + ScheduledTaskScheduler（60s 轮询）
-uvicorn FastAPI (:9000)
-```
+## 调度与生命周期
 
-Web 控制台默认由同进程 `mount_web` 挂载（`start.sh` 也可另起）。
+`reminders.poll` 在 `schedule/reminders.py` 声明，应用装配显式注册。依赖和路由校验完成后才随应用启动。
 
-## 测试
+- 默认 60 秒轮询；同任务重入跳过，失败不立即重试。
+- 每次成功、失败、跳过均记录任务和触发 ID、计划/实际时间、状态、耗时及原因。
+- 正常关闭先停新触发、等待已执行任务完成，再关闭设备和模型客户端。
+- 单机同一 SQLite 库通过文件锁只允许一个调度执行者。多实例部署须指定唯一启用实例，其余设置 `DESKBOT_SCHEDULER_ENABLED=0`；本项目的设备状态仍按单进程部署绑定。
+
+## 配置
+
+`config.load_config()` 在启动时读取 YAML、合并环境变量并校验；`configure_runtime()` 固定运行快照。`AppSettings` 仅转换已取得的数据，不自行读取环境。设备级 provider、参数和记忆属于业务数据；控制台明确保存配置后才更新相应缓存/运行依赖。
+
+## 开发检查
 
 ```bash
-source .venv/bin/activate
-pytest tests/ -q
+cd service
+python tools/build_public.py
+ruff check src
+python -m compileall -q src
+pytest -q tests/test_sop_contract.py tests/test_controller_auth.py
 ```
+
+完整本地回归和实际浏览器步骤见 [SOP 实施记录](SOP_COMPLIANCE.md)。

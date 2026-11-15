@@ -30,6 +30,7 @@ class LlmPort(Protocol):
         tool_choice: Any = "auto",
         on_system_prompt: Callable[[str], None] | None = None,
         user_message_override: str | None = None,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> Any:
         # 具体为 LlmToolRoundResult（实现侧定义，端口层保持抽象）
         ...

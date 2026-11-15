@@ -22,7 +22,7 @@ def temp_db(monkeypatch):
 
 @pytest.fixture()
 def session_env(temp_db, monkeypatch):
-    from deskbot_server.dao import session_store as ss
+    from deskbot_server.service import session_service as ss
 
     monkeypatch.setattr(ss, "SESSION_IDLE_SECONDS", 600)
     return ss

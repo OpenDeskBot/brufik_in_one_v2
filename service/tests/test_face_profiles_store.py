@@ -11,7 +11,7 @@ def db_env(monkeypatch, tmp_path):
     """初始化内存 DB，返回 device_id。"""
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DESKBOT_DB_PATH", str(db_path))
-    monkeypatch.setattr("deskbot_server.utils.device_data.ensure_device_data_initialized", lambda _did: False)
+    monkeypatch.setattr("deskbot_server.service.device_data_paths.ensure_device_data_initialized", lambda _did: False)
 
     from deskbot_server.db import init_database
     from deskbot_server.db.engine import init_engine, reset_engine
@@ -61,7 +61,7 @@ def test_update_face_profile_name(db_env):
 def test_update_face_profile_api(monkeypatch, tmp_path):
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DESKBOT_DB_PATH", str(db_path))
-    monkeypatch.setattr("deskbot_server.utils.device_data.ensure_device_data_initialized", lambda _did: False)
+    monkeypatch.setattr("deskbot_server.service.device_data_paths.ensure_device_data_initialized", lambda _did: False)
 
     from deskbot_server.service.face_profile_service import upsert_profile
     from deskbot_server.db import init_database

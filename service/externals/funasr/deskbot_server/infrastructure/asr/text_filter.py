@@ -1,5 +1,5 @@
 # === externals/funasr 本地副本（funasr 独立化，勿直接删改此段）===
-# 来源: src/deskbot_server/infrastructure/asr/text_filter.py
+# 来源: src/deskbot_server/client/asr/text_filter.py
 # 同步: 主服务改动后按 docs/external_services.md「funasr」节同步本副本并更新日期
 # synced: 2026-08-30
 """ASR 识别结果是否进入对话的文本过滤。"""

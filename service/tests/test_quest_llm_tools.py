@@ -34,7 +34,7 @@ def env(monkeypatch):
 
 
 def _redirect_data_dir(monkeypatch, base: Path) -> None:
-    from deskbot_server.utils import device_data as dd
+    from deskbot_server.service import device_data_paths as dd
 
     d = base / "data"
     d.mkdir()

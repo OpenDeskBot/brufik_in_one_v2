@@ -1,0 +1,412 @@
+"""豆包语音 2.0 TTS（火山引擎 V3 双向 WebSocket）客户端。"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any
+from uuid import uuid4
+
+import websockets
+from websockets.exceptions import ConnectionClosed, InvalidStatus
+
+from deskbot_server.client.tts.protocols import (
+    EventType,
+    MsgType,
+    finish_connection,
+    finish_session,
+    new_session_id,
+    receive_message,
+    start_connection,
+    start_session,
+    task_request,
+    wait_for_event,
+)
+from deskbot_server.model.errors import ClientError
+
+logger = logging.getLogger("deskbot-server")
+
+DEFAULT_WS_URL = "wss://openspeech.bytedance.com/api/v3/tts/bidirection"
+DEFAULT_RESOURCE_ID = "seed-tts-2.0"
+DEFAULT_MODEL = "seed-tts-2.0-standard"
+DEFAULT_SPEAKER = "zh_male_dongmanhaimian_mars_bigtts"  # 亮嗓萌仔（海绵宝宝）
+# 云端凭证一律设备级（devices.tts_param），本模块无任何全局密钥/环境变量读取。
+
+
+# 设备级参数白名单（robot_capability / resolve 共用，避免循环依赖）
+DOUBAO_TTS_FIELDS = ("api_key", "speaker", "resource_id", "model", "ws_url", "sample_rate", "audio_format")
+
+
+@dataclass(frozen=True)
+class DoubaoTtsConfig:
+    api_key: str
+    speaker: str = ""
+    resource_id: str = DEFAULT_RESOURCE_ID
+    model: str = DEFAULT_MODEL
+    ws_url: str = DEFAULT_WS_URL
+    sample_rate: int = 16000
+    audio_format: str = "pcm"
+    enable_timestamp: bool = True
+
+    def ws_headers(self) -> dict[str, str]:
+        return {"X-Api-Key": self.api_key, "X-Api-Resource-Id": self.resource_id, "X-Api-Connect-Id": uuid4().hex}
+
+    def masked(self) -> dict[str, Any]:
+        return {
+            "api_key": "",
+            "api_key_set": bool(self.api_key),
+            "speaker": self.speaker,
+            "resource_id": self.resource_id,
+            "model": self.model,
+            "ws_url": self.ws_url,
+            "sample_rate": self.sample_rate,
+            "audio_format": self.audio_format,
+            "enable_timestamp": self.enable_timestamp,
+        }
+
+
+def _mask_secret(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= 6:
+        return "*" * len(raw)
+    return raw[:3] + "*" * (len(raw) - 6) + raw[-3:]
+
+
+def _is_masked_secret(value: str) -> bool:
+    """判断是否为 masked() 产生的占位串，避免误当作真实密钥。"""
+    raw = (value or "").strip()
+    if not raw or "*" not in raw:
+        return False
+    if len(raw) <= 6:
+        return all(c == "*" for c in raw)
+    return raw[3:-3] == "*" * (len(raw) - 6)
+
+
+def resolve_optional_secret(incoming, fallback: str) -> str:
+    """表单留空或脱敏占位时不覆盖，使用 fallback（现有设备配置 / 内置默认）。"""
+    raw = str(incoming or "").strip()
+    if not raw or _is_masked_secret(raw):
+        return (fallback or "").strip()
+    return raw
+
+
+def load_doubao_tts_config(
+    tts_cfg: dict[str, Any] | None = None, overrides: dict[str, Any] | None = None
+) -> DoubaoTtsConfig:
+    """读取豆包 TTS 配置（云端密钥一律设备级，无全局 env 读取）。
+
+    参数优先级：``overrides``（设备 tts_param / 表单临时覆盖）> ``tts_cfg.doubao_speaker``
+    > 内置默认。
+    """
+    ov = overrides or {}
+
+    def _pick(field: str, default: str = "") -> str:
+        raw = str(ov.get(field) or "").strip()
+        return raw or default
+
+    speaker = str(ov.get("speaker") or "").strip()
+    if not speaker:
+        speaker = str((tts_cfg or {}).get("doubao_speaker") or "").strip()
+    if not speaker:
+        speaker = DEFAULT_SPEAKER
+    resource_id = _pick("resource_id", DEFAULT_RESOURCE_ID)
+    model = _pick("model", DEFAULT_MODEL)
+    ws_url = _pick("ws_url", DEFAULT_WS_URL)
+    audio_format = _pick("audio_format", "pcm")
+    sample_rate_raw = str(ov.get("sample_rate") or "").strip()
+    try:
+        sample_rate = int(sample_rate_raw or 16000)
+    except (TypeError, ValueError):
+        sample_rate = 16000
+    from deskbot_server.client.tts.speakers import find_doubao_tts_speaker_preset, suggest_resource_id
+
+    expected_rid = suggest_resource_id(speaker)
+    preset = find_doubao_tts_speaker_preset(speaker)
+    if preset and preset.resource_id:
+        expected_rid = preset.resource_id.strip()
+    if expected_rid and resource_id != expected_rid:
+        logger.info("DOUBAO_TTS_RESOURCE_ID=%s 与 speaker=%s 不匹配，自动改用 %s", resource_id, speaker, expected_rid)
+        resource_id = expected_rid
+    if resource_id == "seed-tts-1.0" and model.startswith("seed-tts-2"):
+        logger.info("speaker=%s 使用 seed-tts-1.0，忽略 2.0 model=%s", speaker, model)
+        model = ""
+    api_key = str(ov.get("api_key") or "").strip()
+    raw_flag = str(ov.get("enable_timestamp") or "").strip()
+    enable_timestamp = True if not raw_flag else raw_flag.strip().lower() not in ("0", "false", "no", "off")
+    return DoubaoTtsConfig(
+        api_key=api_key,
+        speaker=speaker,
+        resource_id=resource_id,
+        model=model,
+        ws_url=ws_url,
+        sample_rate=sample_rate,
+        audio_format=audio_format,
+        enable_timestamp=enable_timestamp,
+    )
+
+
+def _build_start_session_payload(cfg: DoubaoTtsConfig) -> bytes:
+    audio_params: dict[str, Any] = {"format": cfg.audio_format, "sample_rate": cfg.sample_rate}
+    if cfg.enable_timestamp:
+        audio_params["enable_timestamp"] = True
+    req_params: dict[str, Any] = {"speaker": cfg.speaker, "audio_params": audio_params}
+    if cfg.model:
+        req_params["model"] = cfg.model
+    if cfg.enable_timestamp:
+        req_params["enable_timestamp"] = True
+        req_params["enable_subtitle"] = True
+        req_params["additions"] = json.dumps({"enable_timestamp": True, "enable_subtitle": True}, ensure_ascii=False)
+    body = {
+        "user": {"uid": uuid4().hex},
+        "event": EventType.StartSession,
+        "namespace": "BidirectionalTTS",
+        "req_params": req_params,
+    }
+    return json.dumps(body, ensure_ascii=False).encode("utf-8")
+
+
+def _describe_ws_connect_error(exc: Exception) -> str:
+    if isinstance(exc, InvalidStatus):
+        body = (exc.response.body or b"").decode("utf-8", errors="replace").strip()
+        status = exc.response.status_code
+        hint = ""
+        if status == 401:
+            hint = "（鉴权失败：请核对豆包语音/Seed Speech API Key，在机器人设置 → TTS「配置」中为该设备填写）"
+        elif status == 403 and "not granted" in body:
+            hint = "（资源未授权：请在控制台开通对应 Resource ID，例如 seed-tts-2.0）"
+        elif status == 400 and "no token" in body:
+            hint = "（未提供 API Key：请在机器人设置 → TTS「配置」中为该设备填写）"
+        detail = f"HTTP {status}"
+        if body:
+            detail += f": {body}"
+        return f"WebSocket 连接被拒 {detail}{hint}"
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _parse_session_meta(payload: bytes) -> tuple[int, str]:
+    raw = payload.decode("utf-8", errors="replace") if payload else ""
+    try:
+        meta = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return 0, raw or "unknown"
+    return int(meta.get("status_code", 0) or 0), str(meta.get("message", raw or "unknown"))
+
+
+@dataclass
+class DoubaoTtsResult:
+    pcm: bytes
+    sample_rate: int
+    elapsed_ms: int = 0
+    events: list[dict[str, Any]] = field(default_factory=list)
+    sentence_end: dict[str, Any] | None = None
+    subtitles: list[Any] = field(default_factory=list)
+
+
+def _config_pool_key(cfg: DoubaoTtsConfig) -> tuple[Any, ...]:
+    return (
+        cfg.ws_url,
+        cfg.api_key,
+        cfg.speaker,
+        cfg.resource_id,
+        cfg.model,
+        cfg.sample_rate,
+        cfg.audio_format,
+        cfg.enable_timestamp,
+    )
+
+
+class DoubaoTtsConnection:
+    """复用同一 WebSocket 连接，多次 StartSession 合成，避免每句重连。"""
+
+    def __init__(self, cfg: DoubaoTtsConfig) -> None:
+        self._cfg = cfg
+        self._ws: Any | None = None
+        self._lock = asyncio.Lock()
+        self._ready = False
+
+    async def synthesize(self, text: str) -> DoubaoTtsResult:
+        clean = (text or "").strip()
+        if not clean:
+            raise ValueError("空文本")
+        if not self._cfg.api_key:
+            raise ValueError("豆包 TTS 缺少 API Key：请在机器人设置 → TTS「配置」中为该设备填写")
+        if not self._cfg.speaker:
+            raise ValueError("未设置 speaker（音色）")
+
+        async with self._lock:
+            t0 = time.monotonic()
+            try:
+                await self._ensure_ready()
+                pcm, events, sentence_end, subtitles = await self._synthesize_once(clean)
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                logger.info(
+                    "豆包 TTS 合成完成 speaker=%r pcm_bytes=%d elapsed_ms=%d segs_hint words=%d phonemes=%d",
+                    self._cfg.speaker,
+                    len(pcm),
+                    elapsed_ms,
+                    len((sentence_end or {}).get("words") or []),
+                    len((sentence_end or {}).get("phonemes") or []),
+                )
+                return DoubaoTtsResult(
+                    pcm=bytes(pcm),
+                    sample_rate=self._cfg.sample_rate,
+                    elapsed_ms=elapsed_ms,
+                    events=events,
+                    sentence_end=sentence_end,
+                    subtitles=subtitles,
+                )
+            except (ConnectionClosed, InvalidStatus, RuntimeError, OSError, websockets.WebSocketException) as exc:
+                logger.warning("豆包 TTS 会话失败，本次不重试: %s", exc)
+                await self._reset()
+                raise ClientError("豆包 TTS 会话失败", kind="connection", provider="doubao") from exc
+
+    async def close(self) -> None:
+        async with self._lock:
+            await self._reset()
+
+    async def _ensure_ready(self) -> None:
+        if self._ws is not None and self._ready:
+            return
+        await self._reset()
+        cfg = self._cfg
+        ws = await websockets.connect(
+            cfg.ws_url,
+            additional_headers=cfg.ws_headers(),
+            max_size=None,
+            open_timeout=30,
+            ping_interval=20,
+            ping_timeout=20,
+        )
+        try:
+            await start_connection(ws)
+            await wait_for_event(ws, MsgType.FullServerResponse, EventType.ConnectionStarted)
+        except Exception:
+            await ws.close()
+            raise
+        self._ws = ws
+        self._ready = True
+        logger.info("豆包 TTS WebSocket 长连接已建立 url=%s speaker=%r", cfg.ws_url, cfg.speaker)
+
+    async def _reset(self) -> None:
+        self._ready = False
+        ws = self._ws
+        self._ws = None
+        if ws is None:
+            return
+        try:
+            await finish_connection(ws)
+            await asyncio.wait_for(receive_message(ws), timeout=2.0)
+        except Exception:
+            pass
+        with contextlib.suppress(Exception):
+            await ws.close()
+
+    async def _synthesize_once(
+        self, clean: str
+    ) -> tuple[bytearray, list[dict[str, Any]], dict[str, Any] | None, list[Any]]:
+        ws = self._ws
+        if ws is None:
+            raise RuntimeError("WebSocket 未连接")
+        cfg = self._cfg
+        session_id = new_session_id()
+        pcm = bytearray()
+        events: list[dict[str, Any]] = []
+        sentence_end: dict[str, Any] | None = None
+        subtitles: list[Any] = []
+
+        await start_session(ws, _build_start_session_payload(cfg), session_id)
+        session_msg = await receive_message(ws)
+        events.append(_event_row(session_msg))
+        if session_msg.event == EventType.SessionFailed:
+            code, message = _parse_session_meta(session_msg.payload)
+            raise RuntimeError(f"SessionFailed ({code}): {message}")
+        if session_msg.event != EventType.SessionStarted:
+            raise RuntimeError(f"期望 SessionStarted，收到 {session_msg.event}")
+
+        task_body = json.dumps({"req_params": {"text": clean}}, ensure_ascii=False).encode("utf-8")
+        await task_request(ws, task_body, session_id)
+        await finish_session(ws, session_id)
+
+        while True:
+            msg = await receive_message(ws)
+            events.append(_event_row(msg))
+            if msg.type == MsgType.Error:
+                err_text = msg.payload.decode("utf-8", errors="replace")
+                raise RuntimeError(f"协议错误 ({msg.error_code}): {err_text}")
+            if msg.type == MsgType.AudioOnlyServer and msg.event == EventType.TTSResponse:
+                if msg.payload:
+                    pcm.extend(msg.payload)
+                continue
+            if msg.event == EventType.TTSSubtitle and msg.payload:
+                with contextlib.suppress(json.JSONDecodeError):
+                    subtitles.append(json.loads(msg.payload.decode("utf-8")))
+                continue
+            if msg.event == EventType.TTSSentenceEnd and msg.payload:
+                with contextlib.suppress(json.JSONDecodeError):
+                    sentence_end = json.loads(msg.payload.decode("utf-8"))
+                continue
+            if msg.event == EventType.SessionFinished:
+                break
+            if msg.event == EventType.SessionFailed:
+                code, message = _parse_session_meta(msg.payload)
+                raise RuntimeError(f"SessionFailed ({code}): {message}")
+
+        return pcm, events, sentence_end, subtitles
+
+
+_pool_lock = asyncio.Lock()
+_pools: dict[tuple[Any, ...], DoubaoTtsConnection] = {}
+
+
+async def get_doubao_tts_connection(cfg: DoubaoTtsConfig) -> DoubaoTtsConnection:
+    key = _config_pool_key(cfg)
+    async with _pool_lock:
+        conn = _pools.get(key)
+        if conn is None:
+            conn = DoubaoTtsConnection(cfg)
+            _pools[key] = conn
+        return conn
+
+
+async def synthesize_doubao_tts(text: str, cfg: DoubaoTtsConfig) -> DoubaoTtsResult:
+    """合成整段文本；复用进程内 WebSocket 长连接。"""
+    conn = await get_doubao_tts_connection(cfg)
+    try:
+        return await conn.synthesize(text)
+    except InvalidStatus as exc:
+        err = _describe_ws_connect_error(exc)
+        logger.error(
+            "豆包 TTS WebSocket 连接失败 url=%s resource_id=%s err=%s", cfg.ws_url, cfg.resource_id, err, exc_info=exc
+        )
+        raise RuntimeError(err) from exc
+
+
+def _event_row(msg) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "type": str(msg.type),
+        "event": str(msg.event),
+        "session_id": msg.session_id,
+        "payload_bytes": len(msg.payload or b""),
+    }
+    if msg.type == MsgType.Error:
+        row["error_code"] = msg.error_code
+        row["payload"] = (msg.payload or b"").decode("utf-8", errors="replace")
+    elif msg.type != MsgType.AudioOnlyServer and msg.payload:
+        try:
+            row["payload"] = json.loads(msg.payload.decode("utf-8"))
+        except json.JSONDecodeError:
+            row["payload"] = (msg.payload or b"").decode("utf-8", errors="replace")
+    return row
+
+
+async def aclose_pools():
+    async with _pool_lock:
+        connections = list(_pools.values())
+        _pools.clear()
+    await asyncio.gather(*(connection.close() for connection in connections))

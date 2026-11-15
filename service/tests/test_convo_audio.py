@@ -233,18 +233,25 @@ def test_publish_chat_turn_audio_flags_false_when_absent(temp_db, fresh_store):
 
 
 @pytest.fixture()
-def pipeline_client(fresh_store):
+def pipeline_client(fresh_store, temp_db, monkeypatch):
     """仅挂 controller 路由的微型 FastAPI（鉴权语义与 /api/pipeline_recent 一致）。"""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from starlette.middleware.sessions import SessionMiddleware
 
+    from deskbot_server.auth.debug_ws_token import issue_debug_ws_token
     from deskbot_server.controller.web_controller import router
+    from deskbot_server.dao import device_mapper, user_mapper
+
+    monkeypatch.setenv("DESKBOT_WEB_SECRET_KEY", "convo-audio-test-secret")
+    user_mapper.create("convo-user", "convo@example.com", "unused-password-hash", False)
+    device_mapper.insert("convo-device", "dev1", "convo-user", "Convo device")
 
     app = FastAPI()
     app.add_middleware(SessionMiddleware, secret_key="convo-audio-test-secret")
     app.include_router(router)
-    return TestClient(app)
+    with TestClient(app, headers={"X-Deskbot-Debug-Token": issue_debug_ws_token("convo-user").token}) as client:
+        yield client
 
 
 class TestPipelineAudioApi:

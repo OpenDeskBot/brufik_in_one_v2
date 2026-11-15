@@ -190,7 +190,7 @@ def expand_llm_moves(moves: list[Any] | None, *, device_id: str | None = None) -
             continue
         raw_ms = [max(1, int(s.get("ms") or 400)) for s in steps]
         scaled = _scale_ms_values(raw_ms, target_ms)
-        for step, sms in zip(steps, scaled):
+        for step, sms in zip(steps, scaled, strict=False):
             try:
                 out.append(
                     clamp_servo_step(
@@ -242,7 +242,7 @@ def expand_llm_anims(anims: list[Any] | None, *, device_id: str | None = None) -
             continue
         raw_ms = [max(1, int(fr.get("ms") or 500)) for fr in frames]
         scaled = _scale_ms_values(raw_ms, target_ms)
-        for fr, sms in zip(frames, scaled):
+        for fr, sms in zip(frames, scaled, strict=False):
             try:
                 elements = _extract_frame_elements(fr if isinstance(fr, dict) else {})
             except ValueError:
@@ -288,6 +288,9 @@ def map_anim_frames_to_tts_segs(
         ):
             acc += max(1, int(anim_frames[frame_idx].get("ms") or _FRAME_MS_MIN))
             frame_idx += 1
+        if anim_frames[frame_idx].get("anim_id"):
+            out.append({k: anim_frames[frame_idx][k] for k in ("anim_id", "frame")})
+            continue
         els = anim_frames[frame_idx].get("elements")
         out.append(copy.deepcopy(els) if isinstance(els, dict) else None)
     return out

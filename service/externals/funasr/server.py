@@ -32,14 +32,27 @@ import uvicorn  # noqa: E402
 from fastapi import FastAPI, Header, Request  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
-from deskbot_server.infrastructure.asr.protocol import (  # noqa: E402
-    ERR_MODEL_NOT_READY,
-    ERR_TRANSCRIBE_FAILED,
-    AsrProtocolError,
-    error_response,
-    ok_response,
-    parse_transcribe_request,
-)
+try:
+    from deskbot_server.infrastructure.asr.protocol import (  # noqa: E402
+        ERR_MODEL_NOT_READY,
+        ERR_TRANSCRIBE_FAILED,
+        AsrProtocolError,
+        error_response,
+        ok_response,
+        parse_transcribe_request,
+    )
+except ModuleNotFoundError:
+    # Tests may embed this app alongside the main service package. Standalone
+    # deployment always resolves the vendored infrastructure module above.
+    from deskbot_server.client.asr.protocol import (  # noqa: E402
+        ERR_MODEL_NOT_READY,
+        ERR_TRANSCRIBE_FAILED,
+        AsrProtocolError,
+        error_response,
+        ok_response,
+        parse_transcribe_request,
+    )
+
 
 logger = logging.getLogger("funasr")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -75,6 +88,7 @@ def _load_config() -> dict:
 async def _load_model() -> None:
     global _adapter
     from deskbot_server.infrastructure.asr.funasr import FunAsrAdapter
+
     from deskbot_server.model.settings import AppSettings
 
     cfg = _load_config()

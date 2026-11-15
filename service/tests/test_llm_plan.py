@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from deskbot_server.infrastructure.llm.utils import llm_pb_moves_prompt_appendix, parse_llm_reply
+from deskbot_server.service.llm_context import llm_pb_moves_prompt_appendix, parse_llm_reply
 from deskbot_server.pb.llm_plan import (
     expand_llm_anims,
     expand_llm_moves,
@@ -150,6 +150,29 @@ def test_move_prompt_uses_global_presets_for_new_device():
     assert "look_down" in appendix
 
 
+def test_chat_prompt_no_longer_injects_action_appendix():
+    """动作/表情白名单只属于决策模型；对话模型 prompt 不再出现 gesture/expression。"""
+    from deskbot_server.service.llm_context import build_llm_system_prompt
+
+    sp = build_llm_system_prompt(
+        "你是助手", device_id="__device_without_servo_file__", native_tool_names=[]
+    )
+    assert "gesture" not in sp
+    assert "expression" not in sp
+    assert "可用动作" not in sp
+
+
+def test_global_system_prompt_is_plain_text():
+    from pathlib import Path
+
+    p = Path(__file__).resolve().parents[1] / "data" / "global" / "llm_system.txt"
+    text = p.read_text(encoding="utf-8")
+    assert "need_reply" not in text
+    assert '"tts"' not in text
+    assert "gesture" not in text
+    assert "expression" not in text
+
+
 def test_expand_llm_anims_string_uses_scene_default_ms():
     frames = expand_llm_anims(["default"])
     assert frames
@@ -265,7 +288,7 @@ def test_merge_llm_plan_anim_rows_keeps_phoneme_mouth():
 
 
 def test_build_llm_user_message():
-    from deskbot_server.infrastructure.llm.utils import build_llm_user_message
+    from deskbot_server.service.llm_context import build_llm_user_message
     from deskbot_server.service.application.face_snapshot_cache import update_device_faces
 
     dev = "test_device_user_msg"
@@ -341,7 +364,7 @@ def test_parse_llm_reply_empty_tts_not_raw_json():
 
 
 def test_memory_store_roundtrip():
-    from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory, get_memory, list_memory_for_device
+    from deskbot_server.service.memory_service import add_memory, delete_memory, get_memory, list_memory_for_device
 
     e1 = add_memory("主人喜欢猫", device_id="test_dev_plan")
     assert e1["text"] == "主人喜欢猫"

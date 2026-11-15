@@ -90,11 +90,11 @@
 3. `service.yaml` 契约：`type: asr`、`healthcheck.url` 指向 `/health`
 4. 配置自治：只读同目录 `config.yaml`（主服务 asr 段快照），不读主服务配置/env
 5. 请求侧解析（PCM/WAV → 归一化 PCM + sr）、标准响应/错误构造建议复用
-   `deskbot_server.infrastructure.asr.protocol`（dict 级，无 pydantic 依赖）
+   `deskbot_server.client.asr.protocol`（dict 级，无 pydantic 依赖）
 
 ## 主服务消费侧约定（客户端）
 
-`FunAsrAdapter`（`infrastructure/asr/http_adapter.py`）是实现本协议的客户端：
+`FunAsrAdapter`（`client/asr/http_adapter.py`）是实现本协议的客户端：
 
 - 默认发 PCM（主服务手里就是 PCM），`X-Sample-Rate` 带上真实采样率
 - 超时 30s（音频上行 + 推理）
@@ -109,7 +109,7 @@
 
 - `utils/asr_segments.py`：`complete_segments(text, pcm_bytes, sample_rate)` →
   `[{"start_ms", "end_ms", "text"}]`
-- 算法：按句末标点切句（复用 `infrastructure/tts/text_split.py` 的纯文本切分）→
+- 算法：按句末标点切句（复用 `client/tts/text_split.py` 的纯文本切分）→
   按字符数等分总时长（`total_ms = len(pcm)/2/sr*1000`）→ 末段吃舍入余量，
   保证 `end_ms == total_ms`
 - 与 `utils/phoneme_duration.py` 的"文本+总时长→时间轴"是同一算法思路，但
@@ -122,12 +122,12 @@
 
 云端 API 无本地进程，**不建 externals 目录**，主服务内适配器接入：
 
-1. `infrastructure/asr/<name>_adapter.py`：实现 `AsrPort`（`ports/asr.py`）——
+1. `client/asr/<name>_adapter.py`：实现 `AsrPort`（`ports/asr.py`）——
    `transcribe(pcm, sr)` 内部：pcm → 该云所需格式（如 wav，复用 `pcm_to_wav_bytes`）
    → 调云 API → 解析出 text（并归一化 language/confidence 可选字段）
-2. `infrastructure/asr/resolve.py`：`SUPPORTED_ASR_PROVIDERS` 注册新 provider 名，
+2. `client/asr/resolve.py`：`SUPPORTED_ASR_PROVIDERS` 注册新 provider 名，
    `resolve_asr_adapter` 加分支（设备表 `asr_provider` 列存该值）
-3. `is_valid_text` 复用 `infrastructure/asr/text_filter.py`
+3. `is_valid_text` 复用 `client/asr/text_filter.py`
 
 可选：认证/限流想集中管理时，可加 `externals/<name>-engine/` 薄网关进程，
 实现本协议（此时设备配置 `provider: funasr` + URL，零适配代码）。
@@ -143,8 +143,8 @@
 
 | 后端 | 形态 | 接入方式 | 状态 |
 |------|------|----------|------|
-| funasr（SenseVoice） | 本地 externals（`externals/funasr`，端口 9102） | `provider: external` | 已实现：PCM/WAV 输入、`{"text", "elapsed_ms"}`、统一错误结构（复用 `infrastructure/asr/protocol.py`） |
-| doubao（豆包） | 云 API（火山 Seed-ASR 2.0 极速版，`openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash`） | `provider: doubao`（`infrastructure/asr/doubao_adapter.py`） | 已实现：配置优先设备级 `devices.asr_param`（`api_key`/`resource_id`/`uid`/`url`），兜底 env（`DOUBAO_ASR_API_KEY` 等）；`X-Api-Key` 鉴权，结果状态在响应头 `X-Api-Status-Code`（20000000 成功 / 20000003 静音）；直连云 API，不走本协议 HTTP 层，但响应解析为同一 text 结构 |
+| funasr（SenseVoice） | 本地 externals（`externals/funasr`，端口 9102） | `provider: external` | 已实现：PCM/WAV 输入、`{"text", "elapsed_ms"}`、统一错误结构（复用 `client/asr/protocol.py`） |
+| doubao（豆包） | 云 API（火山 Seed-ASR 2.0 极速版，`openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash`） | `provider: doubao`（`client/asr/doubao_adapter.py`） | 已实现：配置优先设备级 `devices.asr_param`（`api_key`/`resource_id`/`uid`/`url`），兜底 env（`DOUBAO_ASR_API_KEY` 等）；`X-Api-Key` 鉴权，结果状态在响应头 `X-Api-Status-Code`（20000000 成功 / 20000003 静音）；直连云 API，不走本协议 HTTP 层，但响应解析为同一 text 结构 |
 
 ## 版本与兼容
 

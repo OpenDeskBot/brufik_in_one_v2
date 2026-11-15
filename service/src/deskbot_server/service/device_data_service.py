@@ -19,13 +19,10 @@ import shutil
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import inspect, text
-
-from deskbot_server.dao import device_memory_mapper, device_usage_mapper, quest_mapper
+from deskbot_server.dao import device_memory_mapper, device_usage_mapper, legacy_usage_mapper, quest_mapper
 from deskbot_server.dao import device_session_mapper as session_mapper
-from deskbot_server.db.engine import get_session
 from deskbot_server.service import face_profile_service, scheduled_task_service, voice_profile_service
-from deskbot_server.utils.device_data import (
+from deskbot_server.service.device_data_paths import (
     ensure_device_data_initialized,
     legacy_device_data_dir,
     safe_device_data_dir,
@@ -39,20 +36,7 @@ _LEGACY_USAGE_TABLE = "usage_daily_device"
 
 def _delete_legacy_usage_rows(device_id: str) -> int:
     """清理历史用量表；新库没有这张表，直接返回 0。"""
-    session = get_session()
-    bind = session.get_bind()
-    if bind is None or _LEGACY_USAGE_TABLE not in inspect(bind).get_table_names():
-        return 0
-    result = session.execute(
-        text(f"DELETE FROM {_LEGACY_USAGE_TABLE} WHERE device_id = :device_id"),  # noqa: S608 — 表名是常量
-        {"device_id": device_id},
-    )
-    try:
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    return int(result.rowcount or 0)
+    return legacy_usage_mapper.delete_by_device(device_id) if legacy_usage_mapper.table_exists() else 0
 
 
 def _db_steps(device_id: str) -> list[tuple[str, Callable[[], int]]]:

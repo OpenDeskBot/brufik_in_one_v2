@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -58,6 +59,7 @@ class ConnectionSession:
         self.lock = asyncio.Lock()
         self._uplink_open = False
         self._pcm_buffer = bytearray()  # 用于调试：累积所有PCM数据
+        self._raw_barge_until = 0.0
 
         model_path = audio_cfg.silero_model_path
         if not model_path:
@@ -92,7 +94,8 @@ class ConnectionSession:
         sample_rate: int | None = None,
         channels: int | None = None,
         opus_frames: int | None = None,
-    ) -> tuple[bytes | None, bool, bytes | None]:
+        raw_preview: bytes = b"",
+    ) -> tuple[bytes | None, bool, bool | None]:
         """返回 ``(utterance_pcm_or_none, uplink_started, None)``。
 
         Opus 解码与 Silero VAD 推理均为 CPU 密集型同步操作，通过
@@ -140,14 +143,33 @@ class ConnectionSession:
                 )
 
             # --- Silero VAD 推理（CPU 密集，移到线程池）---
+            if raw_preview and time.monotonic() < self._raw_barge_until:
+                from deskbot_server.utils.audio_resample import upsample_pcm16_mono
+                pcm = await loop.run_in_executor(None, upsample_pcm16_mono, raw_preview, 8000, self.rom_sr)
+            speech_started = False
             if pcm:
+                previous_starts = self._vad.speech_starts
                 self._pcm_buffer.extend(pcm)
                 utterance = await loop.run_in_executor(None, self._vad.feed_pcm, pcm)
+                speech_started = self._vad.speech_starts > previous_starts
                 if utterance:
                     logger.info("[feed_audio] VAD utterance pcm_bytes=%d", len(utterance))
             else:
                 utterance = None
-            return utterance, uplink_started, None
+            return utterance, uplink_started, speech_started
+
+    async def begin_raw_barge(self, pcm: bytes, sample_rate: int) -> None:
+        """Keep the stop word and following question; discard prior speaker echo."""
+        from deskbot_server.utils.audio_resample import upsample_pcm16_mono
+        async with self.lock:
+            loop = asyncio.get_running_loop()
+            seeded = await loop.run_in_executor(None, upsample_pcm16_mono, pcm, sample_rate, self.rom_sr)
+            self._vad.reset()
+            self._raw_barge_until = time.monotonic() + 8
+            await loop.run_in_executor(None, self._vad.feed_pcm, seeded)
+
+    def end_raw_barge(self) -> None:
+        self._raw_barge_until = 0.0
 
     def flush(self) -> RomUplinkFlush | None:
         utterance = self._vad.flush()
@@ -165,6 +187,11 @@ class ConnectionSession:
             duration_ms,
         )
         return out
+
+    async def speech_preview(self, max_ms: int = 900) -> bytes:
+        """Copy a bounded recent voiced window without flushing the utterance."""
+        async with self.lock:
+            return self._vad.preview_pcm(max_ms)
 
     def save_debug_wav(self, path: str | None = None) -> str:
         """将累积的PCM保存为WAV文件，返回文件路径。"""

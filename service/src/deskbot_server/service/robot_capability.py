@@ -1,13 +1,13 @@
 """机器人能力设置服务：ASR / LLM / TTS 能力选择与热切换。
 
 - ASR：设备级配置（device 表 asr_provider，默认 funasr），写表即生效——
-  ``resolve_asr_adapter`` 每次调用动态解析（见 infrastructure/asr/resolve.py）
-- LLM：设备级配置（device 表 llm_provider：minicpm / qwen 本地固定端点 / ark / siliconflow
+  ``resolve_asr_adapter`` 每次调用动态解析（见 client/asr/resolve.py）
+- LLM：设备级配置（device 表 llm_provider：minicpm / qwen / unee 本地固定端点 / ark / siliconflow
   云端，空=回落系统默认 config.yaml llm 段，当前默认指向硅基流动）；ark 的密钥/模型存 device 表
   llm_param["ark"]，siliconflow 只存模型（密钥是服务端公共凭证，见文末例外），
-  写表即生效——``resolve_llm_config`` 每次调用动态解析（见 infrastructure/llm/runtime.py）
+  写表即生效——``resolve_llm_config`` 每次调用动态解析（见 client/llm/runtime.py）
 - TTS：设备级配置（device 表 tts_provider，默认 moss-tts-nano；tts_param 存音色/凭证），
-  写表即生效——``resolve_tts_adapter`` 每次调用动态解析（见 infrastructure/tts/resolve.py）。
+  写表即生效——``resolve_tts_adapter`` 每次调用动态解析（见 client/tts/resolve.py）。
   config.yaml 不再持有 provider 与凭证，ASR/TTS/LLM 云端凭证由各设备自配。
 
 **例外：LLM 的「系统默认」是服务端公共凭证**。``config.yaml`` 的 ``llm`` 段默认指向
@@ -29,25 +29,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from deskbot_server.config import load_config, save_config
-from deskbot_server.controller.runtime import get_runtime
-from deskbot_server.dao.device_mapper import (
-    get_asr_param,
-    get_llm_param,
-    get_tts_param,
-    set_asr_provider,
-    set_llm_provider,
-    set_tts_provider,
-    update_asr_param,
-    update_llm_param,
-    update_tts_param,
-)
-from deskbot_server.infrastructure.asr.audio_norm import DEFAULT_PCM_SAMPLE_RATE, normalize_test_audio
-from deskbot_server.infrastructure.asr.doubao import (
+from deskbot_server.client.asr.audio_norm import DEFAULT_PCM_SAMPLE_RATE, normalize_test_audio
+from deskbot_server.client.asr.doubao import DEFAULT_RESOURCE_ID as ASR_DEFAULT_RESOURCE_ID
+from deskbot_server.client.asr.doubao import DEFAULT_UID as ASR_DEFAULT_UID
+from deskbot_server.client.asr.doubao import DEFAULT_URL as ASR_DEFAULT_URL
+from deskbot_server.client.asr.doubao import (
     DOUBAO_ASR_FIELDS,
-    DEFAULT_RESOURCE_ID as ASR_DEFAULT_RESOURCE_ID,
-    DEFAULT_UID as ASR_DEFAULT_UID,
-    DEFAULT_URL as ASR_DEFAULT_URL,
     STATUS_OK,
     STATUS_SILENCE,
     DoubaoAsrConfig,
@@ -55,10 +42,9 @@ from deskbot_server.infrastructure.asr.doubao import (
     _mask_secret,
     transcribe_doubao_detailed,
 )
-from deskbot_server.infrastructure.asr.funasr_adapter import TRANSCRIBE_TIMEOUT_S
-from deskbot_server.infrastructure.asr.protocol import AsrProtocolError, extract_error, parse_transcribe_response
-from deskbot_server.infrastructure.asr.resolve import resolve_asr_provider
-from deskbot_server.infrastructure.llm.runtime import (
+from deskbot_server.client.asr.funasr_adapter import TRANSCRIBE_TIMEOUT_S
+from deskbot_server.client.asr.protocol import AsrProtocolError, extract_error, parse_transcribe_response
+from deskbot_server.client.llm.runtime import (
     ARK_OPENAI_BASE_URL,
     ARK_PARAM_FIELDS,
     LOCAL_LLM_PROVIDERS,
@@ -69,28 +55,45 @@ from deskbot_server.infrastructure.llm.runtime import (
     SILICONFLOW_PARAM_FIELDS,
     VOLCENGINE_PROTOCOLS,
     ResolvedLlmConfig,
-    build_siliconflow_config,
     chat_acompletion,
     cloud_provider_of_base_url,
-    resolve_device_llm_provider,
-    resolve_llm_config,
     resolve_siliconflow_api_key,
 )
-from deskbot_server.infrastructure.tts.doubao import (
-    DOUBAO_TTS_FIELDS,
-    DEFAULT_MODEL as TTS_DEFAULT_MODEL,
-    DEFAULT_RESOURCE_ID as TTS_DEFAULT_RESOURCE_ID,
-    DEFAULT_SPEAKER as TTS_DEFAULT_SPEAKER,
-    DEFAULT_WS_URL as TTS_DEFAULT_WS_URL,
-    _is_masked_secret as _tts_is_masked,
-    _mask_secret as _tts_mask_secret,
+from deskbot_server.client.tts.doubao import DEFAULT_MODEL as TTS_DEFAULT_MODEL
+from deskbot_server.client.tts.doubao import DEFAULT_RESOURCE_ID as TTS_DEFAULT_RESOURCE_ID
+from deskbot_server.client.tts.doubao import DEFAULT_SPEAKER as TTS_DEFAULT_SPEAKER
+from deskbot_server.client.tts.doubao import DEFAULT_WS_URL as TTS_DEFAULT_WS_URL
+from deskbot_server.client.tts.doubao import DOUBAO_TTS_FIELDS
+from deskbot_server.client.tts.doubao import _is_masked_secret as _tts_is_masked
+from deskbot_server.client.tts.doubao import _mask_secret as _tts_mask_secret
+from deskbot_server.client.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
+from deskbot_server.client.tts.macos_adapter import MacOsTtsAdapter
+from deskbot_server.client.tts.moss_adapter import MOSS_TTS_FIELDS, MossTtsAdapter
+from deskbot_server.client.tts.speakers import list_doubao_tts_consumer_speaker_presets
+from deskbot_server.config import load_config, save_config
+from deskbot_server.dao.device_mapper import (
+    get_asr_param,
+    get_llm_param,
+    get_tts_param,
+    set_asr_provider,
+    set_decision_llm_provider,
+    set_llm_provider,
+    set_tts_provider,
+    update_asr_param,
+    update_llm_param,
+    update_tts_param,
 )
-from deskbot_server.infrastructure.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
-from deskbot_server.infrastructure.tts.moss_adapter import MOSS_TTS_FIELDS, MossTtsAdapter
-from deskbot_server.infrastructure.tts.resolve import resolve_tts_provider
-from deskbot_server.infrastructure.tts.speakers import list_doubao_tts_consumer_speaker_presets
 from deskbot_server.model.settings import AppSettings
+from deskbot_server.service.asr_routing import resolve_asr_provider
 from deskbot_server.service.camera_face_service import CameraFaceService, build_camera_face_runtime
+from deskbot_server.service.llm_routing import (
+    build_siliconflow_config,
+    resolve_decision_llm_config,
+    resolve_device_decision_provider,
+    resolve_device_llm_provider,
+    resolve_llm_config,
+)
+from deskbot_server.service.tts_routing import resolve_tts_provider
 from deskbot_server.service.voiceprint_service import VoiceprintService, build_voiceprint_runtime
 from deskbot_server.utils.audio import pcm_to_wav_bytes
 
@@ -102,8 +105,8 @@ MOSS_VOICES_FILE = SERVICE_ROOT / "externals" / "moss-tts-nano" / "checkout" / "
 TTS_TEST_DEFAULT_TEXT = "你好，这是语音合成测试。"
 LLM_TEST_DEFAULT_TEXT = "你好，请用一句话简短回复。"
 
-# 本地 LLM provider 的外部服务名（端点/模型常量统一在 infrastructure/llm/runtime.py）
-LOCAL_LLM_SERVICES = {"minicpm": "llm-minicpm", "qwen": "llm-qwen"}
+# 本地 LLM provider 的外部服务名（端点/模型常量统一在 client/llm/runtime.py）
+LOCAL_LLM_SERVICES = {"minicpm": "llm-minicpm", "qwen": "llm-qwen", "unee": "llm-unee", "realtime": "llm-realtime"}
 
 # 设备级可保存的 LLM 字段（provider → llm_param[provider] 的键）。保存/回填/掩码共用。
 # siliconflow 只有 model_name：它的密钥是服务端公共凭证（.env），不进设备表、页面不暴露。
@@ -114,7 +117,7 @@ _DEVICE_LLM_PARAM_FIELDS: dict[str, tuple[str, ...]] = {
 
 # ASR 测试默认音频样本（与 external/manager.DEFAULT_ASR_TEST_AUDIO 同路径）
 DEFAULT_ASR_TEST_AUDIO = SERVICE_ROOT / "data" / "test" / "asr.wav"
-# DOUBAO_ASR_FIELDS 常量见 infrastructure/asr/doubao.py（resolve 与蓝图共用，避免循环依赖）
+# DOUBAO_ASR_FIELDS 常量见 client/asr/doubao.py（resolve 与蓝图共用，避免循环依赖）
 
 
 class CapabilityError(RuntimeError):
@@ -148,6 +151,8 @@ ASR_CANDIDATES = [
     ),
 ]
 LLM_CANDIDATES = [
+    CapabilityCandidate("realtime", "本地实时对话（Qwen3-4B）",
+                        "采用 realtime_agent 同款本地模型，支持流式回答与工具调用。", requires_service="llm-realtime"),
     CapabilityCandidate(
         "minicpm",
         "本地 MiniCPM5-1B（Q4_K_M）",
@@ -162,6 +167,14 @@ LLM_CANDIDATES = [
         requires_service="llm-qwen",
     ),
     CapabilityCandidate(
+        "unee",
+        "本地 unee-0.8B（Q4_K_M）",
+        "独立 unee 服务进程（HTTP 9107，noul/choice/score 决策 + OpenAI 兼容聊天，本地 GPU/CPU 推理）；"
+        "实验性：0.8B 模型工具调用不可靠，定时提醒 / 长期记忆可能失效；需 llm-unee 服务运行",
+        requires_service="llm-unee",
+        experimental=True,
+    ),
+    CapabilityCandidate(
         "ark",
         "火山方舟 Ark（云端）",
         "云端 LLM，支持工具调用（提醒 / 记忆 / 实验台）；API Key 与模型 ID 由该设备自配（服务器不承担公共凭证）",
@@ -173,7 +186,39 @@ LLM_CANDIDATES = [
         "API Key 由服务端 .env（SILICONFLOW_API_KEY）统一提供，页面不暴露、不支持设备级密钥",
     ),
 ]
+DECISION_CANDIDATES = [
+    CapabilityCandidate(
+        "unee",
+        "本地 unee-0.8B（默认）",
+        "独立 unee 服务进程（HTTP 9107），每轮根据「用户话 + 机器人回复」决定舵机动作与表情；"
+        "未运行或调用失败时本轮不下发显式动作/表情；需 llm-unee 服务运行",
+        requires_service="llm-unee",
+    ),
+    CapabilityCandidate(
+        "minicpm",
+        "本地 MiniCPM5-1B（Q4_K_M）",
+        "独立 llama-server 进程（HTTP 9105），复用该设备的大脑 LLM 本地端点做动作/表情决策；需 llm-minicpm 服务运行",
+        requires_service="llm-minicpm",
+    ),
+    CapabilityCandidate(
+        "qwen",
+        "本地 Qwen3.8-2B-Distill（Q4_K_M）",
+        "独立 llama-server 进程（HTTP 9106），动作/表情决策更稳；需 llm-qwen 服务运行",
+        requires_service="llm-qwen",
+    ),
+    CapabilityCandidate(
+        "ark",
+        "火山方舟 Ark（云端）",
+        "复用该设备大脑 LLM 的 ark 配置（llm_param[\"ark\"] 的 API Key / 模型 ID）做动作/表情决策"
+    ),
+    CapabilityCandidate(
+        "siliconflow",
+        "硅基流动 SiliconFlow（云端）",
+        "复用该设备大脑 LLM 的硅基流动模型（密钥由服务端 .env 统一提供）做动作/表情决策"
+    ),
+]
 TTS_CANDIDATES = [
+    CapabilityCandidate("macos", "本地系统语音（Tingting）", "使用 Mac 系统音色，按短句快速合成；需要在 macOS 上运行服务。"),
     CapabilityCandidate(
         "moss-tts-nano",
         "本地 moss-tts-nano",
@@ -206,6 +251,7 @@ VOICEPRINT_CANDIDATES = [
 _CANDIDATES = {
     "asr": ASR_CANDIDATES,
     "llm": LLM_CANDIDATES,
+    "decision": DECISION_CANDIDATES,
     "tts": TTS_CANDIDATES,
     "face": FACE_CANDIDATES,
     "voiceprint": VOICEPRINT_CANDIDATES,
@@ -239,19 +285,18 @@ class RobotCapabilityService:
             "capabilities": {
                 "asr": self._asr_status(device_id),
                 "llm": self._llm_status(cfg, device_id),
+                "decision": self._decision_status(device_id),
                 "tts": self._tts_status(device_id),
                 "face": self._face_status(cfg),
                 "voiceprint": self._voiceprint_status(cfg),
             },
-            "services": self._service_snapshots(),
+            "services": {},  # External services are managed by their provider.
         }
 
     def _asr_status(self, device_id: str | None) -> dict[str, Any]:
         """ASR 为设备级配置：current 来自 device 表（缺省 funasr）。"""
         current = resolve_asr_provider(device_id)
         warning = None
-        if current == "funasr" and not self._service_running("funasr"):
-            warning = "funasr 未在运行，语音识别将失败；请先在「独立服务管理」中启动"
         return {
             "current": current,
             "candidates": [c.to_dict() for c in ASR_CANDIDATES],
@@ -263,8 +308,6 @@ class RobotCapabilityService:
         """TTS 为设备级配置：current 来自 device 表（缺省 moss-tts-nano）。"""
         current = resolve_tts_provider(device_id)
         warning = None
-        if current == "moss-tts-nano" and not self._service_running("moss-tts-nano"):
-            warning = "moss-tts-nano 未在运行，语音合成将失败；请先在「独立服务管理」中启动"
         return {
             "current": current,
             "candidates": [c.to_dict() for c in TTS_CANDIDATES],
@@ -276,16 +319,12 @@ class RobotCapabilityService:
         """人脸识别为 config.yaml 真源（camera_face.mode: none | insightface）。"""
         current = str((cfg.get("camera_face") or {}).get("mode") or "insightface")
         warning = None
-        if current == "insightface" and not self._service_running("insightface-engine"):
-            warning = "insightface-engine 未在运行，人脸识别将失败；请先在「独立服务管理」中启动"
         return {"current": current, "candidates": [c.to_dict() for c in FACE_CANDIDATES], "warning": warning}
 
     def _voiceprint_status(self, cfg: dict[str, Any]) -> dict[str, Any]:
         """声纹识别为 config.yaml 真源（voiceprint.mode: none | vpr）。"""
         current = str((cfg.get("voiceprint") or {}).get("mode") or "none")
         warning = None
-        if current == "vpr" and not self._service_running("wespeaker-resnet34"):
-            warning = "wespeaker-resnet34 未在运行，声纹识别将失败；请先在「独立服务管理」中启动"
         return {
             "current": current,
             "candidates": [c.to_dict() for c in VOICEPRINT_CANDIDATES],
@@ -320,7 +359,7 @@ class RobotCapabilityService:
         else:
             protocol = str(effective.get("protocol") or "").strip()
             if protocol == "openai":
-                # 先按本地端点精确匹配（9105/9106 等，见 runtime.LOCAL_LLM_PROVIDERS），
+                # 先按本地端点精确匹配（9105/9106/9107 等，见 runtime.LOCAL_LLM_PROVIDERS），
                 # 再按云端端点 host 反查（系统默认指向硅基流动时落到这里）；其余归 custom
                 base_url = str(effective.get("base_url") or "").strip().rstrip("/")
                 current = (
@@ -334,11 +373,7 @@ class RobotCapabilityService:
                 current = "custom"
 
         warning = None
-        if current in LOCAL_LLM_SERVICES:
-            svc_name = LOCAL_LLM_SERVICES[current]
-            if not self._service_running(svc_name):
-                warning = f"{svc_name} 未在运行，对话将失败；请先在「独立服务管理」中启动"
-        elif (
+        if (
             current in ("ark", "siliconflow")
             and not effective.get("error")
             and not effective.get("api_key_set")
@@ -356,7 +391,7 @@ class RobotCapabilityService:
                 )
             else:
                 warning = (
-                    "系统默认指向 ark 云端 LLM 但没有密钥（密钥仅设备级）：请切换 minicpm/qwen，"
+                    "系统默认指向 ark 云端 LLM 但没有密钥（密钥仅设备级）：请切换本地模型，"
                     "或选中 ark 并在「配置」中为该设备填写 API Key"
                 )
 
@@ -368,29 +403,42 @@ class RobotCapabilityService:
             "warning": warning,
         }
 
-    def _service_snapshots(self) -> dict[str, dict[str, Any]]:
-        """收集全部已注册外部服务快照（按名字索引），供页面候选行展示运行状态。
-
-        候选行通过 ``requires_service`` 索引；只收集 funasr/moss-tts-nano 会漏掉
-        llm-minicpm、llm-qwen、insightface-engine 等，导致运行中显示"未运行"。
-        """
+    def _decision_status(self, device_id: str | None) -> dict[str, Any]:
+        """动作/表情决策模型：设备级 decision_llm_provider，默认 unee。"""
+        current = resolve_device_decision_provider(device_id)
+        effective: dict[str, Any] = {}
         try:
-            manager = get_runtime().external_manager
-        except Exception:
-            manager = None
-        out: dict[str, dict[str, Any]] = {}
-        if manager is not None:
-            for snap in manager.status_all():
-                out[snap.name] = snap.to_dict()
-        return out
+            resolved = resolve_decision_llm_config(device_id)
+            effective = {
+                "protocol": resolved.protocol,
+                "base_url": resolved.api_base,
+                "model_name": resolved.model,
+                "source": resolved.source,
+                "display_name": resolved.display_name,
+                "api_key_set": bool(str(resolved.api_key or "").strip()),
+            }
+        except Exception as exc:  # ark 缺模型 ID 等；页面展示错误而不是整页失败
+            logger.warning("[robot-settings] resolve_decision_llm_config 失败: %s", exc)
+            effective = {"error": str(exc)}
 
-    @staticmethod
-    def _service_running(name: str) -> bool:
-        try:
-            snap = get_runtime().external_manager.snapshot(name)
-        except Exception:
-            return False
-        return bool(snap is not None and snap.state.value == "running")
+        warning = None
+        if current in ("ark", "siliconflow") and not effective.get("error") and not effective.get("api_key_set"):
+            if current == "siliconflow":
+                warning = (
+                    f"决策模型复用硅基流动云端，但服务端未配置 {SILICONFLOW_API_KEY_ENV}（.env）："
+                    "请在服务端 .env 中填写该变量后重启服务"
+                )
+            else:
+                warning = (
+                    "决策模型复用该设备的 ark 配置，但尚未配置 API Key / 模型 ID："
+                    "请在大脑 LLM 的 ark「配置」中填写"
+                )
+        return {
+            "current": current,
+            "candidates": [c.to_dict() for c in DECISION_CANDIDATES],
+            "effective": effective,
+            "warning": warning,
+        }
 
     # ---------- ASR 切换（设备级：写 device 表，动态解析即时生效） ----------
 
@@ -782,6 +830,8 @@ class RobotCapabilityService:
         doubao_cfg = {key: _doubao_value(key) for key in DOUBAO_TTS_FIELDS}
         return {
             "text": TTS_TEST_DEFAULT_TEXT,
+            "macos": {"voice": str((params.get("macos") or {}).get("voice") or "Tingting"),
+                      "rate": int((params.get("macos") or {}).get("rate") or 230)},
             "voices": self._moss_voices(),
             "demo_id": str(moss.get("demo_id") or "demo-1").strip(),
             "base_url": str(moss.get("base_url") or "").strip(),
@@ -827,7 +877,7 @@ class RobotCapabilityService:
             return raw
 
         out: dict[str, Any] = {}
-        for provider_key, fields in (("moss", MOSS_TTS_FIELDS), ("doubao", DOUBAO_TTS_FIELDS)):
+        for provider_key, fields in (("moss", MOSS_TTS_FIELDS), ("doubao", DOUBAO_TTS_FIELDS), ("macos", ("voice", "rate"))):
             incoming = payload.get(provider_key) if isinstance(payload.get(provider_key), dict) else {}
             existing_p = existing.get(provider_key) if isinstance(existing.get(provider_key), dict) else {}
             provider_out: dict[str, Any] = {}
@@ -841,6 +891,8 @@ class RobotCapabilityService:
                     provider_out[field] = _normalize(field, raw)
             if provider_out:
                 out[provider_key] = provider_out
+        if "macos" in out:
+            MacOsTtsAdapter(AppSettings.from_config(self._load_cfg()), overrides=out["macos"])
         update_tts_param(device_id, json.dumps(out, ensure_ascii=False) if out else None)
         logger.info("[robot-settings] TTS 设备级配置保存 device_id=%s providers=%s", device_id, sorted(out))
         return self.tts_config_info(device_id)
@@ -866,12 +918,14 @@ class RobotCapabilityService:
         if (voice_id or "").strip():
             if provider == "moss-tts-nano":
                 form["demo_id"] = (voice_id or "").strip()
+            elif provider == "macos":
+                form["voice"] = (voice_id or "").strip()
             else:  # doubao
                 form["speaker"] = (voice_id or "").strip()
         params = get_tts_param(device_id) if device_id else {}
-        raw = params.get("doubao" if provider == "doubao" else "moss")
+        raw = params.get("doubao" if provider == "doubao" else "macos" if provider == "macos" else "moss")
         raw = raw if isinstance(raw, dict) else {}
-        fields = DOUBAO_TTS_FIELDS if provider == "doubao" else MOSS_TTS_FIELDS
+        fields = DOUBAO_TTS_FIELDS if provider == "doubao" else ("voice", "rate") if provider == "macos" else MOSS_TTS_FIELDS
         merged: dict[str, Any] = {}
         for field in fields:
             val = str(form.get(field) or "").strip()
@@ -882,7 +936,9 @@ class RobotCapabilityService:
             if val and not _tts_is_masked(val):
                 merged[field] = val
         settings = AppSettings.from_config(self._load_cfg())
-        if provider == "doubao":
+        if provider == "macos":
+            adapter = MacOsTtsAdapter(settings, overrides=merged)
+        elif provider == "doubao":
             adapter = DoubaoPhonemeTtsAdapter(settings, overrides=merged)
         else:
             adapter = MossTtsAdapter(settings, overrides=merged)
@@ -916,7 +972,7 @@ class RobotCapabilityService:
     # ---------- LLM 切换（设备级：写 device 表，动态解析即时生效） ----------
 
     def apply_llm(self, provider: str, device_id: str | None = None) -> dict[str, Any]:
-        """切换设备级 LLM provider（minicpm / qwen / ark / siliconflow，写 device 表即生效）。
+        """切换设备级 LLM provider（minicpm / qwen / unee / ark / siliconflow，写 device 表即生效）。
 
         允许未配密钥先应用 ark（对齐 ASR/TTS 的 doubao）：缺 key 由卡片 warning 引导，
         运行时错误文案亦指向设备配置。siliconflow 的密钥是服务端公共凭证，无此问题。
@@ -927,6 +983,17 @@ class RobotCapabilityService:
             raise CapabilityError("未选择当前设备")
         set_llm_provider(device_id, provider)
         logger.info("[robot-settings] LLM 设备级切换生效 device_id=%s provider=%s", device_id, provider)
+        return self.get_status(device_id)
+
+    def apply_decision(self, provider: str, device_id: str | None = None) -> dict[str, Any]:
+        """切换设备级「动作/表情决策模型」provider（默认 unee，写 device 表即生效）。"""
+        _candidate("decision", provider)
+        if not device_id:
+            raise CapabilityError("未选择当前设备")
+        set_decision_llm_provider(device_id, provider)
+        logger.info(
+            "[robot-settings] 决策模型设备级切换生效 device_id=%s provider=%s", device_id, provider
+        )
         return self.get_status(device_id)
 
     # ---------- LLM 配置 / 试聊（对话框；ark 密钥在设备 llm_param，siliconflow 在服务端 .env） ----------

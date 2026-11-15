@@ -20,7 +20,7 @@ _cached: str | None = None
 
 
 def _secret_file() -> Path:
-    from deskbot_server.utils.device_data import global_config_dir
+    from deskbot_server.service.device_data_paths import global_config_dir
 
     return global_config_dir() / _SECRET_FILE_NAME
 

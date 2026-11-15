@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from deskbot_server.infrastructure.voice.vpr_http_client import VprHttpClient, VprHttpError
+from deskbot_server.client.voice.vpr_http_client import VprHttpClient, VprHttpError
 from deskbot_server.service.application import voice_snapshot_cache as snap
 from deskbot_server.service.voice_profile_service import (
     VOICE_DESCRIPTOR_KIND,

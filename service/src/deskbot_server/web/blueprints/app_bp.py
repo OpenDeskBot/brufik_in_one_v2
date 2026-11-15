@@ -4,18 +4,21 @@ import json
 
 from fastapi import APIRouter, Request
 
+from deskbot_server.controller.decorators import access
+from deskbot_server.dao import device_mapper
+from deskbot_server.service.device_data_service import clear_device_data
 from deskbot_server.service.face_profile_service import (
     delete_face_profile,
     list_face_profiles_summary,
     update_face_profile_name,
 )
-from deskbot_server.service.voice_profile_service import (
-    delete_voice_profile,
-    list_voice_profiles_summary,
-    update_voice_profile_name,
+from deskbot_server.service.memory_service import (
+    add_memory,
+    delete_memory,
+    get_memory,
+    list_memory_for_device,
+    update_memory,
 )
-from deskbot_server.dao import device_mapper
-from deskbot_server.dao.device_memory_mapper import add_memory, delete_memory, get_memory, list_memory_for_device, update_memory
 from deskbot_server.service.miot_service import (
     authorize_and_sync,
     error_payload,
@@ -26,7 +29,6 @@ from deskbot_server.service.miot_service import (
     parse_auth_payload,
     sync_homes,
 )
-from deskbot_server.service.device_data_service import clear_device_data
 from deskbot_server.service.miot_service import unbind as miot_unbind
 from deskbot_server.service.quest_service import QuestError, QuestService
 from deskbot_server.service.scheduled_task_service import (
@@ -35,6 +37,11 @@ from deskbot_server.service.scheduled_task_service import (
     list_scheduled_tasks_for_device,
 )
 from deskbot_server.service.user_service import UserService
+from deskbot_server.service.voice_profile_service import (
+    delete_voice_profile,
+    list_voice_profiles_summary,
+    update_voice_profile_name,
+)
 from deskbot_server.web.deps import RequireUser
 from deskbot_server.web.helpers import fetch_live_device_details
 from deskbot_server.web.session_device import clear_current_device, get_current_device_id, set_current_device_id
@@ -88,6 +95,7 @@ def _flatten_usage_daily_rows(
 
 
 @router.post("/settings/profile")
+@access('user')
 def update_profile_post(request: Request, user: RequireUser):
     try:
         UserService().update_display_name(user.id, form_get(request, "display_name") or "")
@@ -99,6 +107,7 @@ def update_profile_post(request: Request, user: RequireUser):
 
 
 @router.post("/settings/password")
+@access('user')
 def change_password_post(request: Request, user: RequireUser):
     old_password = form_get(request, "old_password") or ""
     new_password = form_get(request, "new_password") or ""
@@ -116,6 +125,7 @@ def change_password_post(request: Request, user: RequireUser):
 
 
 @router.get("/api/devices")
+@access('user')
 def api_list_devices(request: Request, user: RequireUser):
     devices = UserService().list_devices(user.id)
     live_map = fetch_live_device_details(user_id=user.id)
@@ -143,6 +153,7 @@ def api_list_devices(request: Request, user: RequireUser):
 
 
 @router.post("/api/devices")
+@access('user')
 def api_bind_device(request: Request, user: RequireUser):
     payload = get_json(request, silent=True) or {}
     device_id = str(payload.get("device_id") or form_get(request, "device_id") or "").strip()
@@ -165,6 +176,7 @@ def api_bind_device(request: Request, user: RequireUser):
 
 
 @router.post("/api/devices/select")
+@access('user')
 def api_select_device(request: Request, user: RequireUser):
     payload = get_json(request, silent=True) or {}
     device_id = str(payload.get("device_id") or "").strip()
@@ -178,6 +190,7 @@ def api_select_device(request: Request, user: RequireUser):
 
 
 @router.delete("/api/devices/{device_id}")
+@access('user')
 def api_unbind_device(request: Request, user: RequireUser, device_id: str):
     if not UserService().unbind_device(user.id, device_id):
         return jsonify({"ok": False, "error": "设备不存在"}), 404
@@ -187,6 +200,7 @@ def api_unbind_device(request: Request, user: RequireUser, device_id: str):
 
 
 @router.delete("/api/devices/{device_id}/data")
+@access('user')
 def api_clear_device_data(request: Request, user: RequireUser, device_id: str):
     """清空设备全部云端数据（保留绑定与设备设置）。"""
     if not UserService().validate_device_id(device_id):
@@ -217,6 +231,7 @@ def api_clear_device_data(request: Request, user: RequireUser, device_id: str):
 
 
 @router.post("/api/devices/{device_id}/reset-id")
+@access('user')
 def api_reset_device_id(request: Request, user: RequireUser, device_id: str):
     if not UserService().user_owns_device(user.id, device_id):
         return jsonify({"ok": False, "error": "设备不属于当前账号"}), 403
@@ -231,6 +246,7 @@ def api_reset_device_id(request: Request, user: RequireUser, device_id: str):
 
 
 @router.put("/api/devices/{device_id}/quest")
+@access('user')
 def api_set_device_quest(request: Request, user: RequireUser, device_id: str):
     """绑定/解绑设备剧本：body ``{"quest_id": "剧本名"}``；空串或缺省 = 解绑。"""
     if not UserService().user_owns_device(user.id, device_id):
@@ -248,6 +264,7 @@ def api_set_device_quest(request: Request, user: RequireUser, device_id: str):
 
 
 @router.put("/api/devices/{device_id}/llm")
+@access('user')
 def api_set_device_llm(request: Request, user: RequireUser, device_id: str):
     """设备级 LLM provider 与参数（partial 更新）。
 
@@ -287,6 +304,7 @@ def api_set_device_llm(request: Request, user: RequireUser, device_id: str):
 
 
 @router.get("/api/scheduled-tasks")
+@access('user')
 def api_list_scheduled_tasks(request: Request, user: RequireUser):
     device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
     if not device_id:
@@ -317,6 +335,7 @@ def api_list_scheduled_tasks(request: Request, user: RequireUser):
 
 
 @router.get("/api/face-profiles")
+@access('user')
 def api_list_face_profiles(request: Request, user: RequireUser):
     device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
     if not device_id:
@@ -328,6 +347,7 @@ def api_list_face_profiles(request: Request, user: RequireUser):
 
 
 @router.delete("/api/face-profiles/{profile_id}")
+@access('user')
 def api_delete_face_profile(request: Request, user: RequireUser, profile_id: int):
     device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
     if not device_id:
@@ -341,6 +361,7 @@ def api_delete_face_profile(request: Request, user: RequireUser, profile_id: int
 
 @router.put("/api/face-profiles/{profile_id}")
 @router.patch("/api/face-profiles/{profile_id}")
+@access('user')
 def api_update_face_profile(request: Request, user: RequireUser, profile_id: int):
     device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
     if not device_id:
@@ -361,6 +382,7 @@ def api_update_face_profile(request: Request, user: RequireUser, profile_id: int
 
 
 @router.get("/api/voice-profiles")
+@access('user')
 def api_list_voice_profiles(request: Request, user: RequireUser):
     device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
     if not device_id:
@@ -372,6 +394,7 @@ def api_list_voice_profiles(request: Request, user: RequireUser):
 
 
 @router.delete("/api/voice-profiles/{profile_id}")
+@access('user')
 def api_delete_voice_profile(request: Request, user: RequireUser, profile_id: int):
     device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
     if not device_id:
@@ -385,6 +408,7 @@ def api_delete_voice_profile(request: Request, user: RequireUser, profile_id: in
 
 @router.put("/api/voice-profiles/{profile_id}")
 @router.patch("/api/voice-profiles/{profile_id}")
+@access('user')
 def api_update_voice_profile(request: Request, user: RequireUser, profile_id: int):
     device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
     if not device_id:
@@ -416,6 +440,7 @@ def _require_owned_device_id(request: Request, user) -> tuple[str | None, tuple 
 
 
 @router.get("/api/memories")
+@access('user')
 def api_list_memories(request: Request, user: RequireUser):
     device_id, err = _require_owned_device_id(request, user)
     if err:
@@ -426,6 +451,7 @@ def api_list_memories(request: Request, user: RequireUser):
 
 
 @router.post("/api/memories")
+@access('user')
 def api_create_memory(request: Request, user: RequireUser):
     device_id, err = _require_owned_device_id(request, user)
     if err:
@@ -443,6 +469,7 @@ def api_create_memory(request: Request, user: RequireUser):
 
 
 @router.get("/api/memories/{entry_id}")
+@access('user')
 def api_get_memory(request: Request, user: RequireUser, entry_id: str):
     device_id, err = _require_owned_device_id(request, user)
     if err:
@@ -456,6 +483,7 @@ def api_get_memory(request: Request, user: RequireUser, entry_id: str):
 
 @router.put("/api/memories/{entry_id}")
 @router.patch("/api/memories/{entry_id}")
+@access('user')
 def api_update_memory(request: Request, user: RequireUser, entry_id: str):
     device_id, err = _require_owned_device_id(request, user)
     if err:
@@ -475,6 +503,7 @@ def api_update_memory(request: Request, user: RequireUser, entry_id: str):
 
 
 @router.delete("/api/memories/{entry_id}")
+@access('user')
 def api_delete_memory(request: Request, user: RequireUser, entry_id: str):
     device_id, err = _require_owned_device_id(request, user)
     if err:
@@ -488,6 +517,7 @@ def api_delete_memory(request: Request, user: RequireUser, entry_id: str):
 
 
 @router.delete("/api/scheduled-tasks/{task_id}")
+@access('user')
 def api_delete_scheduled_task(request: Request, user: RequireUser, task_id: str):
     device_id = str(request.query_params.get("device_id") or get_current_device_id(request) or "").strip()
     if not device_id:
@@ -503,6 +533,7 @@ def api_delete_scheduled_task(request: Request, user: RequireUser, task_id: str)
 
 
 @router.get("/api/miot/status")
+@access('user')
 def api_miot_status(request: Request, user: RequireUser):
     device_id, err = _require_owned_device_id(request, user)
     if err:
@@ -531,6 +562,7 @@ def api_miot_status(request: Request, user: RequireUser):
 
 
 @router.post("/api/miot/bind-url")
+@access('user')
 def api_miot_bind_url(request: Request, user: RequireUser):
     device_id, err = _require_owned_device_id(request, user)
     if err:
@@ -557,6 +589,7 @@ def api_miot_bind_url(request: Request, user: RequireUser):
 
 
 @router.post("/api/miot/authorize")
+@access('user')
 def api_miot_authorize(request: Request, user: RequireUser):
     device_id, err = _require_owned_device_id(request, user)
     if err:
@@ -580,6 +613,7 @@ def api_miot_authorize(request: Request, user: RequireUser):
 
 
 @router.post("/api/miot/sync")
+@access('user')
 def api_miot_sync(request: Request, user: RequireUser):
     device_id, err = _require_owned_device_id(request, user)
     if err:
@@ -605,6 +639,7 @@ def api_miot_sync(request: Request, user: RequireUser):
 
 
 @router.post("/api/miot/unbind")
+@access('user')
 def api_miot_unbind(request: Request, user: RequireUser):
     device_id, err = _require_owned_device_id(request, user)
     if err:
@@ -618,6 +653,7 @@ def api_miot_unbind(request: Request, user: RequireUser):
 
 
 @router.get("/api/miot/homes")
+@access('user')
 def api_miot_homes(request: Request, user: RequireUser):
     device_id, err = _require_owned_device_id(request, user)
     if err:

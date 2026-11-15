@@ -649,6 +649,7 @@ def test_real_manifests_have_type_port():
         ("funasr", "funasr", "asr", 9102),
         ("moss-tts-nano", "moss-tts-nano", "tts", 9101),
         ("vpr-engine", "wespeaker-resnet34", "vpr", 9104),
+        ("llm-unee", "llm-unee", "llm", 9107),
     ):
         m = ServiceManifest.load(SERVICE_ROOT / "externals" / dirname / "service.yaml")
         assert m.name == expected_name, dirname

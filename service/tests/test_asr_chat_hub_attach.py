@@ -8,6 +8,21 @@ from unittest.mock import AsyncMock, MagicMock
 from deskbot_server.service.device_ws_service import DeviceWsService
 
 
+def test_retire_active_workers_cancels_saved_tasks_before_clearing_handles():
+    async def run():
+        from deskbot_server.service.device_ws_service import _DeviceEntry
+        DeviceWsService.reset_instance()
+        service = DeviceWsService()
+        entry = _DeviceEntry(device_id="retire-test")
+        seq = asyncio.create_task(asyncio.Event().wait())
+        downlink = asyncio.create_task(asyncio.Event().wait())
+        entry.seq_task, entry.dl_task = seq, downlink
+        await service._retire_workers(entry)
+        assert entry.seq_task is None and entry.dl_task is None
+        assert seq.cancelled() and downlink.cancelled()
+    asyncio.run(run())
+
+
 def test_register_closes_previous_connection_for_same_device():
     async def _run() -> None:
         DeviceWsService.reset_instance()

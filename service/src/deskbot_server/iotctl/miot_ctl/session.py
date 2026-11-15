@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 import uuid
 from pathlib import Path
@@ -131,10 +132,8 @@ class MiotSession:
             raise ValueError("state 不匹配，请重新开始绑定后再授权")
         self._auth = await self._oauth.get_access_token_async(code)
         self._http.update_http_header(access_token=self._auth.access_token)
-        try:
+        with contextlib.suppress(Exception):
             self._auth.user_info = await self._http.get_user_info_async()
-        except Exception:
-            pass
         self._save_auth(self._auth, refreshed=True)
         return self._auth
 
@@ -315,7 +314,7 @@ class MiotSession:
         except Exception:
             pass
         rows = []
-        for sid, scene in scenes.items():
+        for _sid, scene in scenes.items():
             hid = str(getattr(scene, "home_id", None) or "")
             rid = str(getattr(scene, "room_id", None) or "")
             rows.append(

@@ -659,10 +659,8 @@ class ExternalServiceManager:
                 frames = bytes(b for byte in frames for b in (byte, 0))  # 8bit → 16bit
             elif sampwidth != 2:
                 raise ServiceError(f"不支持的 WAV 位深: {sampwidth * 8}bit（仅 8/16bit）")
-            if channels > 1:  # 立体声/多声道 → 取左声道（int16 交错样本 [::channels]）
-                pcm = _array.array("h", frames)[0::channels].tobytes()
-            else:
-                pcm = frames
+            # 多声道取左声道（int16 交错样本）。
+            pcm = _array.array("h", frames)[0::channels].tobytes() if channels > 1 else frames
             meta = None if audio_base64 else {
                 "audio_base64": _b64.b64encode(raw).decode(),
                 "audio_name": DEFAULT_ASR_TEST_AUDIO.name,

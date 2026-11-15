@@ -5,12 +5,14 @@ import mimetypes
 from fastapi import APIRouter, Request
 
 from deskbot_server.auth.permissions import RequireDeveloper
+from deskbot_server.controller.decorators import access
 from deskbot_server.dao.emotion_expr_map_store import load_emotion_expr_map, save_emotion_expr_map
 from deskbot_server.dao.face_expr_scenes_store import load_face_expr_scenes_file, save_face_expr_scenes_file
 from deskbot_server.dao.face_mouth_config_store import load_face_mouth_cfg_file, save_face_mouth_cfg_file
 from deskbot_server.service.user_service import UserService
 from deskbot_server.web.deps import RequireUser
 from deskbot_server.web.helpers import camera_view_ws_base, device_pipeline_ws_base
+from deskbot_server.web.pages import page
 from deskbot_server.web.session_device import get_current_device_id
 from deskbot_server.web.view_helpers import (
     ViewAPIRoute,
@@ -47,6 +49,8 @@ def _default_robot_face_payload() -> dict:
 
 
 @router.get("/home")
+@access('user')
+@page('app2c/home.html')
 def home(request: Request, user: RequireUser):
     return render_template(
         request,
@@ -58,12 +62,16 @@ def home(request: Request, user: RequireUser):
 
 
 @router.get("/expr")
+@access('developer')
+@page('app2c/expr.html')
 def expr(request: Request, user: RequireDeveloper):
     """表情设计：开发者选项下，仅开发者可进入（导航隐藏不是门禁）。"""
     return render_template(request, "app2c/expr.html", active_nav="expr")
 
 
 @router.get("/lab")
+@access('user')
+@page('app2c/lab.html')
 def lab(request: Request, user: RequireUser):
     return render_template(
         request,
@@ -74,36 +82,49 @@ def lab(request: Request, user: RequireUser):
 
 
 @router.get("/my/memories")
+@access('user')
+@page('app2c/memories.html')
 def memories(request: Request, user: RequireUser):
     return render_template(request, "app2c/memories.html", active_nav="memory")
 
 
 @router.get("/my/reminders")
+@access('user')
+@page('app2c/reminders.html')
 def reminders(request: Request, user: RequireUser):
     return render_template(request, "app2c/reminders.html", active_nav="remind")
 
 
 @router.get("/my/people")
+@access('user')
+@page('app2c/people.html')
 def people(request: Request, user: RequireUser):
     return render_template(request, "app2c/people.html", active_nav="people")
 
 
 @router.get("/my/devices")
+@access('user')
+@page('app2c/devices.html')
 def devices(request: Request, user: RequireUser):
     return render_template(request, "app2c/devices.html", active_nav="device")
 
 
 @router.get("/my/miot")
+@access('user')
+@page('app2c/miot.html')
 def miot(request: Request, user: RequireUser):
     return render_template(request, "app2c/miot.html", active_nav="miot")
 
 
 @router.get("/advanced")
+@access('user')
+@page('app2c/advanced.html')
 def advanced(request: Request, user: RequireUser):
     return render_template(request, "app2c/advanced.html", active_nav="advanced")
 
 
 @router.get("/api/advanced")
+@access('user')
 def advanced_summary_get(request: Request, user: RequireUser):
     user = UserService().get_user(user.id)
 
@@ -119,6 +140,7 @@ def advanced_summary_get(request: Request, user: RequireUser):
 
 
 @router.patch("/api/advanced/profile")
+@access('user')
 def advanced_profile_patch(request: Request, user: RequireUser):
     payload = get_json(request, silent=True) or {}
     try:
@@ -135,6 +157,7 @@ def advanced_profile_patch(request: Request, user: RequireUser):
 
 
 @router.post("/api/advanced/password")
+@access('user')
 def advanced_password_post(request: Request, user: RequireUser):
     payload = get_json(request, silent=True) or {}
     old_password = str(payload.get("old_password") or "")
@@ -203,6 +226,7 @@ def _image_mime_from_upload(filename: str, content_type: str, image_bytes: bytes
 
 
 @router.get("/api/emotion_expr_map")
+@access('user')
 def emotion_expr_map_get(request: Request, user: RequireUser):
     device_id, err = _owned_device_or_error(request, user)
     if err:
@@ -211,6 +235,7 @@ def emotion_expr_map_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/emotion_expr_map")
+@access('developer')
 def emotion_expr_map_post(request: Request, user: RequireDeveloper):
     # 读取保留给消费端首页（GET），写入属表情设计编辑器，仅开发者可用
 
@@ -229,6 +254,7 @@ def emotion_expr_map_post(request: Request, user: RequireDeveloper):
 
 
 @router.get("/api/face_expr_scenes")
+@access('user')
 def face_expr_scenes_get(request: Request, user: RequireUser):
     device_id, err = _owned_device_or_error(request, user)
     if err:
@@ -241,6 +267,7 @@ def face_expr_scenes_get(request: Request, user: RequireUser):
 
 
 @router.post("/api/face_expr_scenes")
+@access('developer')
 def face_expr_scenes_post(request: Request, user: RequireDeveloper):
     device_id, err = _owned_device_or_error(request, user)
     if err:
@@ -261,6 +288,7 @@ def face_expr_scenes_post(request: Request, user: RequireDeveloper):
 
 
 @router.get("/api/face_mouth_by_phoneme")
+@access('developer')
 def face_mouth_by_phoneme_get(request: Request, user: RequireDeveloper):
     # 音素口型库仅表情设计编辑器使用（无消费端读取方）
 
@@ -275,6 +303,7 @@ def face_mouth_by_phoneme_get(request: Request, user: RequireDeveloper):
 
 
 @router.post("/api/face_mouth_by_phoneme")
+@access('developer')
 def face_mouth_by_phoneme_post(request: Request, user: RequireDeveloper):
     device_id, err = _owned_device_or_error(request, user)
     if err:
@@ -293,6 +322,7 @@ def face_mouth_by_phoneme_post(request: Request, user: RequireDeveloper):
 
 
 @router.post("/api/scene_playbook/export_plan")
+@access('developer')
 def scene_playbook_export_plan_post(request: Request, user: RequireDeveloper):
     device_id, err = _owned_device_or_error(request, user)
     if err:
@@ -313,6 +343,7 @@ def scene_playbook_export_plan_post(request: Request, user: RequireDeveloper):
 
 
 @router.post("/api/face_design/generate-from-image")
+@access('developer')
 def face_design_generate_from_image_post(request: Request, user: RequireDeveloper):
     device_id, err = _optional_owned_device_or_error(request, user)
     if err:

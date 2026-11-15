@@ -14,8 +14,8 @@ import asyncio
 import json
 import sys
 
-from deskbot_server.infrastructure.llm.runtime import tool_acompletion
-from deskbot_server.infrastructure.llm.tool_schema import build_native_tool_schemas
+from deskbot_server.client.llm.runtime import tool_acompletion
+from deskbot_server.service.llm_tools_schema import build_native_tool_schemas
 
 
 def _round(content: str) -> str:
@@ -38,7 +38,7 @@ async def main() -> int:
     schemas = build_native_tool_schemas()
     config = None
     if args.base:
-        from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig
+        from deskbot_server.client.llm.runtime import ResolvedLlmConfig
 
         config = ResolvedLlmConfig(
             model=args.model or "model",

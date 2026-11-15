@@ -1,4 +1,4 @@
-"""pb 下行 wire 组帧：音素分片 → anim → JSON+binary 对。"""
+"""pb 下行 wire 组帧：音频与本地表情引用 → JSON+binary 对。"""
 
 from __future__ import annotations
 
@@ -11,12 +11,7 @@ from typing import Any
 
 from deskbot_server.constants import PB_MAX_WIRE_JSON_BYTES
 from deskbot_server.pb.face_bundle import resolve_pb_face_bundle
-from deskbot_server.pb.llm_plan import (
-    build_anim_rows_for_llm_plan,
-    expand_llm_anims,
-    expand_llm_moves,
-    interleave_tts_segs_with_llm_plan,
-)
+from deskbot_server.pb.llm_plan import expand_llm_moves, interleave_tts_segs_with_llm_plan, map_anim_frames_to_tts_segs
 from deskbot_server.pb.phoneme_anim import phoneme_seq_to_anim_seq
 from deskbot_server.pb.servo_pcm import (
     PB_ACTION_REPLACE,
@@ -85,17 +80,20 @@ def build_pb_wire_pairs(
     action: str = PB_ACTION_REPLACE,
     leading_move_steps: int = 0,
 ) -> tuple[list[tuple[dict[str, Any], list[bytes]]], str, int, int]:
-    """音素 TTS 分片 → pb wire (msg, binaries) 列表。"""
-    face_bundle = resolve_pb_face_bundle(tts_cfg, device_id=device_id)
+    """音频分片与表情 ID → pb wire；口型由 ROM 根据播放音量生成。"""
+    from deskbot_server.pb.audio_animation import expand_local_anims, pcm_anim_rows
+
+    if not segs and not moves and not servo_plan:
+        raise ValueError("empty audio segments")
     move_steps = expand_llm_moves(moves, device_id=device_id)
-    anim_frames = expand_llm_anims(anims, device_id=device_id)
+    anim_frames, anim_version = expand_local_anims(anims)
     parallel_anim: list[dict[str, Any] | None] | None = None
 
     leading_n = max(0, int(leading_move_steps or 0))
     if leading_n > len(move_steps):
         leading_n = len(move_steps)
 
-    if move_steps or anim_frames:
+    if move_steps or (anim_frames and not servo_plan):
         if leading_n > 0:
             from deskbot_server.pb.servo_pcm import _silence_phoneme_seg
 
@@ -118,12 +116,10 @@ def build_pb_wire_pairs(
         )
     else:
         segs, parallel_servo = interleave_tts_phoneme_segs_with_servo_plan(segs, servo_plan, sample_rate)
-        logger.info("[pb TX] 音素分片与 servo 计划交错后 segments=%d（含 hold/补静音承载的多余舵机）", len(segs))
+        parallel_anim = map_anim_frames_to_tts_segs(segs, anim_frames)
+        logger.info("[pb TX] 音频分片与 servo 计划交错后 segments=%d（含 hold/补静音承载的多余舵机）", len(segs))
 
-    if parallel_anim is not None:
-        anim_rows = build_anim_rows_for_llm_plan(segs, parallel_anim, face_bundle, device_id=device_id)
-    else:
-        anim_rows = phoneme_seq_to_anim_seq(segs, face_bundle, device_id=device_id)
+    anim_rows = pcm_anim_rows(segs, parallel_anim)
     pcm_list: list[bytes] = []
     for i, s in enumerate(segs):
         raw = bytes(s.get("pcm") or b"")
@@ -188,6 +184,23 @@ def build_pb_wire_pairs(
         volume=pb_vol,
         action=action,
     )
+    for msg, _ in pairs:
+        compact = []
+        for pose in msg.get("anim", []):
+            # Empty timing holds can follow a shorter optional expression in
+            # the same audio chunk. They have no anim_id/frame keys.
+            identity = {key: value for key, value in pose.items() if key != "ms"}
+            previous = {key: value for key, value in compact[-1].items() if key != "ms"} if compact else None
+            if compact and identity == previous:
+                compact[-1]["ms"] += pose["ms"]
+            else:
+                compact.append(pose)
+        if compact:
+            msg["anim"] = compact
+            msg["anim_version"] = anim_version
+        else:
+            msg.pop("anim", None)
+            msg.pop("anim_version", None)
     if random_servo_cfg:
         n_ra = apply_random_pb_servo_actions(pairs, random_servo_cfg)
         if n_ra:

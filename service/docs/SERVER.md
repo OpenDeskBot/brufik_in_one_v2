@@ -63,7 +63,7 @@ cp .env.example .env   # 填 SILICONFLOW_API_KEY（系统默认大脑，硅基�
 | `/health` | 健康检查（免 Key） |
 | `/api/devices` | 在线设备列表 |
 
-**ESP32 设备 WS 仅需 `device_id`**；HTTP `/api/*` 走 Web 会话（无 user_id 时匿名放行）。
+**ESP32 设备 WS 仅需 `device_id`**；HTTP `/api/*` 走有效用户的 Web 会话或 `debug_token`，未认证返回 `401`，访问他人设备返回 `403`。
 
 ---
 

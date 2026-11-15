@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # 枚举：与 C++ PbModelType 对齐
 # ---------------------------------------------------------------------------
@@ -171,8 +170,19 @@ class PbAnim:
     elements: dict[str, Any] = field(default_factory=dict)
     ms: int = 1
     phoneme: str = ""
+    phoneme_id: str = ""
+    anim_id: str = ""
+    frame: int = 0
 
     def to_wire(self) -> dict[str, Any]:
+        if self.anim_id:
+            if self.elements or self.phoneme_id or not 0 <= self.frame < 64 or not 1 <= self.ms <= 30000:
+                raise ValueError("anim_id frame requires valid frame/ms without inline elements or phonemes")
+            return {"anim_id": self.anim_id, "frame": self.frame, "ms": self.ms}
+        if self.phoneme_id:
+            if self.elements:
+                raise ValueError("phoneme_id cannot include inline elements")
+            return {"phoneme_id": self.phoneme_id, "ms": self.ms}
         out: dict[str, Any] = {"elements": self.elements, "ms": self.ms}
         if self.phoneme:
             out["phoneme"] = self.phoneme
@@ -212,6 +222,11 @@ class PbBlock:
     audio: PbAudio | None = None
     volume: int | None = None
     binaries: tuple[bytes, ...] = ()
+    epoch: int = 0
+    stream: bool = False
+    pts_ms: int = 0
+    anim_id: str = ""
+    anim_version: str = ""
 
     @property
     def is_play(self) -> bool:
@@ -232,6 +247,21 @@ class PbBlock:
             "pb_ver": 2,
             "level": level,
         }
+        if self.anim_id:
+            if (self.type != PbType.SINGLE or self.idx != 0 or self.anim or self.servo or
+                    self.audio is not None or self.binaries or self.stream):
+                raise ValueError("anim_id requires standalone pb_single without media or inline frames")
+            msg["anim_id"] = self.anim_id
+            if self.anim_version:
+                msg["anim_version"] = self.anim_version
+            if self.chunk_ms == 0:
+                del msg["chunk_ms"]  # Device derives duration from its compiled resource.
+        if self.epoch:
+            msg["epoch"] = self.epoch
+        if self.anim_version:
+            msg["anim_version"] = self.anim_version
+        if self.stream:
+            msg.update(stream=True, pts_ms=self.pts_ms)
         if self.anim:
             msg["anim"] = [a.to_wire() for a in self.anim]
         if self.servo:
@@ -253,7 +283,8 @@ class PbBlock:
         """从 pb wire JSON dict 反序列化为 ``PbBlock``。"""
         anim_raw = wire.get("anim")
         anim = tuple(
-            PbAnim(elements=a.get("elements", {}), ms=a.get("ms", 1), phoneme=a.get("phoneme", ""))
+            PbAnim(elements=a.get("elements", {}), ms=a.get("ms", 1), phoneme=a.get("phoneme", ""),
+                   phoneme_id=a.get("phoneme_id", ""), anim_id=a.get("anim_id", ""), frame=a.get("frame", 0))
             for a in anim_raw
         ) if isinstance(anim_raw, list) else ()
 
@@ -284,6 +315,11 @@ class PbBlock:
             audio=audio,
             volume=wire.get("volume"),
             binaries=binaries,
+            epoch=int(wire.get("epoch", 0)),
+            stream=bool(wire.get("stream", False)),
+            pts_ms=int(wire.get("pts_ms", 0)),
+            anim_id=str(wire.get("anim_id") or ""),
+            anim_version=str(wire.get("anim_version") or ""),
         )
 
 
@@ -311,6 +347,9 @@ class PbSeq:
     sr: int = 16000
     ch: int = 1
     fmt: str = "opus"
+    source: asyncio.Queue | None = field(default=None, repr=False, compare=False)
+    epoch: int = 0
+    voice_key: str = ""
     _done: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
     _outcome_box: list[PlaybackOutcome] = field(default_factory=list, repr=False, compare=False)
 
@@ -367,7 +406,10 @@ class PbSeq:
             sr = self.sr if has_audio else 0
             fmt = self.fmt if has_audio else ""
             ch = self.ch if has_audio else 0
-            pairs.append((blk.to_wire(level=self.level, sr=sr, fmt=fmt, ch=ch), list(blk.binaries)))
+            wire = blk.to_wire(level=self.level, sr=sr, fmt=fmt, ch=ch)
+            if self.voice_key and has_audio:
+                wire["voice_key"] = self.voice_key
+            pairs.append((wire, list(blk.binaries)))
         return pairs
 
     @classmethod
@@ -399,4 +441,5 @@ class PbSeq:
         # action 从 wire 顶层取（如果有），否则默认 REPLACE
         if pairs:
             action = PbAction.from_wire(pairs[0][0].get("action", ""))
-        return cls(req=req, entries=tuple(entries), level=level, action=action, sr=sr or 16000, ch=ch or 1, fmt=fmt or "opus")
+        key = next((str(wire.get("voice_key") or "") for wire, _ in pairs if wire.get("voice_key")), "")
+        return cls(req=req, entries=tuple(entries), level=level, action=action, sr=sr or 16000, ch=ch or 1, fmt=fmt or "opus", voice_key=key)

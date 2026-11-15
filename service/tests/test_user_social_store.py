@@ -11,7 +11,7 @@ import pytest
 @pytest.fixture()
 def data_dir(monkeypatch, tmp_path):
     """把 data 根目录重定向到 tmp_path（镜像 test_device_data.py 做法）。"""
-    from deskbot_server.utils import device_data as dd
+    from deskbot_server.service import device_data_paths as dd
 
     d = tmp_path / "data"
     d.mkdir()

@@ -343,10 +343,7 @@ def load_pb_face_bundle_file(path: str) -> dict[str, Any]:
     """读取 YAML 或 JSON 覆盖层（非完整 ``mouth_by_phoneme`` 也可，只写要改的键）。"""
     path = _resolve_face_bundle_file_path(path)
     with open(path, encoding="utf-8") as f:
-        if path.lower().endswith(".json"):
-            data = json.load(f)
-        else:
-            data = yaml.safe_load(f)
+        data = json.load(f) if path.lower().endswith(".json") else yaml.safe_load(f)
     return data if isinstance(data, dict) else {}
 
 
@@ -399,10 +396,7 @@ def ensure_pb_face_bundle_shape(data: dict[str, Any]) -> dict[str, Any]:
 
 def _read_bundle_file_raw(abs_path: str) -> dict[str, Any]:
     with open(abs_path, encoding="utf-8") as f:
-        if abs_path.lower().endswith(".json"):
-            doc = json.load(f)
-        else:
-            doc = yaml.safe_load(f)
+        doc = json.load(f) if abs_path.lower().endswith(".json") else yaml.safe_load(f)
     return doc if isinstance(doc, dict) else {}
 
 

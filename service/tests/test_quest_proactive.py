@@ -156,7 +156,7 @@ def test_no_task_cooldown(monkeypatch):
 
 def test_db_session_fallback_when_memory_empty(monkeypatch):
     """进程冷启动无内存打点时，用会话表 updated_at 兜底判定。"""
-    import deskbot_server.dao.device_session_mapper as dsm
+    import deskbot_server.service.session_service as dsm
 
     svc, hub, runner = _new_live(monkeypatch)
 
@@ -265,7 +265,7 @@ def test_runner_full_path(monkeypatch):
     assert "t1" in captured["user_text"]
     assert "日常" in captured["user_text"] and "饭点提醒主人喝水" in captured["user_text"]
     assert "complete_task" in captured["user_text"]  # 分类型推进指引
-    assert "need_reply=false" in captured["user_text"]  # 允许静默收尾（防永续任务骚扰）
+    assert "输出完全空白" in captured["user_text"]  # 允许静默收尾（防永续任务骚扰）
     assert captured["kw"]["force_voice"] is True
     assert captured["publish"][1] == "quest_proactive"
 

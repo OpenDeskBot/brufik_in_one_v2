@@ -49,6 +49,8 @@ class Device(Base):
     auto_reply: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     servo_mode: Mapped[str] = mapped_column(String(16), default="", nullable=False)
     live_mode: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    conversation_provider: Mapped[str] = mapped_column(String(32), default="local", server_default="local", nullable=False)
+    conversation_param: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 设备级 ASR provider：funasr（默认）/ doubao；空/NULL 按 funasr 处理
     asr_provider: Mapped[str] = mapped_column(String(32), default="funasr", server_default="funasr", nullable=False)
     # 设备级 ASR 参数（JSON：{"funasr": {"url"}, "doubao": {"api_key", ...}}），NULL=未配置
@@ -58,11 +60,16 @@ class Device(Base):
     # 设备级 TTS 参数（JSON：{"moss": {"demo_id"}, "doubao": {"api_key", ...}}），NULL=未配置
     tts_param: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 设备级 LLM provider：空=未配置（回落系统默认 config.yaml llm 段）；
-    # minicpm / qwen = 本地固定端点；ark = 云端（密钥/模型在该设备 llm_param["ark"]）
+    # minicpm / qwen / unee = 本地固定端点；ark = 云端（密钥/模型在该设备 llm_param["ark"]）
     llm_provider: Mapped[str] = mapped_column(String(64), default="", server_default="", nullable=False)
     # 设备级 LLM 参数（JSON：{"ark": {api_key, model_name, base_url}, "context_window": N}；
     # context_window 影响历史 token 预算；工具恒走原生 function calling 无开关），NULL=未配置
     llm_param: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 设备级「动作/表情决策模型」provider：默认 unee（unee-0.8B）；空/非法回落 unee。
+    # 每轮对话的舵机动作与表情统一由该模型决定，不能再由大脑 LLM 输出。
+    decision_llm_provider: Mapped[str] = mapped_column(
+        String(64), default="unee", server_default="unee", nullable=False
+    )
     # 设备绑定的剧情剧本名（对应 data/quest/{quest_id}.json）；空/NULL=未绑定
     quest_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

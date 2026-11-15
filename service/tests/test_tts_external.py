@@ -18,8 +18,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import numpy as np
 import pytest
 
-from deskbot_server.infrastructure.tts.factory import DEFAULT_TTS_PROVIDER, build_tts_adapter
-from deskbot_server.infrastructure.tts.moss_adapter import MossTtsAdapter
+from deskbot_server.client.tts.factory import DEFAULT_TTS_PROVIDER, build_tts_adapter
+from deskbot_server.client.tts.moss_adapter import MossTtsAdapter
 from deskbot_server.model.settings import AppSettings
 
 FAKE_PORT = 9202
@@ -62,6 +62,8 @@ class _FakeTtsEngine:
         self.port = port
         self.last_text: str | None = None
         self.last_demo_id: str | None = None
+        self.last_cpu_threads: str | None = None
+        self.request_count = 0
         self.error_status: int | None = None  # 非 None 时返回错误 JSON
         self._server = None
         self._thread: threading.Thread | None = None
@@ -73,8 +75,10 @@ class _FakeTtsEngine:
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
             fields = _parse_form(body, self.headers.get("Content-Type", ""))
+            self.engine.request_count += 1
             self.engine.last_text = fields.get("text", "")
             self.engine.last_demo_id = fields.get("demo_id", "")
+            self.engine.last_cpu_threads = fields.get("cpu_threads", "")
             if self.engine.error_status is not None:
                 payload = json.dumps({"error": "warmup not ready"}).encode("utf-8")
                 self.send_response(self.engine.error_status)
@@ -110,12 +114,16 @@ class _FakeTtsEngine:
 
 @pytest.fixture()
 def fake_engine():
+    from deskbot_server.client.tts import moss_adapter as moss_mod
+
+    moss_mod._TTS_CACHE.clear()
     engine = _FakeTtsEngine(port=FAKE_PORT)
     engine.start()
     try:
         yield engine
     finally:
         engine.stop()
+        moss_mod._TTS_CACHE.clear()
 
 
 def _adapter(base_url: str = FAKE_BASE_URL, **tts_extra) -> MossTtsAdapter:
@@ -156,6 +164,27 @@ def test_moss_adapter_custom_demo_id(fake_engine):
 
     asyncio.run(run())
     assert fake_engine.last_demo_id == "demo-3"
+
+
+def test_moss_adapter_sends_cpu_threads(fake_engine):
+    from deskbot_server.client.tts.moss_adapter import MOSS_CPU_THREADS
+
+    adapter = _adapter()
+    asyncio.run(adapter.synthesize_phoneme_segments("线程测试"))
+    assert fake_engine.last_cpu_threads == str(MOSS_CPU_THREADS)
+
+
+def test_moss_adapter_cache_hit_skips_engine(fake_engine):
+    adapter = _adapter()
+
+    async def run():
+        return await adapter.synthesize_phoneme_segments("缓存测试")
+
+    sr1, segs1 = asyncio.run(run())
+    sr2, segs2 = asyncio.run(run())
+    assert fake_engine.request_count == 1  # 第二次走本地缓存
+    assert sr1 == sr2
+    assert segs1 == segs2
 
 
 def test_moss_adapter_empty_text(fake_engine):
@@ -200,7 +229,7 @@ def test_build_tts_adapter_unknown_falls_back_to_moss():
 
 def test_doubao_config_speaker_precedence(monkeypatch):
     """豆包音色优先级：config tts.doubao_speaker > env DOUBAO_TTS_SPEAKER。"""
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
+    from deskbot_server.client.tts.doubao import load_doubao_tts_config
 
     monkeypatch.setenv("DOUBAO_TTS_SPEAKER", "env_speaker")
     assert load_doubao_tts_config({}).speaker == "env_speaker"

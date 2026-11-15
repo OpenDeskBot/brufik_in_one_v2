@@ -8,14 +8,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from typing import Any
 
-from deskbot_server.vision.face_identity import (
-    compute_face_descriptor,
-    is_embedding_vector,
-)
+from deskbot_server.vision.face_identity import compute_face_descriptor, is_embedding_vector
 
 _lock = threading.Lock()
 _snapshots: dict[str, dict[int, dict[str, Any]]] = {}
@@ -121,10 +119,8 @@ def list_recognized_faces(device_id: str, *, limit: int = 5) -> list[dict[str, A
             score = None
         row = {"person_name": name, "identity_score": score, "face_id": int(fid)}
         if profile_id is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 row["id"] = int(profile_id)
-            except (TypeError, ValueError):
-                pass
         prev = best_by_key.get(dedupe_key)
         prev_score = prev.get("identity_score") if prev else None
         if prev is None or (score or 0.0) > (prev_score or 0.0):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import json
 import time
@@ -67,7 +68,13 @@ def _normalize_incoming_pb_ack(data: dict[str, Any]) -> dict[str, Any] | None:
     except Exception:
         out["space"] = 0
     ack_type = data.get("ack_type", "")
-    out["ack_type"] = ack_type if isinstance(ack_type, str) and ack_type in ("pb_chunk", "pb_end") else ""
+    out["ack_type"] = ack_type if isinstance(ack_type, str) and ack_type in ("pb_chunk", "pb_end", "pb_credit", "pb_audio_end", "pb_started", "pb_progress", "pb_cancelled", "pb_error") else ""
+    for key in ("epoch", "played_ms", "buffered_ms", "device_ms", "queue_wait_ms", "audio_space", "head_space", "display_space"):
+        if key in data:
+            with contextlib.suppress(ValueError, TypeError):
+                out[key] = max(0, int(data[key]))
+    if isinstance(data.get("error"), str):
+        out["error"] = data["error"]
     return out
 
 

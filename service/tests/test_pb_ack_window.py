@@ -93,6 +93,45 @@ def test_final_window_waits_for_pb_end(monkeypatch):
     asyncio.run(_run())
 
 
+def test_device_error_drops_legacy_window_without_waiting_for_timeout(monkeypatch):
+    async def run():
+        svc, entry, sent = _make_svc(monkeypatch)
+        seq = PbSeq(req="failed", entries=_blocks("failed", 3))
+        svc._enqueue(entry, seq)
+        async for _ in _run_device_loop(svc):
+            await _wait_until(lambda: len(sent) == 3)
+            entry.ack_queue.put_nowait(_ack(seq.req, "pb_error", idx=1))
+            await _wait_until(seq._done.is_set)
+            assert seq.outcome.status == PlaybackStatus.DROPPED
+            assert seq.outcome.reason == "device_playback_error"
+            assert sent[-1][1] == PbType.CANCEL
+
+    asyncio.run(run())
+
+
+def test_capable_window_rejects_early_end_and_stale_window_credit(monkeypatch):
+    async def run():
+        svc, entry, sent = _make_svc(monkeypatch)
+        entry.capabilities = {"pb_epoch_v1"}
+        seq = PbSeq(req="ordered", entries=_blocks("ordered", 12))
+        svc._enqueue(entry, seq)
+        async for _ in _run_device_loop(svc):
+            await _wait_until(lambda: len(sent) == 10)
+            entry.ack_queue.put_nowait(_ack(seq.req, "pb_chunk", idx=0))
+            await asyncio.sleep(.05)
+            assert len(sent) == 10
+            entry.ack_queue.put_nowait(_ack(seq.req, "pb_chunk", idx=9))
+            await _wait_until(lambda: len(sent) == 12)
+            entry.ack_queue.put_nowait(_ack(seq.req, "pb_end", idx=0))
+            await asyncio.sleep(.05)
+            assert not seq._done.is_set()
+            entry.ack_queue.put_nowait(_ack(seq.req, "pb_end", idx=11))
+            await _wait_until(seq._done.is_set)
+            assert seq.outcome.completed
+
+    asyncio.run(run())
+
+
 def test_send_and_wait_returns_playback_outcome(monkeypatch):
     """新接口返回真实播毕结果，不再把“成功入队”冒充“播放成功”。"""
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+from contextvars import ContextVar
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
@@ -13,6 +14,19 @@ from deskbot_server.utils.paths import DATA_DIR
 _engine = None
 _session_factory: scoped_session[Session] | None = None
 _init_lock = threading.Lock()
+request_scope: ContextVar[object | None] = ContextVar("database_request_scope", default=None)
+
+
+def _session_scope_key():
+    if (key := request_scope.get()) is not None:
+        return key
+    import asyncio
+
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    return task or threading.get_ident()
 
 
 def default_db_path() -> Path:
@@ -53,7 +67,8 @@ def init_engine(db_path: Path | None = None):
             cursor.close()
 
         _session_factory = scoped_session(
-            sessionmaker(bind=_engine, autoflush=False, autocommit=False, expire_on_commit=False)
+            sessionmaker(bind=_engine, autoflush=False, autocommit=False, expire_on_commit=False),
+            scopefunc=_session_scope_key,
         )
         return _engine
 
@@ -68,3 +83,11 @@ def get_session() -> Session:
 def remove_session() -> None:
     if _session_factory is not None:
         _session_factory.remove()
+
+
+def new_session() -> Session:
+    """返回调用方独占的 SQL 会话；调用方负责关闭。"""
+    if _session_factory is None:
+        init_engine()
+    assert _session_factory is not None
+    return _session_factory.session_factory()

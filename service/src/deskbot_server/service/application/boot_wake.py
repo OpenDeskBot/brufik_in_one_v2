@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from typing import TYPE_CHECKING
 
 from deskbot_server.constants import FACE_DESIGN_FILE
 from deskbot_server.dao.face_expr_scenes_store import (
@@ -14,8 +15,6 @@ from deskbot_server.dao.face_expr_scenes_store import (
 )
 from deskbot_server.pb.servo_pcm import attach_pb_device_hints_from_config
 from deskbot_server.pb.shapes import PB_ACTION_REPLACE, PB_LEVEL_TASK, apply_pb_dispatch_fields
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from deskbot_server.service.device_ws_service import DeviceWsService

@@ -17,6 +17,7 @@ class LlmTurnResult:
     # 逐次 LLM 调用明细：{n, model, ms, text, truncated, raw}（工具轮会多次；
     # raw 为该次调用引擎原始返回 JSON 文本，实验台默认折叠展示）
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
+    reply_streamed: bool = False
 
 
 @dataclass
@@ -34,7 +35,10 @@ class ChatTurnResult:
     dialogue_act: str = "answer"
     json_ok: bool = False
     t_llm_end: float | None = None
+    t_llm_first_token: float | None = None
     t_tts_synth_end: float | None = None
+    t_tts_first_audio: float | None = None
+    tts_synth_ms: float | None = None
     t_tts_end: float | None = None
     # PB 播放终态：None=未进入/旧调用方未知，True=收到完整播放完成，False=被抢占/丢弃/超时。
     playback_completed: bool | None = None
@@ -56,6 +60,12 @@ class ChatTurnResult:
     face_ms: int | None = None
     # 声纹识别耗时（ms，与 voice_sight 同一识别终态）；无展示行时为 None
     voice_ms: int | None = None
+    # 决策模型前置门控结果（仅语音轮）：输入是否正常 / 是否需要开口 / 模型与耗时
+    decision_valid: bool | None = None
+    decision_respond: bool | None = None
+    decision_model: str | None = None
+    decision_ms: int | None = None
+    decision_error: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

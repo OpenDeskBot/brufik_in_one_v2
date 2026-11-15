@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
-VENDOR_VUE = _SRC / "deskbot_server/web/static/vendor/vue.global.prod.min.js"
-QUEST_TEMPLATE = _SRC / "deskbot_server/web/templates/quests.html"
+VENDOR_VUE = _SRC / "deskbot_server/public/shared/vendor/vue.global.prod.min.js"
+QUEST_TEMPLATE = _SRC / "deskbot_server/public/admin/views/quests.html"
 
 _COMPILE_NODE_SCRIPT = r"""
 const fs = require('fs');

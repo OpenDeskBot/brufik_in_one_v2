@@ -6,13 +6,13 @@ import asyncio
 
 import pytest
 
-from deskbot_server.infrastructure.llm.runtime import (
+from deskbot_server.client.llm.runtime import (
     _build_completion_payload,
     _messages_to_ark_input,
     _tool_calls_from_ark_response,
     _tool_calls_from_openai_response,
 )
-from deskbot_server.infrastructure.llm.tool_schema import (
+from deskbot_server.service.llm_tools_schema import (
     NATIVE_TOOL_NAMES_BATCH1,
     build_native_tool_schemas,
 )
@@ -140,7 +140,7 @@ def _make_settings():
 
 def test_adapter_tool_round_message_assembly(monkeypatch):
     """工具 trail 出现后不再重复注入 user；首轮注入 user。"""
-    import deskbot_server.infrastructure.llm.openai_compat as oc
+    import deskbot_server.service.llm_service as oc
 
     captured: dict = {}
 
@@ -199,7 +199,7 @@ def test_schema_batch2_default_on_without_quest(monkeypatch):
         def get_tool_calls(self, device_id):
             return [{"tasks": [{"task_id": "g_a", "type": "once"}, {"task_id": "g_b", "type": "daily"}]}]
 
-    import deskbot_server.infrastructure.llm.tool_schema as ts
+    import deskbot_server.service.llm_tools_schema as ts
     import deskbot_server.service.quest_service as qs
 
     monkeypatch.setattr(qs, "QuestService", _FakeSvc)

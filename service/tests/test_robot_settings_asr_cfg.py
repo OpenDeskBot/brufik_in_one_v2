@@ -22,9 +22,9 @@ import pytest
 import yaml
 
 from deskbot_server.dao.device_mapper import get_asr_param, set_asr_provider, update_asr_param
-from deskbot_server.infrastructure.asr.audio_norm import DEFAULT_PCM_SAMPLE_RATE, parse_audio_pcm, resample_pcm
-from deskbot_server.infrastructure.asr.env_store import _mask_secret
-from deskbot_server.infrastructure.asr.resolve import resolve_asr_adapter
+from deskbot_server.client.asr.audio_norm import DEFAULT_PCM_SAMPLE_RATE, parse_audio_pcm, resample_pcm
+from deskbot_server.client.asr.env_store import _mask_secret
+from deskbot_server.service.asr_routing import resolve_asr_adapter
 from deskbot_server.model.settings import AppSettings
 from deskbot_server.service.robot_capability import CapabilityError, RobotCapabilityService
 
@@ -144,7 +144,7 @@ def tmp_env(monkeypatch, tmp_path):
     """隔离 .env：read_env_file / update_env_keys 读的是 tts.env_store.ENV_FILE。"""
     env_file = tmp_path / ".env"
     env_file.write_text("", encoding="utf-8")
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", env_file)
     return env_file
 
 
@@ -412,7 +412,7 @@ def _fake_doubao_post(monkeypatch, respond):
         captured["payload"] = json.loads(body.decode("utf-8"))
         return respond()
 
-    monkeypatch.setattr("deskbot_server.infrastructure.asr.doubao._post", fake_post)
+    monkeypatch.setattr("deskbot_server.client.asr.doubao._post", fake_post)
     return captured
 
 
@@ -556,7 +556,7 @@ def _login_client(email: str):
 
 
 def test_api_asr_config_info_endpoint(temp_db, monkeypatch, tmp_path):
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", tmp_path / ".env")
     client = _login_client("asr-cfg@example.com")
     resp = client.get("/api/robot-settings/asr/config-info")
     assert resp.status_code == 200
@@ -571,7 +571,7 @@ def test_api_asr_config_info_endpoint(temp_db, monkeypatch, tmp_path):
 
 def test_api_asr_default_audio_endpoint(temp_db, monkeypatch, tmp_path):
     """默认音频端点：返回 data/test/asr.wav 供对话框播放试听。"""
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", tmp_path / ".env")
     client = _login_client("asr-audio@example.com")
 
     resp = client.get("/api/robot-settings/asr/default-audio")
@@ -584,7 +584,7 @@ def test_api_asr_default_audio_endpoint(temp_db, monkeypatch, tmp_path):
 def test_api_asr_config_save_endpoint(temp_db, monkeypatch, tmp_path):
     """保存 → 写当前设备 asr_param（DB），不再写 .env。"""
     env_file = tmp_path / ".env"
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", env_file)
     _clean_doubao_env(monkeypatch)
     from deskbot_server.web.app import create_app
     from tests._auth_compat import create_user
@@ -624,7 +624,7 @@ def test_api_asr_config_save_endpoint_no_device_400(temp_db, monkeypatch, tmp_pa
 
 
 def test_api_asr_test_endpoint_multipart(temp_db, monkeypatch, tmp_path):
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", tmp_path / ".env")
     client = _login_client("asr-test@example.com")
 
     # 未提供音频且不用默认 → 400

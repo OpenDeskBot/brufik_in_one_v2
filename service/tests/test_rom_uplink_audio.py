@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +49,14 @@ def _pcm_tone(duration_ms: int = 900, freq: float = 200.0, amp: int = 20000) -> 
     return wave.tobytes()
 
 
+def _pcm_speech() -> bytes:
+    # A pure sine is not speech and Silero correctly rejects it. Fixed offline
+    # Tingting synthesis ("你好小歪，今天过得怎么样？"), no human recording or network.
+    with wave.open(str(Path(__file__).parent / 'fixtures/vad-speech-tingting.wav'), 'rb') as speech:
+        assert speech.getframerate() == 16000 and speech.getnchannels() == 1 and speech.getsampwidth() == 2
+        return speech.readframes(speech.getnframes())
+
+
 def _encode_opus_batch(pcm_chunks: list[bytes]) -> tuple[bytes, int]:
     enc = opuslib_next.Encoder(16000, 1, opuslib_next.APPLICATION_VOIP)
     parts: list[bytes] = []
@@ -60,7 +69,7 @@ def _encode_opus_batch(pcm_chunks: list[bytes]) -> tuple[bytes, int]:
 def test_rom_uplink_emits_utterance_on_speech():
     async def _run() -> None:
         session = _session()
-        speech = _pcm_tone(900)
+        speech = _pcm_speech()
         silence = b"\x00\x00" * (16000 // 2)  # 500 ms
         pcm = speech + silence
         utterance = None
@@ -131,7 +140,7 @@ def test_flush_only_audio_metadata_is_recognized_without_binary():
 def test_post_flush_accepts_new_audio():
     async def _run() -> None:
         session = _session()
-        pcm = _pcm_tone(900) + (b"\x00\x00" * (16000 // 2))
+        pcm = _pcm_speech() + (b"\x00\x00" * (16000 // 2))
         utterance = None
         for i in range(0, len(pcm), 640):
             utt, _, _ = await session.feed_audio(pcm[i : i + 640], "pcm16")

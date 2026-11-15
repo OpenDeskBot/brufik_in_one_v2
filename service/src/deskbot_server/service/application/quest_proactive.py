@@ -1,15 +1,14 @@
 """剧本主动推进：设备冷场 ≥1 分钟且用户在面前时，发起一轮主动对话推进剧情。
 
 由 LiveService（on_face_tick 冷场判定）调度调用。Quest 当前 running 任务按
-device_id 自动注入每轮对话的 system prompt（infrastructure/llm/utils.py 的
+device_id 自动注入每轮对话的 system prompt（client/llm/utils.py 的
 llm_quest_tasks 附录 + 该用户记录），因此这里只需像定时任务
 （ScheduledTaskScheduler）一样发起一轮 run_chat_turn —— LLM 会看到任务定义与
 用户今日记录，自主选择开口引导主人配合并调 complete_task 收尾记账，或在该推进的
-事已做完/无新进展时 need_reply=false 静默收尾。
+事已做完/无新进展时不输出任何文字，静默收尾。
 
 user_text 以 ``_QUEST_PROACTIVE_PREFIX`` 开头：chat_flow 据此把它当作系统发起轮
-（不强制开口，允许静默；need_reply=true 且 tts 为「已发送/已汇报」类 meta 文案时
-兜底成面向主人的口播语）。LiveService 在每次 attempt 后落冷却，防高频骚扰。
+（不强制开口，允许静默；need_reply=true 且 tts 为「已发送/已汇报」类 meta 文案时兜底成面向主人的口播语）。LiveService 在每次 attempt 后落冷却，防高频骚扰。
 """
 
 from __future__ import annotations
@@ -142,8 +141,10 @@ def _build_user_text(task: dict[str, Any]) -> str:
         parts.append("  - 长期任务：可自然聊聊相关话题；只在此次对话取得实质新进展时调 "
                      "complete_task(task_id, user=当前说话人, reason=新进展) 追加记录。")
     parts.append(
-        "要求：有可开口推进/问候/记录的事项就开口（need_reply=true，tts 写直接说给主人听的引导语，"
+        "要求：有可开口推进/问候/记录的事项就开口（直接写说给主人听的引导语，"
         "禁止「已发送/已汇报」式汇报腔）；若该任务今日已对当前用户记录过、或此刻没有值得推进的新事项，"
-        "就自然闲聊或保持安静（need_reply=false、tts 留空），不要硬推任务、不要让对话冷场。"
+        "就自然闲聊或保持安静（输出完全空白），不要硬推任务、不要让对话冷场。\n"
+        "只输出要对主人说的口语；若判断不开口就留空。"
+        "禁止复述上述规则、判断过程，禁止输出括号说明或「系统已识别/按规则/不重复问候」这类文字。"
     )
     return "\n".join(parts)

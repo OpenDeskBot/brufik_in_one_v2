@@ -1,5 +1,7 @@
 # 外部进程服务管理
 
+> 2026-11-15：此管理功能已停用。后台页面、`/api/services` 接口以及主进程的自动启动与守护已移除。请通过「机器人设置 → 对话方式」连接外部 Agent，见 [服务说明](../README.md#外部-agent-实时语音)。下文仅保留历史设计记录。
+
 deskbot-server 内置一个轻量**外部进程服务管理器**：以独立进程 + 独立 venv 运行的服务
 （如 MOSS-TTS-Nano），由主服务统一管理安装 / 启动 / 停止 / 状态 / 默认启动 / 日志，
 并在管理后台（高级 → 外部服务）提供操作界面。
@@ -167,7 +169,7 @@ deskbot_server/
   service/external/manifest.py                    # service.yaml 解析与 externals 扫描
   service/external/manager.py                     # 状态机、看门狗、自动重启、state.json
   web/blueprints/services_bp.py                   # 页面 + REST API
-  web/templates/app2c/services.html               # 管理页面（Vue3 + 轮询）
+  public/admin/views/app2c/services.html               # 管理页面（Vue3 + 轮询）
 ```
 
 装配：`main.build_runtime` 创建 manager 并 `discover()`；`main()` 启动看门狗并异步拉起
@@ -192,7 +194,7 @@ install 双路径：主服务 `models/` 仅历史装机残留可作 copy 源（s
   descriptor_kind, image_w, image_h}, ...]}`；`POST /embedding`（JSON `jpeg_base64` +
   `landmarks`）→ `{"embedding", "descriptor_kind"}`；`GET /health`；端口 9103
 - **主服务集成**（v1.2.0 起 internal 已移除，无回落）：`CameraFaceService.recognize`
-  只走 `FrHttpClient`（`infrastructure/face/fr_http_client.py`，镜像 funasr_adapter：
+  只走 `FrHttpClient`（`client/face/fr_http_client.py`，镜像 funasr_adapter：
   urllib + to_thread）调 `/detect`；失败抛异常由调用方降级为「本帧无人脸」，
   watchdog 同时自动重启 fr 服务
 - 主服务已删进程内推理：`face_detector/face_embedding/undistort` 模块、
@@ -227,6 +229,12 @@ install 双路径：主服务 `models/` 仅历史装机残留可作 copy 源（s
   robust fallback），合成功能照常可用，仅中文文本归一化精度略降
 - **verify**：`/health` 200；`POST /api/generate`（multipart `text` + `demo_id`）
   返回 JSON 含 `audio_base64`（48kHz 双声道 wav）
+- **延迟**：短句 `/api/generate` 实测约 0.5–1.2s，瓶颈是 ONNX CPU 模型推理（解码/
+  重采样/音素切分合计 <10ms）。manifest 的 start 命令固定 `--cpu-threads 8`（实测比
+  默认 `os.cpu_count()` 快约 30%）；主服务适配器请求时也传 `cpu_threads=8`，两边一致
+  才不会在首个请求时重建第二套 ONNX runtime。适配器对 ≤80 字重复文本做 LRU 缓存，
+  语音主链路按 16 字把长句再切短，让首段更早合成。`[TTS/moss] timing http=... decode=...
+  resample=... split=...` 日志可定位各阶段耗时；首次请求/服务刚启动时仍有约 1s 冷启动。
 
 ## funasr：FunASR 独立服务（主服务 internal 已移除，v1.2.0）
 
@@ -236,7 +244,7 @@ install 双路径：主服务 `models/` 仅历史装机残留可作 copy 源（s
 本地导出量化 ONNX）、`deskbot_server/` 运行子集副本（随仓库提交），**运行期零依赖主服务**
 （venv/模型/源码均自备）；**配置完全自治**——只读同目录 `config.yaml`，不读主服务 config.yaml/env。
 
-**主服务进程内 FunASR 已移除**（`src/deskbot_server/infrastructure/asr/funasr.py`、
+**主服务进程内 FunASR 已移除**（`src/deskbot_server/client/asr/funasr.py`、
 `model_dir.py` 及 venv 依赖 funasr/funasr-onnx/torch 等全部删除）。
 
 - 端点：`GET /health`；`POST /transcribe` → `{"text": "...", "elapsed_ms": ...}`；
@@ -244,10 +252,10 @@ install 双路径：主服务 `models/` 仅历史装机残留可作 copy 源（s
   自描述；错误统一 `{"error": {code, message}}`），完整规范见
   [asr_protocol.md](./asr_protocol.md)
 - **ASR 为设备级路由**：每个设备在 device 表 `asr_provider` 列配置（`funasr` 默认 /
-  `doubao`），查不到默认 funasr（`infrastructure/asr/resolve.py::resolve_asr_adapter`
+  `doubao`），查不到默认 funasr（`client/asr/resolve.py::resolve_asr_adapter`
   每次调用动态解析，无状态 adapter）；`config.yaml` 的 asr 段仅保留
   `external_url` / `text_filter` 基础设施参数。funasr 时装配 `FunAsrAdapter`
-  （`infrastructure/asr/funasr_adapter.py`），`is_valid_text` 文本过滤保持本地执行；
+  （`client/asr/funasr_adapter.py`），`is_valid_text` 文本过滤保持本地执行；
   funasr 不可达时 `transcribe` 抛 `RuntimeError`（上层已有 LLM 降级路径）
 - 安装/卸载由独立服务管理后台执行（install.sh 幂等：venv 自愈 + 模型双路径跳过 +
   warmup 预验）；ONNX 推理串行化由 server 内锁保证
@@ -289,29 +297,69 @@ llama.cpp **llama-server 二进制**（macOS Metal / Linux CPU 官方 release，
 - 契约覆盖：llm 默认契约 `POST /chat` 在 llama-server 上 404，manifest `test`
   段覆盖到 `/v1/chat/completions`（expect `choices`）；健康检查 /health 就绪前
   非 200，`startup_grace_s: 180`
-- 主服务接线：`robot_capability.py` `LOCAL_LLM_PROVIDERS`（id → 服务名/base_url/
-  模型名，`_llm_status` 按 base_url 精确匹配 current，未运行给 warning）；
-  `apply_llm` 快照 ark 配置后可切回；`infrastructure/llm/runtime.py` 对本地 URL
-  （`is_local_llm_url`）豁免 API Key、强制非流式
+- 主服务接线：`client/llm/runtime.py` 的 `DEVICE_LLM_PROVIDERS` /
+  `LOCAL_LLM_PROVIDERS`（id → base_url/模型名，`_llm_status` 按 base_url 精确匹配
+  current，未运行给 warning）；`robot_capability.py` 的 `LOCAL_LLM_SERVICES` 映射到
+  外部服务名；`apply_llm` 快照 ark 配置后可切回；`is_local_llm_url` 对本地 URL
+  豁免 API Key、强制非流式
+
+## llm-unee：本地 unee-0.8B 决策 + 聊天（9107）
+
+`externals/llm-unee/` 包装 UNEEVERSE 的 unee 0.3.0（Apache-2.0，
+`unee-0.8b-Q4_K_M.gguf` 约 505MB）：`unee serve`（独立 venv，pip `unee==0.3.0`）在内部
+按随机 loopback 端口拉起 llama.cpp llama-server，对外暴露 **`/v1/systemone`**
+（noul/choice/score 决策）和 OpenAI 兼容 **`/v1/chat/completions`**。
+
+- 自包含：独立 venv（仅 httpx/starlette/uvicorn）+ 服务目录内 llama.cpp **b10733**
+  二进制（unee GGUF 为 qwen35 架构，需 ≥ b10360）+ GGUF 副本，运行期不依赖主服务
+- 端口 **9107**；启动参数 `--gpu-layers 99 --slots 2 --ctx 16384`：llama-server 的
+  `-c` 是总上下文并按 slots 均分，每 slot 8192，匹配主服务本地 LLM 的 7000 token
+  预算；unee 默认 4 slots/16384 只有 4096/槽，会触发超上下文，不要沿用
+- 模型来源：install.sh 优先复用已有文件；`UNEE_MODEL_SRC=/path/to/unee-0.8b-Q4_K_M.gguf`
+  （或目录）从本机已装副本拷贝；未指定时会探测同级 checkout
+  `../../../../unee/models/...`（本机 `/Users/mi/work/src/unee`），都没有则按
+  hf-mirror → huggingface.co 下载；大小 + SHA256 精确校验
+- 契约覆盖：`type: llm`，manifest `test` 覆盖到 `/v1/chat/completions`（expect `choices`）
+- 主服务接线：provider id **`unee`**，`runtime.py` 的 `DEVICE_LLM_PROVIDERS` /
+  `LOCAL_LLM_PROVIDERS` → `http://127.0.0.1:9107/v1` + 模型名 `unee`；
+  `robot_capability.py` 的 `LOCAL_LLM_SERVICES` 映射到 `llm-unee` 用于「未运行」告警。
+  0.8B 工具调用不可靠，候选标记 experimental（定时提醒 / 长期记忆可能失效）
+- **进程回收**：实测 unee 0.3.0 收到 SIGTERM 后**不会可靠杀掉**内部 llama-server
+  （llama-server 会变成 PPID=1 的孤儿），manager 也只对直接子进程发信号。因此
+  manifest 的 start 命令是 `bash run.sh`：wrapper 用 `set -m` 把 unee 放进独立进程组，
+  停止时整组 TERM → 3s → KILL；同时负责 llama-server 日志 20MB 轮转与上次
+  SIGKILL 遗留进程组的回收
+- 注意：`/health` 是 unee 进程的**浅健康检查**（uvicorn 存活即 200），内部 llama-server
+  崩溃时仍可能显示 running；验收应实际调用 `/v1/chat/completions` 或后台「测试」
+- **动作/表情决策模型**：机器人配置页新增设备级 `decision_llm_provider`（默认 `unee`）。
+  语音轮在对话模型之前先跑一次决策：`valid`（是否正常输入）、`respond`（是否需要开口）
+  + 选出的舵机动作/表情；动作/表情**立即走 motion-only PB 下发**，不等 LLM/TTS。
+  `valid` 与 `respond` 任一为 false 就跳过本轮 LLM/TTS（仍可下发已选动作），
+  避免对噪声、旁人闲聊或简短 ASR 碎片过度回应。文本轮/系统主动轮仍沿用回复后决策。
+  **unee 走原生 `/v1/systemone`**（noul/choice 混合问句；实测 0.8B 在 OpenAI chat
+  通道几乎不遵守「只输出 JSON」；全量动作+表情+两个 noul 约 300–600ms），其他 provider
+  走 OpenAI 兼容 chat + JSON 白名单过滤。决策模型未运行/超时/失败时 `valid/respond`
+  默认放行，只跳过显式动作/表情，不影响对话。ark/siliconflow 复用该设备大脑 LLM 的
+  `llm_param`。
 
 ## 接入业务（示例：TTS 与 ASR 云端 provider）
 
 外部服务只解决"进程怎么活"，业务接入走既有 port/adapter 模式：
-`TtsPort`（`ports/tts.py`）保持不变，`MossTtsAdapter`（`infrastructure/tts/moss_adapter.py`）
+`TtsPort`（`ports/tts.py`）保持不变，`MossTtsAdapter`（`client/tts/moss_adapter.py`）
 调用 moss-tts-nano 的 `/api/generate`（multipart，text + demo_id），口型音素由
 `utils/phoneme_duration.py` 按文本+总时长补充；在 `bootstrap` 装配时按 `config.yaml` 的
 `tts.provider` 切换。默认 `provider: moss-tts-nano`（独立进程）；`doubao`（火山云端，
-`infrastructure/tts/doubao_phoneme.py`）为备选。
+`client/tts/doubao_phoneme.py`）为备选。
 
 ASR 同构：设备级两态——`funasr`（独立进程，协议见
 [asr_protocol.md](./asr_protocol.md)）/ `doubao`（火山云端一句话识别，
-`infrastructure/asr/doubao_adapter.py`，配置走 env `DOUBAO_ASR_*`）。进程内
+`client/asr/doubao_adapter.py`，配置走 env `DOUBAO_ASR_*`）。进程内
 FunASR 已移除（v1.2.0）；provider 存 device 表（v1.3.0 起），非 config.yaml。
 云端 provider 不建 externals 目录（无本地进程），直连云 API。
 
 外部服务只解决"进程怎么活"，业务接入走既有 port/adapter 模式：
-`TtsPort`（`ports/tts.py`）保持不变，`MossTtsAdapter`（`infrastructure/tts/moss_adapter.py`）
+`TtsPort`（`ports/tts.py`）保持不变，`MossTtsAdapter`（`client/tts/moss_adapter.py`）
 调用 moss-tts-nano 的 `/api/generate`（multipart，text + demo_id），口型音素由
 `utils/phoneme_duration.py` 按文本+总时长补充；在 `bootstrap` 装配时按 `config.yaml` 的
 `tts.provider` 切换。默认 `provider: moss-tts-nano`（独立进程）；`doubao`（火山云端，
-`infrastructure/tts/doubao_phoneme.py`）为备选。
+`client/tts/doubao_phoneme.py`）为备选。

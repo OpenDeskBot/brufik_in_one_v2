@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from deskbot_server.infrastructure.llm.runtime import JsonTtsStreamExtractor, try_extract_tts_from_partial_json
+from deskbot_server.client.llm.runtime import JsonTtsStreamExtractor, try_extract_tts_from_partial_json
 
 
 def test_try_extract_tts_complete():

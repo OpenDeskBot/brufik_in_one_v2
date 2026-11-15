@@ -8,8 +8,8 @@ import time
 
 import pytest
 
-from deskbot_server.infrastructure.llm.utils import build_llm_user_message
-from deskbot_server.infrastructure.voice.vpr_http_client import VprHttpError
+from deskbot_server.service.llm_context import build_llm_user_message
+from deskbot_server.client.voice.vpr_http_client import VprHttpError
 from deskbot_server.service.application import voice_snapshot_cache as snap
 from deskbot_server.service.application.tool_interim_tts import build_tool_interim_tts, phrase_for_tool
 from deskbot_server.service.application.voice_registration import register_voice_for_device
@@ -53,7 +53,7 @@ def db_env(monkeypatch, tmp_path):
     """初始化内存 DB，返回 device_id。"""
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DESKBOT_DB_PATH", str(db_path))
-    monkeypatch.setattr("deskbot_server.utils.device_data.ensure_device_data_initialized", lambda _did: False)
+    monkeypatch.setattr("deskbot_server.service.device_data_paths.ensure_device_data_initialized", lambda _did: False)
     from deskbot_server.db import init_database
     from deskbot_server.db.engine import init_engine, reset_engine
 
@@ -463,7 +463,7 @@ def test_build_llm_user_message_text_turn_keeps_plain():
 
 
 def test_format_voice_speaker_note(monkeypatch):
-    from deskbot_server.infrastructure.llm.utils import format_voice_speaker_note
+    from deskbot_server.service.llm_context import format_voice_speaker_note
 
     assert format_voice_speaker_note(None) is None
     assert format_voice_speaker_note("") is None

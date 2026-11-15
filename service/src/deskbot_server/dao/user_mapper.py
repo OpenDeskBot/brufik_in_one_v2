@@ -16,8 +16,10 @@ SQL 写在装饰器里，参数绑定自动从函数签名提取，session 管�
 
 from __future__ import annotations
 
+from deskbot_server.dao.decorators import insert as db_insert
+from deskbot_server.dao.decorators import select, select_one
+from deskbot_server.dao.decorators import update as db_update
 from deskbot_server.db.models import User
-from deskbot_server.db.sql_decorators import execute, select, select_one
 
 # ────────────────────────── 查询 ──────────────────────────
 
@@ -50,28 +52,29 @@ def has_any_user() -> str | None:
 # ────────────────────────── 写操作 ──────────────────────────
 
 
-@execute(
+@db_insert(
     """
     INSERT INTO users (id, email, password_hash, is_developer, is_active, created_at, updated_at)
     VALUES (:uid, :email, :pw_hash, :is_dev, 1, datetime('now'), datetime('now'))
     """,
     model=User,
+    id_param="uid",
 )
-def create(uid: str, email: str, pw_hash: str, is_dev: bool) -> User:
-    """创建用户（配合 RETURNING 可返回 User 对象，此处无 RETURNING 时返回 None）。"""
+def create(uid: str, email: str, pw_hash: str, is_dev: bool) -> str:
+    """创建用户，返回调用方提供的用户 ID。"""
 
 
-@execute("UPDATE users SET display_name = :name WHERE id = :uid AND is_active = 1")
+@db_update("UPDATE users SET display_name = :name WHERE id = :uid AND is_active = 1")
 def update_display_name(uid: str, name: str) -> int:
     """更新用户昵称，返回影响行数。"""
 
 
-@execute("UPDATE users SET is_developer = :is_dev WHERE id = :uid AND is_active = 1")
+@db_update("UPDATE users SET is_developer = :is_dev WHERE id = :uid AND is_active = 1")
 def set_developer(uid: str, is_dev: bool) -> int:
     """设置/取消开发者权限。"""
 
 
-@execute("UPDATE users SET password_hash = :pw_hash WHERE id = :uid AND is_active = 1")
+@db_update("UPDATE users SET password_hash = :pw_hash WHERE id = :uid AND is_active = 1")
 def update_password(uid: str, pw_hash: str) -> int:
     """更新密码哈希。"""
 

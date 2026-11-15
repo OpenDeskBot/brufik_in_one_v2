@@ -29,14 +29,14 @@ pytestmark = pytest.mark.skipif(
 
 
 def _cfg(model: str = "Qwen/Qwen3-8B"):
-    from deskbot_server.infrastructure.llm.runtime import build_siliconflow_config
+    from deskbot_server.service.llm_routing import build_siliconflow_config
 
     return build_siliconflow_config(model, source="test", display_name="SiliconFlow 集成测试")
 
 
 def test_live_json_mode_accepted():
     """json_object 必须被接受，否则整条主对话链路 400。"""
-    from deskbot_server.infrastructure.llm.runtime import chat_completion
+    from deskbot_server.client.llm.runtime import chat_completion
 
     content, meta = chat_completion(
         [{"role": "user", "content": '只输出 JSON：{"tts":"集成测试通过"}'}],
@@ -51,14 +51,14 @@ def test_live_json_mode_accepted():
 
 def test_live_thinking_disabled_via_extra_body():
     """extra_body 里的 enable_thinking 要真的进请求体并生效（无思维链、token 明显更少）。"""
-    from deskbot_server.infrastructure.llm.runtime import chat_completion
+    from deskbot_server.client.llm.runtime import chat_completion
 
     _, with_off = chat_completion(
         [{"role": "user", "content": "用一句话说明你适合做什么。"}], config=_cfg(), json_mode=False
     )
     assert _cfg().extra_body == {"enable_thinking": False}
 
-    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig
+    from deskbot_server.client.llm.runtime import ResolvedLlmConfig
 
     no_flag = _cfg()
     _, baseline = chat_completion(
@@ -76,7 +76,7 @@ def test_live_thinking_disabled_via_extra_body():
 
 def test_live_native_tool_calling_with_thinking_off():
     """提醒 / 记忆 / 搜索全靠原生 function calling，关思考后必须仍然可用。"""
-    from deskbot_server.infrastructure.llm.runtime import tool_acompletion
+    from deskbot_server.client.llm.runtime import tool_acompletion
 
     tools = [
         {
@@ -107,7 +107,7 @@ def test_live_native_tool_calling_with_thinking_off():
 
 def test_live_stream_tts_prefetch():
     """流式 TTS 预取路径：``tts`` 字段一闭合就回调（硅基流动是公网，不会被本地引擎的禁流式拦下）。"""
-    from deskbot_server.infrastructure.llm.runtime import chat_acompletion
+    from deskbot_server.client.llm.runtime import chat_acompletion
 
     ready: list[str] = []
 

@@ -62,22 +62,28 @@ def require_api_auth(fn: F) -> F:
             )
 
         # 优先从 web session（cookie）获取 user_id
-        uid = request.session.get("user_id") if hasattr(request, "session") else None
+        uid = str(request.scope.get("session", {}).get("user_id") or "").strip()
         if not uid:
             # 回退到 debug_token
             qargs = request_qargs(request)
             uid = _resolve_user_id_from_session(qargs, request.headers)
 
-        request.state.user_id = str(uid).strip() if uid else None
+        from deskbot_server.service.user_service import UserService
+
+        user = UserService().get_user(str(uid)) if uid else None
+        if user is None or not user.is_active:
+            request.state.user_id = None
+            return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})
+        request.state.user_id = str(user.id)
         return await fn(*args, **kwargs)
 
     return wrapper  # type: ignore[return-value]
 
 
 def device_access_denied(user_id: str | None, device_id: str | None) -> JSONResponse | None:
-    """检查用户是否有权操作指定设备。无 user_id 时放行（免费/匿名访问）。"""
-    if not user_id:
-        return None
+    """检查用户是否有权操作指定设备；匿名请求必须先通过认证。"""
+    if not str(user_id or "").strip():
+        return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})
     did = str(device_id or "").strip()
     if not did:
         return None
@@ -136,9 +142,13 @@ require_device_ws_auth = require_device_ws
 async def _ws_require_debug_auth(
     websocket, *, device_id: str | None = None, require_device: bool = False
 ) -> bool:
-    """调试订阅 WS：仅 session cookie（浏览器同源 WS 握手自动携带）。成功返回 True。"""
+    """调试订阅 WS：有效会话或签名 debug_token，并校验设备归属。"""
+    from deskbot_server.controller.decorators.access import resolve_user
+    from deskbot_server.utils.async_helpers import run_blocking
+
     raw_ws = getattr(websocket, "raw", websocket)
-    uid = str((getattr(raw_ws, "session", None) or {}).get("user_id") or "").strip()
+    user = await run_blocking(resolve_user, raw_ws)
+    uid = user.id if user is not None else None
     if not uid:
         import logging
 
@@ -159,7 +169,7 @@ async def _ws_require_debug_auth(
         from deskbot_server.service.user_service import UserService
 
         try:
-            allowed = UserService().user_owns_device(uid, did)
+            allowed = await run_blocking(UserService().user_owns_device, uid, did)
         except Exception:
             import logging
 

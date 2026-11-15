@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -21,6 +22,8 @@ from deskbot_server.constants import (
     SAFE_SEND_TIMEOUT,
 )
 from deskbot_server.model.pb_seq import PbBlock, PbSeq, PbType, PlaybackOutcome, PlaybackStatus
+from deskbot_server.pb.media_wire import CAPABILITIES as MEDIA_CAPABILITIES
+from deskbot_server.pb.media_wire import MediaWire
 from deskbot_server.pb.wire import device_pb_json_msg
 from deskbot_server.service.application.asr_chat_uplink import (
     coerce_audio_flush,
@@ -29,6 +32,7 @@ from deskbot_server.service.application.asr_chat_uplink import (
 )
 from deskbot_server.service.application.boot_wake import deliver_boot_wake_scene
 from deskbot_server.service.application.chat_service import ChatService
+from deskbot_server.service.application.playback_echo_guard import PlaybackEchoGuard
 from deskbot_server.service.camera_face_service import CameraFaceService
 from deskbot_server.service.pipeline.audio import AudioConfig, ConnectionSession
 from deskbot_server.service.vad_service import VadService
@@ -61,7 +65,7 @@ _RETIRE_TIMEOUT = 2.0            # 退役 worker（seq/dl 任务）的整体有�
 @dataclass
 class _PbDownlinkJob:
     """ws 下行 pb 发送任务。"""
-    wire: str
+    wire: str | bytes
     binaries: list[bytes] = field(default_factory=list)
     generation: int | None = None   # 入队时的设备代数；worker 发送前校验，过期 job 直接丢弃
     done: asyncio.Event = field(default_factory=asyncio.Event)
@@ -97,6 +101,20 @@ class _DeviceEntry:
     event: asyncio.Event = field(default_factory=asyncio.Event)
     sending_seq: Any = None                                             # PbSeq | None
     stopped: bool = False
+    capabilities: set[str] = field(default_factory=set)
+    anim_version: str = ""
+    media_wire: MediaWire = field(default_factory=MediaWire)
+    speech_epoch: int = 0
+    speech_revision: int = 0
+    confirmed_asr_mono: float = 0.0
+    audio_ready_mono: float = 0.0
+    barge_until_mono: float = 0.0
+    raw_preview_seen: bool = False
+    audio_session: ConnectionSession | None = None
+    conversation_provider: str = "local"
+    conversation_session: Any = None
+    user_engaged_until_mono: float = 0.0
+    echo_guard: PlaybackEchoGuard = field(default_factory=PlaybackEchoGuard)
 
     # ── pb downlink 队列（帧打包 + 串行发送）──
     dl_queue: Any = None                                                # asyncio.Queue[_PbDownlinkJob]
@@ -233,14 +251,14 @@ class DeviceWsService(metaclass=SingletonMeta):
         """停止所有设备协程，清理资源。"""
         if self._cleanup_task:
             self._cleanup_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._cleanup_task
-            except asyncio.CancelledError:
-                pass
             self._cleanup_task = None
         async with self._lock:
             entries = list(self._devices.values())
         for entry in entries:
+            if entry.conversation_session is not None:
+                await entry.conversation_session.close()
             await self._retire_workers(entry)
         logger.info("[DeviceWsService] Shutdown complete")
 
@@ -279,6 +297,18 @@ class DeviceWsService(metaclass=SingletonMeta):
                 old_ws = entry.ws
                 entry.ws = ws
                 entry.generation += 1
+                entry.capabilities.clear()
+                entry.media_wire = MediaWire()
+                entry.anim_version = ""
+                entry.echo_guard = PlaybackEchoGuard()
+                entry.confirmed_asr_mono = 0.0
+                entry.audio_ready_mono = 0.0
+                entry.barge_until_mono = 0.0
+                entry.raw_preview_seen = False
+                entry.audio_session = None
+                entry.conversation_provider = "local"
+                entry.conversation_session = None
+                entry.user_engaged_until_mono = 0.0
 
         if claim_slot:
             # 队列 worker 换代：摘除旧任务并取消（纯同步，无 await，不等待其退出；
@@ -289,6 +319,9 @@ class DeviceWsService(metaclass=SingletonMeta):
                 if old_seq is not None and not old_seq.done():
                     old_seq.cancel()
                 entry.seq_task = None
+                for queued in entry.queue:
+                    queued.finish(PlaybackStatus.DISCONNECTED, reason="connection_replaced")
+                entry.queue.clear()
                 old_dl = entry.dl_task
                 if old_dl is not None and not old_dl.done():
                     old_dl.cancel()
@@ -392,9 +425,8 @@ class DeviceWsService(metaclass=SingletonMeta):
             if n > 0:
                 entry.event.set()
 
-        if wait:
-            if n > 0:
-                await pb_seq._done.wait()
+        if wait and n > 0:
+            await pb_seq._done.wait()
         return n
 
     async def send_and_wait(self, device_id: str, pb_seq: PbSeq) -> PlaybackOutcome:
@@ -404,7 +436,26 @@ class DeviceWsService(metaclass=SingletonMeta):
             await pb_seq._done.wait()
         return pb_seq.outcome or pb_seq.finish(PlaybackStatus.DROPPED, reason="not_accepted")
 
-    async def interrupt_current_playback(self, device_id: str, *, reason: str = "user_turn") -> int:
+    async def open_speech_stream(self, device_id: str, req: str, *, sr: int, fmt: str, level: int = 1, voice_key: str = ""):
+        from deskbot_server.service.application.pb_stream import PbSpeechStream
+        async with self._queue_lock:
+            entry = self._devices.get(device_id)
+            if entry is None or entry.stopped or "pb_stream_v1" not in entry.capabilities:
+                return None
+            entry.speech_epoch += 1
+            seq = PbSeq(req=req[:36], sr=sr, fmt="opus" if fmt == "opus" else "s16le", level=level, epoch=entry.speech_epoch,
+                        source=asyncio.Queue(maxsize=4), voice_key=voice_key)
+            if not self._enqueue(entry, seq):
+                raise RuntimeError("speech stream not accepted")
+            entry.event.set()
+            return PbSpeechStream(seq)
+
+    def note_spoken_text(self, device_id: str, req: str, text: str) -> None:
+        entry = self._devices.get(device_id)
+        if entry:
+            entry.echo_guard.note_text(req, text)
+
+    async def interrupt_current_playback(self, device_id: str, *, reason: str = "user_turn", expected_req: str | None = None) -> int:
         """Stop current/queued PB work for an explicit user interruption.
 
         Normal application turns no longer use REPLACE against one another.  This
@@ -420,12 +471,16 @@ class DeviceWsService(metaclass=SingletonMeta):
             entry = self._devices.get(dev)
             if entry is None or entry.stopped:
                 return 0
+            keep = []
             for queued in entry.queue:
+                if expected_req is not None and queued.req != expected_req:
+                    keep.append(queued)
+                    continue
                 queued.finish(PlaybackStatus.PREEMPTED, reason=reason)
                 affected += 1
-            entry.queue.clear()
+            entry.queue[:] = keep
             sending = entry.sending_seq
-            if sending is not None and not sending._done.is_set():
+            if sending is not None and not sending._done.is_set() and (expected_req is None or sending.req == expected_req):
                 entry.ack_queue.put_nowait(
                     {
                         "type": "pb_cancel",
@@ -517,8 +572,9 @@ class DeviceWsService(metaclass=SingletonMeta):
                 if pb_seq is None:
                     break
                 if pb_seq is _IDLE:
-                    # 空闲超时：从 LiveService 获取待机 PbSeq 并直接入队
-                    if self._live_service is not None:
+                    # Local idle programs must get an uninterrupted quiet
+                    # interval. Legacy polling would continually reset it.
+                    if self._live_service is not None and "local_idle_v1" not in entry.capabilities:
                         live_seq = self._live_service.get_live_pb_seq(device_id)
                         if live_seq is not None:
                             async with self._queue_lock:
@@ -534,6 +590,9 @@ class DeviceWsService(metaclass=SingletonMeta):
                     except asyncio.QueueEmpty:
                         break
                 try:
+                    if pb_seq.source is not None:
+                        outcome_status, outcome_reason = await self._send_stream(entry, pb_seq, generation)
+                        continue
                     entries = pb_seq.entries
                     n = len(entries)
                     req = pb_seq.req
@@ -547,7 +606,7 @@ class DeviceWsService(metaclass=SingletonMeta):
                         for bi in range(i, batch_end):
                             if not await self._do_send_to_device(
                                 device_id, entries[bi],
-                                level=seq_level, sr=seq_sr, fmt=seq_fmt, ch=seq_ch,
+                                level=seq_level, sr=seq_sr, fmt=seq_fmt, ch=seq_ch, voice_key=pb_seq.voice_key,
                                 generation=generation,
                             ):
                                 outcome_status = PlaybackStatus.DISCONNECTED
@@ -560,7 +619,8 @@ class DeviceWsService(metaclass=SingletonMeta):
                                 "[pb TX] %s 末窗口已下发 req=%s last_idx=%d 等待 pb_end",
                                 device_id, req, entries[batch_end - 1].idx,
                             )
-                        ack_timeout = None
+                        ack_timeout = max(PB_ACK_WINDOW_TIMEOUT_SEC,
+                                          sum(max(0, int(b.chunk_ms or 0)) for b in entries[i:batch_end]) / 1000 + PB_ACK_END_GRACE_SEC)
                         if is_last_window:
                             declared_sec = sum(max(0, int(item.chunk_ms or 0)) for item in entries) / 1000.0
                             ack_timeout = max(
@@ -569,6 +629,7 @@ class DeviceWsService(metaclass=SingletonMeta):
                             )
                         ack_type = await self._wait_ack(
                             entry, req, want_end=is_last_window, timeout=ack_timeout,
+                            min_idx=entries[batch_end-1].idx if "pb_epoch_v1" in entry.capabilities else 0,
                         )
                         if is_last_window and ack_type == "pb_end":
                             logger.info(
@@ -578,17 +639,17 @@ class DeviceWsService(metaclass=SingletonMeta):
                         if ack_type == "pb_cancel":
                             outcome_status = PlaybackStatus.PREEMPTED
                             outcome_reason = "replaced"
-                            cancel_block = PbBlock(type=PbType.CANCEL, req=req, idx=0)
+                            cancel_block = PbBlock(type=PbType.CANCEL, req=req, idx=0, epoch=pb_seq.epoch)
                             await self._do_send_to_device(device_id, cancel_block, generation=generation)
                             break
-                        if ack_type == "pb_timeout":
-                            outcome_status = PlaybackStatus.TIMEOUT
-                            outcome_reason = "pb_ack_timeout"
+                        if ack_type in {"pb_timeout", "pb_error"}:
+                            outcome_status = PlaybackStatus.TIMEOUT if ack_type == "pb_timeout" else PlaybackStatus.DROPPED
+                            outcome_reason = "pb_ack_timeout" if ack_type == "pb_timeout" else "device_playback_error"
                             logger.warning(
-                                "[pb ACK] %s 等待超时 req=%s last_idx=%d want_end=%s，取消当前链",
-                                device_id, req, entries[batch_end - 1].idx, is_last_window,
+                                "[pb ACK] %s 设备错误或等待超时 req=%s last_idx=%d want_end=%s reason=%s，取消当前链",
+                                device_id, req, entries[batch_end - 1].idx, is_last_window, outcome_reason,
                             )
-                            cancel_block = PbBlock(type=PbType.CANCEL, req=req, idx=0)
+                            cancel_block = PbBlock(type=PbType.CANCEL, req=req, idx=0, epoch=pb_seq.epoch)
                             await self._do_send_to_device(device_id, cancel_block, generation=generation)
                             break
                         i = batch_end
@@ -596,8 +657,17 @@ class DeviceWsService(metaclass=SingletonMeta):
                     outcome_status = PlaybackStatus.DISCONNECTED
                     outcome_reason = "device_worker_cancelled"
                     raise
+                except ValueError as exc:
+                    outcome_status = PlaybackStatus.DROPPED
+                    outcome_reason = f"invalid_playback:{exc}"
+                    logger.warning("[DeviceWsService] rejected playback device=%s req=%s: %s", device_id, pb_seq.req, exc)
+                except Exception:
+                    outcome_status = PlaybackStatus.DISCONNECTED
+                    outcome_reason = "device_worker_error"
+                    raise
                 finally:
-                    entry.sending_seq = None
+                    if entry.sending_seq is pb_seq:
+                        entry.sending_seq = None
                     pb_seq.finish(outcome_status, reason=outcome_reason)
         except asyncio.CancelledError:
             pass
@@ -612,8 +682,83 @@ class DeviceWsService(metaclass=SingletonMeta):
                 entry.sending_seq = None
                 entry.event.set()
 
+    async def _send_stream(self, entry, seq, generation):
+        from dataclasses import replace
+        # Both input and ACKs remain live. This sends the first audio at once,
+        # then fills up to one second ahead without a stop-and-wait RTT per block.
+        get = asyncio.create_task(seq.source.get())
+        ack = asyncio.create_task(entry.ack_queue.get())
+        pending = None
+        inflight = {}
+        last_idx = -1
+        end_idx = None
+        total_ms = 0
+        started = time.monotonic()
+        deadline = started + 45
+        status, reason = PlaybackStatus.DISCONNECTED, "connection_replaced"
+        try:
+            while entry.generation == generation and not entry.stopped:
+                if asyncio.current_task().cancelling():
+                    raise asyncio.CancelledError
+                ready = [ack]
+                can_read = end_idx is None and pending is None
+                if can_read:
+                    ready.append(get)
+                if pending is not None and (pending.type == PbType.END or
+                                            ((not inflight or sum(inflight.values()) + pending.chunk_ms <= 1000) and len(inflight) < 4)):
+                    block, pending = pending, None
+                    if not await self._do_send_to_device(entry.device_id, block, level=seq.level,
+                                                         sr=seq.sr, fmt=seq.fmt, ch=seq.ch, generation=generation, voice_key=seq.voice_key):
+                        return PlaybackStatus.DISCONNECTED, "downlink_unavailable"
+                    last_idx = block.idx
+                    total_ms += block.chunk_ms
+                    inflight[block.idx] = block.chunk_ms
+                    if block.type == PbType.END:
+                        end_idx = block.idx
+                        deadline = time.monotonic() + max(PB_ACK_END_TIMEOUT_SEC, total_ms / 1000 + 3)
+                    elif len(inflight) == 1:
+                        deadline = time.monotonic() + max(PB_ACK_WINDOW_TIMEOUT_SEC, block.chunk_ms / 1000 + 3)
+                    continue
+                done, _ = await asyncio.wait(ready, timeout=max(0, deadline-time.monotonic()),
+                                              return_when=asyncio.FIRST_COMPLETED)
+                if not done:
+                    status, reason = PlaybackStatus.TIMEOUT, "pb_ack_timeout" if inflight else "producer_idle"
+                    break
+                if ack in done:
+                    value = ack.result()
+                    ack = asyncio.create_task(entry.ack_queue.get())
+                    if value.get("type") == "pb_cancel":
+                        status, reason = PlaybackStatus.PREEMPTED, "replaced"
+                        break
+                    if value.get("req") == seq.req and value.get("epoch") == seq.epoch:
+                        kind, idx = value.get("ack_type"), int(value.get("idx", -1))
+                        if kind == "pb_error":
+                            status, reason = PlaybackStatus.DROPPED, value.get("error") or "device_audio_error"
+                            break
+                        if kind == "pb_end" and end_idx is not None and idx == end_idx:
+                            logger.info("[pb stream] completed device_id=%s req=%s epoch=%d duration_ms=%d wall_ms=%.0f",
+                                        entry.device_id, seq.req, seq.epoch, total_ms, (time.monotonic()-started)*1000)
+                            return PlaybackStatus.COMPLETED, ""
+                        if kind == "pb_credit" and idx in inflight and idx <= last_idx:
+                            inflight = {i: ms for i, ms in inflight.items() if i > idx}
+                            if end_idx is None:
+                                deadline = time.monotonic() + (PB_ACK_WINDOW_TIMEOUT_SEC+1 if inflight else 45)
+                if get in done:
+                    pending = get.result()
+                    get = asyncio.create_task(seq.source.get())
+        finally:
+            for task in (get, ack):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(get, ack, return_exceptions=True)
+        cancel = replace(PbBlock(type=PbType.CANCEL, req=seq.req), epoch=seq.epoch)
+        await self._do_send_to_device(entry.device_id, cancel, generation=generation)
+        return status, reason
+
     async def _dequeue(self, entry: _DeviceEntry, timeout: float = 0) -> PbSeq | None:
         while True:
+            if asyncio.current_task().cancelling():
+                raise asyncio.CancelledError
             async with self._queue_lock:
                 if entry.queue:
                     return entry.queue.pop(0)
@@ -634,12 +779,15 @@ class DeviceWsService(metaclass=SingletonMeta):
         *,
         want_end: bool = False,
         timeout: float | None = None,
+        epoch: int = 0,
+        min_idx: int = 0,
     ) -> str | None:
         """等待匹配 req 的 pb_ack（消费 ack_queue）。
 
         - ``pb_cancel``（_enqueue 抢占哨兵，无 req）优先返回；
         - 非匹配 req 的 ack 一律跳过；
         - ``want_end=False``（非末窗口）：任意同 req ack 即放行（兼容旧行为）；
+        - 同 req 的 ``pb_error`` 立即返回；支持索引的设备拒收落后于窗口的 ACK；
         - ``want_end=True``（末窗口）：必须等到 ``ack_type == "pb_end"``，
           期间 ``pb_chunk`` 等同 req ack 静默消费。
         """
@@ -659,6 +807,14 @@ class DeviceWsService(metaclass=SingletonMeta):
             if ack.get("req") != req:
                 continue
             ack_type = ack.get("ack_type") or ack.get("type")
+            if epoch and ack.get("epoch") != epoch:
+                continue
+            if ack_type == "pb_error":
+                return ack_type
+            if int(ack.get("idx", -1)) < min_idx:
+                continue
+            if epoch and not want_end and ack_type != "pb_credit":
+                continue
             if not want_end:
                 return ack_type
             if ack_type == "pb_end":
@@ -673,6 +829,7 @@ class DeviceWsService(metaclass=SingletonMeta):
         self, device_id: str, block: PbBlock,
         *, level: int = 1, sr: int = 0, fmt: str = "", ch: int = 0,
         generation: int | None = None,
+        voice_key: str = "",
     ) -> bool:
         """PbBlock → wire JSON → pb downlink 队列 → ws.send。
 
@@ -693,10 +850,38 @@ class DeviceWsService(metaclass=SingletonMeta):
                     return False
         if ws is None:
             return False
+        if ((block.audio is not None or block.servo or block.stream) and "local_face_pack_v1" in entry.capabilities and
+                block.anim_version and block.anim_version != entry.anim_version):
+            # An offline/failed resource update must not break speech. Optional
+            # visuals stay local; never fall back to transmitting drawing code.
+            # Keep servo commands and stream termination independent of assets too.
+            from dataclasses import replace
+            block = replace(block, anim=(), anim_version="")
+        uses_phonemes = any(a.phoneme_id for a in block.anim)
+        uses_frames = any(a.anim_id for a in block.anim)
+        if ((block.anim_id and "anim_id_v1" not in entry.capabilities) or
+                (uses_phonemes and "phoneme_id_v1" not in entry.capabilities) or
+                (uses_frames and "anim_frame_id_v1" not in entry.capabilities) or
+                ((block.anim_id or uses_phonemes or uses_frames) and block.anim_version and
+                 block.anim_version != entry.anim_version)):
+            logger.warning("[pb TX] local expression unavailable device_id=%s id=%s version=%s device_version=%s",
+                           device_id, block.anim_id, block.anim_version, entry.anim_version)
+            return False
         payload = block.to_wire(level=level, sr=sr, fmt=fmt, ch=ch)
-        wire = device_pb_json_msg(payload)
-        _log_pb_tx_wire(device_id, payload, wire, pcm_bytes=sum(len(b) for b in block.binaries))
-        await self._enqueue_dl(entry, wire, list(block.binaries) if block.binaries else None, generation=generation)
+        if voice_key and block.audio is not None and block.type in (PbType.START, PbType.SINGLE):
+            payload["voice_key"] = voice_key
+        entry.media_wire.capabilities = entry.capabilities.intersection(MEDIA_CAPABILITIES)
+        payload, binary_frame = entry.media_wire.downlink(payload, list(block.binaries))
+        if binary_frame is not None:
+            wire = binary_frame
+            logger.debug("[pb binary TX] device_id=%s epoch=%d idx=%d bytes=%d",
+                         device_id, block.epoch, block.idx, len(binary_frame))
+        else:
+            wire = (json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+                    if "pb_compact_v1" in entry.media_wire.capabilities else device_pb_json_msg(payload))
+            _log_pb_tx_wire(device_id, payload, wire, pcm_bytes=sum(len(b) for b in block.binaries))
+        sent = await self._enqueue_dl(entry, wire,
+                                      None if binary_frame is not None else list(block.binaries), generation=generation)
         entry.last_pb_send_mono = time.monotonic()
         elapsed = (time.monotonic() - t0) * 1000
         if elapsed > 50:
@@ -704,12 +889,12 @@ class DeviceWsService(metaclass=SingletonMeta):
                 "[_do_send] %s req=%s idx=%d type=%s send_ms=%.0f",
                 device_id, block.req, block.idx, block.type.wire, elapsed,
             )
-        return True
+        return sent
 
     async def _enqueue_dl(
         self,
         entry: _DeviceEntry,
-        wire: str,
+        wire: str | bytes,
         binaries: list[bytes] | None = None,
         pcm: bytes | None = None,
         *,
@@ -730,6 +915,7 @@ class DeviceWsService(metaclass=SingletonMeta):
         job = _PbDownlinkJob(wire=wire, binaries=bins, generation=generation)
         await q.put(job)
         await job.done.wait()
+        return job.ok_json and job.ok_bins
 
     async def _dl_worker(self, entry: _DeviceEntry, q: asyncio.Queue | None = None):
         """单设备 downlink worker：从队列取 job，打包帧 + 校验 + 串行 ws.send。
@@ -752,21 +938,20 @@ class DeviceWsService(metaclass=SingletonMeta):
                 ws = entry.ws
                 if ws is None:
                     continue
-                expect_lens = _expected_pb_bin_lens(job.wire)
+                expect_lens = [] if isinstance(job.wire, bytes) else _expected_pb_bin_lens(job.wire)
                 got_lens = [len(b) for b in job.binaries]
                 if expect_lens and expect_lens != got_lens:
                     logger.error(
                         "[pb TX] binary 长度与 JSON 声明不一致 device_id=%s expect=%s got=%s",
                         entry.device_id, expect_lens, got_lens,
                     )
-                if job.binaries:
-                    if got_lens and got_lens[0] > PB_MAX_PCM_BIN_BYTES:
-                        logger.error(
-                            "[pb TX] 首包 binary %d bytes 超过 PCM 建议上限 %d device_id=%s",
-                            got_lens[0], PB_MAX_PCM_BIN_BYTES, entry.device_id,
-                        )
+                if job.binaries and got_lens and got_lens[0] > PB_MAX_PCM_BIN_BYTES:
+                    logger.error(
+                        "[pb TX] 首包 binary %d bytes 超过 PCM 建议上限 %d device_id=%s",
+                        got_lens[0], PB_MAX_PCM_BIN_BYTES, entry.device_id,
+                    )
                 try:
-                    frame = pack_ws_downlink_frame(job.wire, job.binaries)
+                    frame = job.wire if isinstance(job.wire, bytes) else pack_ws_downlink_frame(job.wire, job.binaries)
                 except ValueError as exc:
                     logger.error("[pb TX] pack failed device_id=%s err=%s", entry.device_id, exc)
                     continue
@@ -785,10 +970,8 @@ class DeviceWsService(metaclass=SingletonMeta):
             finally:
                 if job is not None:
                     job.done.set()
-                try:
+                with contextlib.suppress(ValueError):
                     q.task_done()
-                except ValueError:
-                    pass
 
     # ======================================================================
     # PbSeq 队列生命周期
@@ -814,16 +997,18 @@ class DeviceWsService(metaclass=SingletonMeta):
                 if entry.seq_task.done():
                     entry.seq_task = None
                 else:
-                    tasks.append(entry.seq_task)
+                    task = entry.seq_task
+                    tasks.append(task)
                     entry.seq_task = None
-                    entry.seq_task.cancel()
+                    task.cancel()
             if entry.dl_task is not None:
                 if entry.dl_task.done():
                     entry.dl_task = None
                 else:
-                    tasks.append(entry.dl_task)
+                    task = entry.dl_task
+                    tasks.append(task)
                     entry.dl_task = None
-                    entry.dl_task.cancel()
+                    task.cancel()
             entry.dl_queue = None
             while not entry.ack_queue.empty():
                 try:
@@ -902,6 +1087,10 @@ class DeviceWsService(metaclass=SingletonMeta):
 
     async def record_pb_ack(self, device_id: str, ack: dict[str, Any]) -> None:
         """记录设备最近一次 pb_ack。"""
+        if ack.get("ack_type") in {"pb_started", "pb_audio_end", "pb_cancelled", "pb_error"}:
+            logger.info("[pb playback] device_id=%s event=%s req=%s epoch=%s idx=%s played_ms=%s queue_wait_ms=%s device_ms=%s",
+                        device_id, ack.get("ack_type"), ack.get("req"), ack.get("epoch"), ack.get("idx"),
+                        ack.get("played_ms"), ack.get("queue_wait_ms"), ack.get("device_ms"))
         if not device_id or not isinstance(ack, dict):
             return
         from deskbot_server.ws.pb_ack_waiter import pb_ack_gate
@@ -915,6 +1104,9 @@ class DeviceWsService(metaclass=SingletonMeta):
             entry.last_pb_ack = dict(ack)
             entry.last_pb_ack_ts = time.time()
             entry.last_pb_ack_mono = time.monotonic()
+            entry.echo_guard.acknowledge(ack)
+            if entry.conversation_session is not None:
+                entry.conversation_session.offer_ack(ack)
 
     async def pb_ack_llm_context(self, device_id: str | None) -> str | None:
         """返回设备最近一次 pb_ack 的 JSON（供 LLM 上下文注入）。"""
@@ -933,10 +1125,13 @@ class DeviceWsService(metaclass=SingletonMeta):
             "first_seen_ts": entry.first_seen_ts,
             "last_seen_ts": entry.last_seen_ts,
             "online": entry.online,
+            "conversation_provider": entry.conversation_provider,
             "last_status": entry.last_status,
             "event_count": entry.event_count,
             "last_pb_ack": entry.last_pb_ack,
             "last_pb_ack_ts": entry.last_pb_ack_ts,
+            "capabilities": sorted(entry.capabilities),
+            "anim_version": entry.anim_version,
         }
 
     # ======================================================================
@@ -945,6 +1140,11 @@ class DeviceWsService(metaclass=SingletonMeta):
 
     async def handle_asr_chat(self, websocket, device_id: str | None) -> None:
         """/asr_chat WS：新固件打包帧上行（音频 + 摄像头）；pb_ack 流控。"""
+        from deskbot_server.service.conversation_service import conversation_provider
+        if device_id and (provider := conversation_provider(device_id)) in {"moss-live", "flecket"}:
+            from deskbot_server.service.moss_live_service import handle_moss_connection
+            await handle_moss_connection(self, websocket, device_id, provider=provider)
+            return
         pipeline = self._pipeline
         audio_cfg = self._audio_cfg
         if pipeline is None or audio_cfg is None:
@@ -956,9 +1156,44 @@ class DeviceWsService(metaclass=SingletonMeta):
             session = ConnectionSession(pipeline, audio_cfg)
         peer = WsUtils.peer_str(websocket)
 
+        from deskbot_server.service.application.barge_in_probe import BargeInProbe
+        from deskbot_server.service.asr_service import AsrService
+
+        def probe_token():
+            entry = self._devices.get(device_id)
+            if entry is None or entry.ws is not websocket:
+                return None
+            req = entry.echo_guard.active_request()
+            return (entry.generation, entry.speech_revision, entry.confirmed_asr_mono, req) if req else None
+
+        async def transcribe_preview(pcm, sr):
+            return await AsrService().transcribe_preview(pcm, sr, device_id=device_id)
+
+        async def confirm_barge(token, text):
+            if probe_token() != token:
+                return
+            from deskbot_server.service.application.interaction_arbiter import interaction_arbiter
+            entry = self._devices.get(device_id)
+            entry.speech_revision += 1
+            entry.barge_until_mono = time.monotonic() + 8
+            entry.user_engaged_until_mono = time.monotonic() + 30
+            raw, raw_sr = barge_probe.raw_snapshot()
+            interaction_arbiter.interrupt(device_id)
+            await self.interrupt_current_playback(device_id, reason="confirmed_stop_preview", expected_req=token[-1])
+            if raw:
+                await session.begin_raw_barge(raw, raw_sr)
+            logger.info("[barge-in] stop_preview device_id=%s req=%s text=%r", device_id, token[-1], text)
+
+        def spoken_fragment(text, token):
+            entry = self._devices.get(device_id)
+            return entry is None or entry.echo_guard.spoken_fragment(text, token[-1])
+
+        barge_probe = BargeInProbe(transcribe_preview, probe_token, confirm_barge, spoken_fragment)
+
         ensure_uplink_rate_stats_started()
         if device_id:
             await self.register(device_id, websocket)
+            self._devices[device_id].audio_session = session
             logger.info("[/asr_chat] 接入 device_id=%s peer=%s", device_id, peer)
         else:
             logger.warning(
@@ -967,7 +1202,8 @@ class DeviceWsService(metaclass=SingletonMeta):
                 peer,
             )
         try:
-            ready_json = _json_msg({"type": "ready", "device_id": device_id})
+            ready_json = _json_msg({"type": "ready", "device_id": device_id,
+                                    "capabilities": ["raw_preview_pcm_v1", *MEDIA_CAPABILITIES]})
             ready_ok = await WsUtils.safe_send(websocket, ready_json)
             logger.info("[/asr_chat] ready device_id=%s peer=%s sent=%s", device_id, peer, ready_ok)
             if not ready_ok:
@@ -979,7 +1215,8 @@ class DeviceWsService(metaclass=SingletonMeta):
                 try:
                     if isinstance(message, (bytes, bytearray)):
                         payload = bytes(message)
-                        frame = parse_packed_frame(payload)
+                        wire_entry = self._devices.get(device_id)
+                        frame = wire_entry.media_wire.uplink(payload) if wire_entry and wire_entry.ws is websocket else parse_packed_frame(payload)
                         if frame is None:
                             logger.warning("[/asr_chat] 无法解析打包帧 device_id=%s bytes=%d", device_id, len(payload))
                             continue
@@ -1012,6 +1249,7 @@ class DeviceWsService(metaclass=SingletonMeta):
                                             uplink_sr=flushed.sample_rate,
                                             uplink_ch=flushed.channels,
                                             uplink_codec=flushed.codec,
+                                            speech_revision=self._devices[device_id].speech_revision if device_id in self._devices else None,
                                         )
                                     )
                                 continue
@@ -1022,11 +1260,40 @@ class DeviceWsService(metaclass=SingletonMeta):
                             uplink_sr = int(sr_raw) if sr_raw is not None else audio_cfg.sample_rate
                             uplink_ch = int(ch_raw) if ch_raw is not None else audio_cfg.channels
                             note_uplink_audio(device_id)
+                            audio_entry = self._devices.get(device_id)
+                            if audio_entry is not None and audio_entry.ws is websocket:
+                                audio_entry.audio_ready_mono = time.monotonic()
                             await self.touch(device_id)
                             opus_frames = int(opus_frames_raw) if opus_frames_raw is not None else None
-                            utterance, _, _ = await session.feed_audio(
-                                attached_media, codec, sample_rate=uplink_sr, channels=uplink_ch, opus_frames=opus_frames
+                            from deskbot_server.service.application.uplink_preview import split_uplink_preview
+                            opus_media, raw_preview = split_uplink_preview(data, attached_media)
+                            if raw_preview:
+                                if audio_entry is not None and not audio_entry.raw_preview_seen:
+                                    audio_entry.raw_preview_seen = True
+                                    logger.info("[barge-in] raw preview enabled device_id=%s sr=8000 bytes=%d",
+                                                device_id, len(raw_preview))
+                                barge_probe.feed_raw(raw_preview)
+                            feed_revision = audio_entry.speech_revision if audio_entry else None
+                            utterance, _, speech_started = await session.feed_audio(
+                                opus_media, codec, sample_rate=uplink_sr, channels=uplink_ch, opus_frames=opus_frames,
+                                raw_preview=raw_preview,
                             )
+                            if audio_entry and audio_entry.speech_revision != feed_revision:
+                                utterance, speech_started = None, False
+                            if not raw_preview and barge_probe.ready() and probe_token() is not None:
+                                barge_probe.feed(await session.speech_preview(), session.rom_sr)
+                            if speech_started and device_id:
+                                from deskbot_server.service.application.interaction_arbiter import interaction_arbiter
+                                entry = self._devices.get(device_id)
+                                if entry is None or entry.ws is not websocket:
+                                    continue
+                                if entry.echo_guard.defer_onset():
+                                    logger.info("[barge-in] verify speaker-overlap onset device_id=%s", device_id)
+                                else:
+                                    entry.speech_revision += 1
+                                    interaction_arbiter.interrupt(device_id)
+                                    await self.interrupt_current_playback(device_id, reason="speech_started")
+                                    logger.info("[barge-in] speech_started device_id=%s", device_id)
                             if utterance:
                                 logger.info("[/asr_chat] VAD切句完成 device_id=%s pcm_bytes=%d -> 触发ASR", device_id, len(utterance))
                                 spawn(self._run_asr_turn(
@@ -1035,6 +1302,7 @@ class DeviceWsService(metaclass=SingletonMeta):
                                     uplink_sr=session.rom_sr,
                                     uplink_ch=session.rom_ch,
                                     uplink_codec=session.rom_codec,
+                                    speech_revision=self._devices[device_id].speech_revision if device_id in self._devices else None,
                                 ))
                             if flush_audio:
                                 flushed = session.flush()
@@ -1053,6 +1321,7 @@ class DeviceWsService(metaclass=SingletonMeta):
                                             uplink_sr=flushed.sample_rate,
                                             uplink_ch=flushed.channels,
                                             uplink_codec=flushed.codec,
+                                            speech_revision=self._devices[device_id].speech_revision if device_id in self._devices else None,
                                         )
                                     )
                             continue
@@ -1060,6 +1329,19 @@ class DeviceWsService(metaclass=SingletonMeta):
                         if msg_type == "camera_frame":
                             if attached_media:
                                 self._accept_camera_frame(device_id, attached_media, source="asr_chat")
+                            continue
+
+                        if msg_type == "device_hello":
+                            if device_id:
+                                async with self._queue_lock:
+                                    entry = self._devices.get(device_id)
+                                    if entry is not None and entry.ws is websocket:
+                                        caps = data.get("capabilities", [])
+                                        entry.capabilities = {c for c in caps if isinstance(c, str)} if isinstance(caps, list) else set()
+                                        entry.media_wire.capabilities = entry.capabilities.intersection(MEDIA_CAPABILITIES)
+                                        version = data.get("anim_version", "")
+                                        entry.anim_version = version if isinstance(version, str) else ""
+                                logger.info("[device hello] device_id=%s capabilities=%s", device_id, caps)
                             continue
 
                         if msg_type == "boot_connect":
@@ -1098,11 +1380,13 @@ class DeviceWsService(metaclass=SingletonMeta):
         except ConnectionClosed as closed:
             logger.info("WebSocket 已关闭: %s", closed)
         finally:
+            await barge_probe.aclose()
+            entry = self._devices.get(device_id)
+            if entry is not None and entry.audio_session is session:
+                entry.audio_session = None
             # 调试：保存上行音频WAV
-            try:
+            with contextlib.suppress(Exception):
                 session.save_debug_wav()
-            except Exception:
-                pass
             if device_id:
                 remove_device(device_id)
                 await self.unregister(device_id, websocket)
@@ -1112,6 +1396,13 @@ class DeviceWsService(metaclass=SingletonMeta):
         frame = bytes(media)
         if device_id:
             self._camera_frame_cache[device_id] = (time.monotonic(), frame)
+        entry = self._devices.get(device_id)
+        if entry is not None and entry.conversation_provider in {"moss-live", "flecket"}:
+            if entry.conversation_session is not None:
+                entry.conversation_session.offer_camera(frame)
+            if self._bus_service is not None:
+                spawn(self._broadcast_camera_frame(device_id, frame))
+            return
         spawn(
             CameraFaceService().process(
                 device_id,
@@ -1170,6 +1461,7 @@ class DeviceWsService(metaclass=SingletonMeta):
         uplink_sr: int = 16000,
         uplink_ch: int = 1,
         uplink_codec: str = "opus",
+        speech_revision: int | None = None,
     ) -> None:
         """VAD 切出一句后：ASR → LLM → TTS。"""
         from deskbot_server.service.application.capability_labels import asr_model_label
@@ -1219,6 +1511,39 @@ class DeviceWsService(metaclass=SingletonMeta):
             )
             return
 
+        entry = self._devices.get(device_id)
+        confirmed_barge = bool(entry and entry.ws is websocket and t_asr_start < entry.barge_until_mono)
+        if speech_revision is not None and entry and entry.ws is websocket and entry.speech_revision != speech_revision:
+            logger.info("[barge-in] discard stale ASR before routing device_id=%s req=%s", device_id, request_id)
+            if vpr_task is not None and not vpr_task.done():
+                vpr_task.cancel()
+                await asyncio.gather(vpr_task, return_exceptions=True)
+            return
+        if confirmed_barge:
+            import re
+            stop = re.search(r"停一下|听一下|等一下|先停|暂停|别说了|别说|打住", text)
+            if stop and text[stop.end():].strip("，。！？ ,.!?"):
+                text = text[stop.end():].lstrip("，。！？ ,.!?")
+                logger.info("[barge-in] retained follow-up device_id=%s req=%s text=%r", device_id, request_id, text)
+            elif stop:
+                logger.info("[barge-in] stop-only accepted, waiting for follow-up device_id=%s req=%s", device_id, request_id)
+                if vpr_task is not None and not vpr_task.done():
+                    vpr_task.cancel()
+                    await asyncio.gather(vpr_task, return_exceptions=True)
+                return
+        if entry is not None and entry.ws is websocket:
+            echo_reason = entry.echo_guard.reject(
+                text, segment_start=t_asr_start - seg_duration_ms / 1000,
+                segment_end=t_asr_start,
+            )
+            if echo_reason and not confirmed_barge:
+                logger.info("[ASR echo] ignored device_id=%s req=%s reason=%s text=%r",
+                            device_id, request_id, echo_reason, text)
+                if vpr_task is not None and not vpr_task.done():
+                    vpr_task.cancel()
+                    await asyncio.gather(vpr_task, return_exceptions=True)
+                return
+
         try:
             asr_ok = AsrService().is_valid_text(text, device_id=device_id)
         except Exception:
@@ -1267,26 +1592,26 @@ class DeviceWsService(metaclass=SingletonMeta):
 
         # 等本句声纹判定落地再进对话轮（与 ASR 并行启动，通常已就绪；超时不阻塞，
         # 快照由后台任务补写，后续轮次/展示仍可读到）
-        if vpr_task is not None:
-            try:
+        from deskbot_server.service.application.asr_attention_gate import is_explicit_robot_request
+        direct_request = is_explicit_robot_request(text)
+        active_dialogue = bool(entry and t_asr_start < entry.user_engaged_until_mono)
+        addressed_input = confirmed_barge or direct_request or active_dialogue
+        if vpr_task is not None and not addressed_input:
+            with contextlib.suppress(Exception):
                 await asyncio.wait_for(asyncio.shield(vpr_task), timeout=vpr_wait_budget_s)
-            except Exception:
-                pass
 
         # ── 对话注意力门控（闲聊过滤）：相机最近画面无人 + 本句声纹判定不是认识的
         # 人 → 疑似周围人在闲聊，跳过 LLM/TTS 流程。声纹只在引擎启用（起了识别
         # 任务）时采信；引擎无结论一律放行（避免故障期机器人「变哑」）。
-        from deskbot_server.service.application.asr_attention_gate import decide_round
+        from deskbot_server.service.application.asr_attention_gate import AttentionVerdict, decide_round
         from deskbot_server.service.application.voice_snapshot_cache import get_voice_snapshot
 
         vpr_engine_on = vpr_task is not None
-        verdict = await decide_round(
-            self,
-            device_id,
-            vpr_engine_on=vpr_engine_on,
+        verdict = AttentionVerdict(True, "addressed_input", "explicit request or active dialogue") if addressed_input else await decide_round(
+            self, device_id, vpr_engine_on=vpr_engine_on,
             voice_snapshot=(get_voice_snapshot(device_id) if vpr_engine_on else None),
         )
-        if not verdict.engage:
+        if not verdict.engage and not confirmed_barge:
             logger.info(
                 "[ASR] 忽略疑似闲聊 device_id=%s req=%s audio_ms=%d asr_ms=%.0f text=%r reason=%s note=%s",
                 device_id, request_id, seg_duration_ms, asr_ms, text, verdict.reason, verdict.note,
@@ -1309,7 +1634,24 @@ class DeviceWsService(metaclass=SingletonMeta):
             )
             return
 
+        if speech_revision is not None:
+            entry = self._devices.get(device_id)
+            if (entry is None or entry.ws is not websocket or entry.speech_revision != speech_revision
+                    or t_asr_start < entry.confirmed_asr_mono):
+                logger.info("[barge-in] discard stale ASR device_id=%s req=%s", device_id, request_id)
+                return
+            # Deferred echo onsets do not invalidate an actual user's ASR.
+            # Among confirmed overlaps, a late older ASR cannot replace a newer one.
+            entry.confirmed_asr_mono = t_asr_start
+            entry.barge_until_mono = 0.0
+            entry.user_engaged_until_mono = time.monotonic() + 30
+            if entry.audio_session is not None:
+                entry.audio_session.end_raw_barge()
         try:
+            from deskbot_server.service.application.interaction_arbiter import interaction_arbiter
+            interaction_arbiter.interrupt(device_id or "")
+            if device_id:
+                await self.interrupt_current_playback(device_id, reason="recognized_user_speech")
             flow = await run_ws_chat_turn(
                 websocket,
                 pipeline,

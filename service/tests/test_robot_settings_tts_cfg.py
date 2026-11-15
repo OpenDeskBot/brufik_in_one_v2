@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from deskbot_server.dao.device_mapper import get_tts_param, get_tts_provider
-from deskbot_server.infrastructure.tts.doubao import _mask_secret
+from deskbot_server.client.tts.doubao import _mask_secret
 from deskbot_server.service.robot_capability import CapabilityError, RobotCapabilityService
 
 MINIMAL_TTS_CFG = {
@@ -30,7 +30,7 @@ def tmp_env(monkeypatch, tmp_path):
     """隔离 .env：read_env_file 读的是 tts.env_store.ENV_FILE。"""
     env_file = tmp_path / ".env"
     env_file.write_text("", encoding="utf-8")
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", env_file)
     return env_file
 
 
@@ -69,7 +69,7 @@ def _insert_device(device_id: str = "dev-1"):
 
 
 def test_tts_config_info_device_param_wins_and_masks(svc, temp_db, tmp_env):
-    from deskbot_server.infrastructure.tts.doubao import DEFAULT_RESOURCE_ID
+    from deskbot_server.client.tts.doubao import DEFAULT_RESOURCE_ID
 
     _insert_device("dev-1")
 
@@ -254,7 +254,7 @@ def test_tts_test_moss_uses_device_demo_id(svc, temp_db, tmp_env, monkeypatch):
 
 
 def test_resolve_tts_provider_device_and_fallback(temp_db):
-    from deskbot_server.infrastructure.tts.resolve import resolve_tts_provider
+    from deskbot_server.service.tts_routing import resolve_tts_provider
 
     assert resolve_tts_provider(None) == "moss-tts-nano"  # 匿名 → 默认
     assert resolve_tts_provider("no-such-device") == "moss-tts-nano"
@@ -273,9 +273,9 @@ def set_provider(device_id: str, provider: str) -> None:
 
 
 def test_resolve_tts_adapter_doubao_device_overrides_env(temp_db, tmp_env, monkeypatch):
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
-    from deskbot_server.infrastructure.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
-    from deskbot_server.infrastructure.tts.resolve import resolve_tts_adapter
+    from deskbot_server.client.tts.doubao import load_doubao_tts_config
+    from deskbot_server.client.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
+    from deskbot_server.service.tts_routing import resolve_tts_adapter
 
     _insert_device("dev-1")
     set_provider("dev-1", "doubao")
@@ -292,8 +292,8 @@ def test_resolve_tts_adapter_doubao_device_overrides_env(temp_db, tmp_env, monke
 
 def test_resolve_tts_adapter_doubao_device_param_only(temp_db, tmp_env, monkeypatch):
     """运行期解析无 env 兜底：设备 tts_param 是唯一密钥源，残留 env 不生效。"""
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
-    from deskbot_server.infrastructure.tts.resolve import resolve_tts_adapter
+    from deskbot_server.client.tts.doubao import load_doubao_tts_config
+    from deskbot_server.service.tts_routing import resolve_tts_adapter
 
     _insert_device("dev-1")
     set_provider("dev-1", "doubao")
@@ -310,8 +310,8 @@ def test_resolve_tts_adapter_doubao_device_param_only(temp_db, tmp_env, monkeypa
 
 
 def test_resolve_tts_adapter_moss_device_demo_id(temp_db):
-    from deskbot_server.infrastructure.tts.moss_adapter import MossTtsAdapter
-    from deskbot_server.infrastructure.tts.resolve import resolve_tts_adapter
+    from deskbot_server.client.tts.moss_adapter import MossTtsAdapter
+    from deskbot_server.service.tts_routing import resolve_tts_adapter
 
     _insert_device("dev-1")
     save_config("dev-1", {"moss": {"demo_id": "demo-7"}})
@@ -324,8 +324,8 @@ def test_resolve_tts_adapter_moss_device_demo_id(temp_db):
 def test_resolve_tts_adapter_masked_param_skipped(temp_db, tmp_env, monkeypatch):
     """防呆：tts_param 中存了掩码占位 → resolve 跳过；无 env 兜底 → key 空。"""
     from deskbot_server.dao.device_mapper import update_tts_param
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
-    from deskbot_server.infrastructure.tts.resolve import resolve_tts_adapter
+    from deskbot_server.client.tts.doubao import load_doubao_tts_config
+    from deskbot_server.service.tts_routing import resolve_tts_adapter
 
     _insert_device("dev-1")
     set_provider("dev-1", "doubao")
@@ -359,7 +359,7 @@ def test_api_tts_config_save_endpoint(temp_db, monkeypatch, tmp_path):
     import os
 
     env_file = tmp_path / ".env"
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", env_file)
     for name in ("DOUBAO_TTS_API_KEY", "DOUBAO_TTS_SPEAKER", "DOUBAO_TTS_RESOURCE_ID", "DOUBAO_TTS_MODEL"):
         monkeypatch.delenv(name, raising=False)
 
@@ -388,7 +388,7 @@ def test_api_tts_config_save_endpoint(temp_db, monkeypatch, tmp_path):
 
 
 def test_api_tts_config_save_endpoint_no_device_400(temp_db, monkeypatch, tmp_path):
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", tmp_path / ".env")
     _insert_device("nodev_tts")
     client = _login_client("nodev_tts@example.com")  # 未选设备
     resp = client.post("/api/robot-settings/tts/config", json={"doubao": {"api_key": "k"}})
@@ -399,7 +399,7 @@ def test_api_tts_config_save_endpoint_no_device_400(temp_db, monkeypatch, tmp_pa
 def test_api_tts_apply_endpoint_writes_device(temp_db, monkeypatch, tmp_path):
     from deskbot_server.web.app import create_app
 
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", tmp_path / ".env")
     _insert_device("apply_tts")
     client = _login_client("apply_tts@example.com")
     client.post("/app/api/devices/select", json={"device_id": "apply_tts"})
@@ -419,7 +419,7 @@ def test_api_tts_apply_endpoint_writes_device(temp_db, monkeypatch, tmp_path):
 
 
 def test_api_tts_clear_override_endpoint(temp_db, monkeypatch, tmp_path):
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", tmp_path / ".env")
     _insert_device("clear_tts")
     client = _login_client("clear_tts@example.com")
     client.post("/app/api/devices/select", json={"device_id": "clear_tts"})
@@ -437,7 +437,7 @@ def test_api_tts_clear_override_endpoint(temp_db, monkeypatch, tmp_path):
 
 
 def test_api_tts_test_info_endpoint_device_aware(temp_db, monkeypatch, tmp_path):
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", tmp_path / ".env")
     _insert_device("info_tts")
     client = _login_client("info_tts@example.com")
     client.post("/app/api/devices/select", json={"device_id": "info_tts"})

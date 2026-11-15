@@ -7,7 +7,7 @@ import socket
 
 from fastapi import Request
 
-from deskbot_server.config import load_config as _load_config_yaml
+from deskbot_server.config import get_config as _load_config_yaml
 from deskbot_server.config import save_config as _save_config_yaml
 from deskbot_server.utils.paths import DEFAULT_CONFIG_PATH
 
@@ -50,10 +50,7 @@ def deskbot_ws_base(request: Request | None = None) -> tuple[str, int]:
     cfg = load_config()
     srv = cfg.get("server") or {}
     public = (os.environ.get("DESKBOT_WEB_PUBLIC_HOST") or "").strip() or str(srv.get("web_public_host") or "").strip()
-    if public:
-        host = public
-    else:
-        host = _prefer_access_host(os.environ.get("DESKBOT_SERVER_HOST") or srv.get("host", "127.0.0.1"), request)
+    host = public or _prefer_access_host(os.environ.get("DESKBOT_SERVER_HOST") or srv.get("host", "127.0.0.1"), request)
     port = int(os.environ.get("DESKBOT_SERVER_PORT") or srv.get("port", 9000))
     return host, port
 

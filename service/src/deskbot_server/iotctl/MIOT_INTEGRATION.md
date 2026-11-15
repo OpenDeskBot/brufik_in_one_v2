@@ -494,6 +494,6 @@ cd service
 | `miot_tools.py` | LLM tool 实现 |
 | `application/llm_tool_runner.py` | tool 分发 |
 | `llm/utils.py` | tools 说明 + 静态上下文拼接 |
-| `web/templates/app2c/miot.html` | 绑定 UI |
+| `public/admin/views/app2c/miot.html` | 绑定 UI |
 | `web/blueprints/app_bp.py` | `/app/api/miot/*` |
 | `web/blueprints/app2c_bp.py` | `/my/miot` 页面路由 |

@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from deskbot_server.infrastructure.voice.vpr_http_client import (
+from deskbot_server.client.voice.vpr_http_client import (
     DEFAULT_VPR_TIMEOUT_S,
     VPR_EMBEDDING_DIM,
     VprHttpClient,

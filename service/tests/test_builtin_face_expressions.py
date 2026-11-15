@@ -35,7 +35,6 @@ LIVELY_SCENES = {
     "got_it": 5,
     "oops": 5,
     "wink": 5,
-    "waiting": 6,
 }
 
 
@@ -84,3 +83,32 @@ def test_xiaowai_crooked_mouth_is_preserved() -> None:
             mouth_center_x = outer_mouth["x"] + outer_mouth["w"] / 2
 
             assert mouth_center_x - eye_center_x >= 20, f"{name} lost 小歪's signature crooked mouth"
+
+
+def test_every_scene_uses_firmware_shapes_and_explicit_layers() -> None:
+    # Match pb_model.cpp, rather than the broader browser-only shape vocabulary.
+    firmware_shapes = {
+        'rect', 'rect_outline', 'circle', 'circle_outline', 'line',
+        'ellipse', 'ellipse_fill', 'round_rect', 'round_rect_outline', 'text',
+    }
+    for scene in _load_scenes().values():
+        topology = None
+        for frame in scene['frames']:
+            assert 40 <= frame['ms'] <= 30_000
+            assert set(frame['elements']) == LAYERS
+            current = {}
+            for layer, primitives in frame['elements'].items():
+                assert 0 < len(primitives) <= 16
+                assert all(p['shape'] in firmware_shapes for p in primitives)
+                current[layer] = [p['shape'] for p in primitives]
+            if topology is not None:
+                assert current == topology, 'Morphing must retain primitive identity'
+            topology = current
+
+
+def test_transient_emotions_return_to_neutral() -> None:
+    scenes = _load_scenes()
+    neutral = scenes['idle']['frames'][0]['elements']
+    for name in ('happy', 'shy', 'angry', 'surprised', 'sad', 'wake',
+                 'greeting', 'curious', 'got_it', 'oops', 'wink'):
+        assert scenes[name]['frames'][-1]['elements'] == neutral, name

@@ -18,7 +18,7 @@ def asr_model_label(device_id: str | None) -> str | None:
     """ASR 生效 provider + 识别模型（funasr=本地 SenseVoiceSmall / doubao=Seed-ASR）。"""
     try:
         from deskbot_server.dao.device_mapper import get_asr_provider
-        from deskbot_server.infrastructure.asr.resolve import DEFAULT_ASR_PROVIDER, SUPPORTED_ASR_PROVIDERS
+        from deskbot_server.service.asr_routing import DEFAULT_ASR_PROVIDER, SUPPORTED_ASR_PROVIDERS
 
         provider = get_asr_provider(device_id) if device_id else None
         if provider not in SUPPORTED_ASR_PROVIDERS:
@@ -32,9 +32,9 @@ def asr_model_label(device_id: str | None) -> str | None:
 
 
 def llm_model_label(device_id: str | None) -> str | None:
-    """LLM 实际请求模型串（meta.model 口径）：qwen3.8-2b / minicpm5-1b / ep-…。"""
+    """LLM 实际请求模型串（meta.model 口径）：qwen3.8-2b / minicpm5-1b / unee / ep-…。"""
     try:
-        from deskbot_server.infrastructure.llm.runtime import resolve_llm_config
+        from deskbot_server.service.llm_routing import resolve_llm_config
 
         cfg = resolve_llm_config(device_id or "")
         model = str(getattr(cfg, "model", "") or "").strip()
@@ -50,16 +50,19 @@ def llm_model_label(device_id: str | None) -> str | None:
 def tts_model_label(device_id: str | None) -> str | None:
     """TTS 生效 provider + 模型/音色：moss-tts-nano · demo-1 / doubao · seed-tts-2.0…。"""
     try:
+        from deskbot_server.client.tts.doubao import DEFAULT_MODEL
+        from deskbot_server.client.tts.factory import DEFAULT_TTS_PROVIDER, SUPPORTED_TTS_PROVIDERS
+        from deskbot_server.client.tts.moss_adapter import DEFAULT_DEMO_ID
         from deskbot_server.dao.device_mapper import get_tts_param, get_tts_provider
-        from deskbot_server.infrastructure.tts.doubao import DEFAULT_MODEL
-        from deskbot_server.infrastructure.tts.factory import DEFAULT_TTS_PROVIDER, SUPPORTED_TTS_PROVIDERS
-        from deskbot_server.infrastructure.tts.moss_adapter import DEFAULT_DEMO_ID
 
         provider = get_tts_provider(device_id) if device_id else None
         if provider not in SUPPORTED_TTS_PROVIDERS:
             provider = DEFAULT_TTS_PROVIDER
         params = get_tts_param(device_id) if device_id else {}
 
+        if provider == "macos":
+            raw = params.get("macos") or {}
+            return "macos · " + str(raw.get("voice") or "Tingting")
         if provider == "doubao":
             raw = params.get("doubao") or {}
             model = str(raw.get("model") or "").strip() or DEFAULT_MODEL

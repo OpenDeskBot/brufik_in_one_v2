@@ -460,9 +460,7 @@ def is_mouth_phoneme_group_entry(val: Any) -> bool:
         return False
     if not all(isinstance(x, str) and str(x).strip() for x in st):
         return False
-    if not isinstance(val.get("elements"), list):
-        return False
-    return True
+    return isinstance(val.get("elements"), list)
 
 
 def expand_mouth_by_phoneme(

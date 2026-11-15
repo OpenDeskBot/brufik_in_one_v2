@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def test_ensure_device_data_initialized_copies_json(tmp_path, monkeypatch):
-    from deskbot_server.utils import device_data as dd
+    from deskbot_server.service import device_data_paths as dd
 
     data_dir = tmp_path / "data"
     global_dir = data_dir / "global"
@@ -26,7 +26,7 @@ def test_ensure_device_data_initialized_copies_json(tmp_path, monkeypatch):
 
 
 def test_resolve_json_path_device_scoped(tmp_path, monkeypatch):
-    from deskbot_server.utils import device_data as dd
+    from deskbot_server.service import device_data_paths as dd
 
     data_dir = tmp_path / "data"
     global_dir = data_dir / "global"
@@ -44,7 +44,7 @@ def test_resolve_json_path_device_scoped(tmp_path, monkeypatch):
 
 
 def test_load_and_save_llm_system_prompt(tmp_path, monkeypatch):
-    from deskbot_server.utils import device_data as dd
+    from deskbot_server.service import device_data_paths as dd
 
     data_dir = tmp_path / "data"
     global_dir = data_dir / "global"
@@ -61,7 +61,7 @@ def test_load_and_save_llm_system_prompt(tmp_path, monkeypatch):
 
 
 def test_load_llm_system_prompt_uses_global_only(tmp_path, monkeypatch):
-    from deskbot_server.utils import device_data as dd
+    from deskbot_server.service import device_data_paths as dd
 
     data_dir = tmp_path / "data"
     global_dir = data_dir / "global"

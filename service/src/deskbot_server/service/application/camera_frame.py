@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from typing import Any
 
@@ -92,10 +93,8 @@ def analyze_face_detection(detect: dict) -> dict[str, Any]:
         out["person_name"] = str(person_name)
     identity_score = detect.get("identity_score")
     if identity_score is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             out["identity_score"] = round(float(identity_score), 3)
-        except (TypeError, ValueError):
-            pass
     match_source = detect.get("match_source") or detect.get("face_id_source")
     if match_source:
         out["id_match_source"] = str(match_source)
@@ -105,10 +104,8 @@ def analyze_face_detection(detect: dict) -> dict[str, Any]:
         out["descriptor_kind"] = str(dk)
     dd = detect.get("descriptor_dim")
     if dd is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             out["descriptor_dim"] = int(dd)
-        except (TypeError, ValueError):
-            pass
     return out
 
 

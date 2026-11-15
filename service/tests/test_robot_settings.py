@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from deskbot_server.infrastructure.llm.runtime import (
+from deskbot_server.client.llm.runtime import (
     QWEN_LLM_BASE_URL,
     SILICONFLOW_API_KEY_ENV,
     SILICONFLOW_BASE_URL,
@@ -20,6 +20,7 @@ from deskbot_server.infrastructure.llm.runtime import (
 )
 from deskbot_server.service.robot_capability import (
     ASR_CANDIDATES,
+    DECISION_CANDIDATES,
     LLM_CANDIDATES,
     TTS_CANDIDATES,
     CapabilityError,
@@ -114,23 +115,33 @@ def bound_asr():
 def test_capability_catalogs_structure():
     assert [c.id for c in ASR_CANDIDATES] == ["funasr", "doubao"]
     # 本地模型在前，云端（ark / siliconflow）置底
-    assert [c.id for c in LLM_CANDIDATES] == ["minicpm", "qwen", "ark", "siliconflow"]
-    assert [c.id for c in TTS_CANDIDATES] == ["moss-tts-nano", "doubao"]
+    assert [c.id for c in LLM_CANDIDATES] == ["realtime", "minicpm", "qwen", "unee", "ark", "siliconflow"]
+    assert [c.id for c in TTS_CANDIDATES] == ["macos", "moss-tts-nano", "doubao"]
 
-    minicpm = LLM_CANDIDATES[0]
-    qwen = LLM_CANDIDATES[1]
-    ark = LLM_CANDIDATES[2]
-    siliconflow = LLM_CANDIDATES[3]
+    candidates = {c.id: c for c in LLM_CANDIDATES}
+    assert candidates["realtime"].requires_service == "llm-realtime"
+    minicpm = candidates["minicpm"]
+    qwen = candidates["qwen"]
+    unee = candidates["unee"]
+    ark = candidates["ark"]
+    siliconflow = candidates["siliconflow"]
     assert siliconflow.experimental is False
     assert siliconflow.requires_service is None  # 云端 SaaS，不走外部服务框架
     assert ark.experimental is False
     assert minicpm.experimental is True
     assert minicpm.requires_service == "llm-minicpm"
     assert qwen.requires_service == "llm-qwen"
+    assert unee.experimental is True
+    assert unee.requires_service == "llm-unee"
     assert ASR_CANDIDATES[0].requires_service == "funasr"
-    assert TTS_CANDIDATES[0].requires_service == "moss-tts-nano"
+    assert next(c for c in TTS_CANDIDATES if c.id == "moss-tts-nano").requires_service == "moss-tts-nano"
     for cap in (*ASR_CANDIDATES, *LLM_CANDIDATES, *TTS_CANDIDATES):
         assert cap.id and cap.name and cap.description
+
+
+def test_decision_candidates_structure():
+    assert [c.id for c in DECISION_CANDIDATES] == ["unee", "minicpm", "qwen", "ark", "siliconflow"]
+    assert DECISION_CANDIDATES[0].requires_service == "llm-unee"  # 默认决策模型依赖 unee 服务
 
 
 # ---------- 2. ASR 设备级配置 ----------
@@ -298,7 +309,7 @@ def test_apply_llm_unknown_provider_rejected(svc, device, clean_llm_env):
 
 def test_llm_status_system_default_when_unset(svc, device, clean_llm_env):
     """llm_provider 未配置 → 回落系统默认（MINIMAL_CONFIG = ark 云端、无密钥）并给出引导 warning。"""
-    from deskbot_server.infrastructure.llm.runtime import ARK_OPENAI_BASE_URL
+    from deskbot_server.client.llm.runtime import ARK_OPENAI_BASE_URL
 
     llm = svc.get_status("deskbot_asr")["capabilities"]["llm"]
     assert llm["current"] == "ark"
@@ -312,7 +323,7 @@ def test_llm_status_system_default_when_unset(svc, device, clean_llm_env):
 def test_llm_status_ark_with_llm_param(svc, device, clean_llm_env):
     """设备 provider=ark 且 llm_param["ark"] 已配置 → effective 同源展示，warning 消失。"""
     from deskbot_server.dao.device_mapper import update_llm_param
-    from deskbot_server.infrastructure.llm.runtime import ARK_OPENAI_BASE_URL
+    from deskbot_server.client.llm.runtime import ARK_OPENAI_BASE_URL
 
     update_llm_param(
         "deskbot_asr",
@@ -332,7 +343,7 @@ def test_llm_status_ark_with_llm_param(svc, device, clean_llm_env):
 # ---------- 4. 本地 URL 判定 / key 豁免 / 流式禁用 ----------
 
 def test_is_local_llm_url():
-    from deskbot_server.infrastructure.llm.runtime import is_local_llm_url
+    from deskbot_server.client.llm.runtime import is_local_llm_url
 
     assert is_local_llm_url("http://127.0.0.1:9104/v1")
     assert is_local_llm_url("http://localhost:9104")
@@ -344,7 +355,7 @@ def test_is_local_llm_url():
 
 
 def test_validate_api_key_exempts_local_url():
-    from deskbot_server.infrastructure.llm.runtime import ResolvedLlmConfig, _validate_api_key
+    from deskbot_server.client.llm.runtime import ResolvedLlmConfig, _validate_api_key
 
     _validate_api_key(
         ResolvedLlmConfig(model="m", api_key="", api_base="http://127.0.0.1:9104/v1", protocol="openai", source="system", display_name="x")
@@ -357,7 +368,7 @@ def test_validate_api_key_exempts_local_url():
 
 
 def test_local_llm_forces_non_stream(monkeypatch):
-    from deskbot_server.infrastructure.llm import runtime as llm_runtime
+    from deskbot_server.client.llm import runtime as llm_runtime
 
     captured = {"stream": 0, "plain": 0}
 
@@ -389,7 +400,7 @@ def test_local_llm_forces_non_stream(monkeypatch):
 def test_llm_clear_device_config_back_to_system_default(svc, device, clean_llm_env):
     """clear_device_llm_override：llm_provider 置空 + llm_param 清空，回落系统默认（MINIMAL_CONFIG ark）。"""
     from deskbot_server.dao.device_mapper import get_llm_param, get_llm_provider
-    from deskbot_server.infrastructure.llm.runtime import ARK_OPENAI_BASE_URL
+    from deskbot_server.client.llm.runtime import ARK_OPENAI_BASE_URL
 
     svc.apply_llm("qwen", "deskbot_asr")
     svc.save_device_llm_config("deskbot_asr", "ark", {"api_key": "sk-1", "model_name": "ep-1"})
@@ -409,6 +420,43 @@ def test_llm_clear_device_config_back_to_system_default(svc, device, clean_llm_e
 def test_clear_device_override_requires_device(svc):
     with pytest.raises(CapabilityError, match="未选择当前设备"):
         svc.clear_device_llm_override(None)
+
+
+# ---------- 5.1 决策模型（默认 unee） ----------
+
+def test_decision_default_is_unee_and_apply_writes_device(svc, device, clean_llm_env):
+    from deskbot_server.dao.device_mapper import get_decision_llm_provider
+
+    # 新绑定设备默认 unee（列 server_default）
+    assert get_decision_llm_provider("deskbot_asr") == "unee"
+    decision = svc.get_status("deskbot_asr")["capabilities"]["decision"]
+    assert decision["current"] == "unee"
+    assert decision["effective"]["base_url"] == "http://127.0.0.1:9107/v1"
+
+    svc.apply_decision("qwen", "deskbot_asr")
+    assert get_decision_llm_provider("deskbot_asr") == "qwen"
+    assert svc.get_status("deskbot_asr")["capabilities"]["decision"]["current"] == "qwen"
+
+
+def test_apply_decision_unknown_provider_and_no_device_rejected(svc, device):
+    from deskbot_server.dao.device_mapper import get_decision_llm_provider
+
+    with pytest.raises(CapabilityError, match="未知的 DECISION 能力"):
+        svc.apply_decision("bogus", "deskbot_asr")
+    assert get_decision_llm_provider("deskbot_asr") == "unee"
+
+    with pytest.raises(CapabilityError, match="未选择当前设备"):
+        svc.apply_decision("unee", None)
+
+
+def test_decision_status_does_not_infer_remote_health_from_local_processes(svc, device):
+    status = svc.get_status("deskbot_asr")
+    assert status["capabilities"]["decision"]["warning"] is None
+    assert status["services"] == {}
+
+
+def test_decision_status_no_device_defaults_unee(svc, temp_db):
+    assert svc.get_status(None)["capabilities"]["decision"]["current"] == "unee"
 
 
 # ---------- 6. API 层 ----------
@@ -450,10 +498,13 @@ def test_api_robot_settings_endpoints(temp_db):
     assert payload["capabilities"]["tts"]["current"] in ("moss-tts-nano", "doubao")
     # 走真实 config.yaml（create_app 默认路径）：系统默认已切到硅基流动，未选设备时即它
     assert payload["capabilities"]["llm"]["current"] == "siliconflow"
+    # 决策模型默认 unee（未选设备也展示默认值）
+    assert payload["capabilities"]["decision"]["current"] == "unee"
 
     # 行为开关（未选设备）：GET 回落默认值，写操作 → 400
     assert payload["behavior"] == {"auto_reply": True, "follow_mode": ""}
     assert client.post("/api/robot-settings/behavior", json={"auto_reply": False}).status_code == 400
+    assert client.post("/api/robot-settings/decision", json={"provider": "unee"}).status_code == 400
 
     # 非法 provider → 400
     bad = client.post("/api/robot-settings/asr", json={"provider": "bogus"})
@@ -482,6 +533,8 @@ def test_robot_settings_page_renders(temp_db):
     assert "机器人配置" in html
     assert "语音识别 ASR" in html
     assert "大脑 LLM" in html
+    assert "决策模型" in html
+    assert "/api/robot-settings/decision" in html
     assert "语音合成 TTS" in html
     assert "/api/robot-settings" in html
     assert "cap-opt-test" in html  # 候选行配置按钮（ASR/LLM/TTS）
@@ -642,7 +695,7 @@ def fake_tts_engine():
 
 
 def test_tts_test_info(tmp_path, monkeypatch):
-    from deskbot_server.infrastructure.tts.doubao import DEFAULT_SPEAKER
+    from deskbot_server.client.tts.doubao import DEFAULT_SPEAKER
 
     monkeypatch.delenv("DOUBAO_TTS_SPEAKER", raising=False)
     p = tmp_path / "config.yaml"
@@ -729,7 +782,7 @@ def test_save_device_tts_config_writes_device_not_env(svc, device, tmp_path, mon
 
     env_file = tmp_path / ".env"
     env_file.write_text("", encoding="utf-8")
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", env_file)
 
     svc.save_device_tts_config(
         "deskbot_asr", {"doubao": {"api_key": "dev-key", "speaker": "zh_female_vv_uranus_bigtts", "sample_rate": "16000"}}
@@ -769,7 +822,7 @@ def test_save_device_tts_config_empty_clears(svc, device, tmp_path, monkeypatch)
 
     env_file = tmp_path / ".env"
     env_file.write_text("", encoding="utf-8")
-    monkeypatch.setattr("deskbot_server.infrastructure.tts.env_store.ENV_FILE", env_file)
+    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", env_file)
 
     svc.save_device_tts_config("deskbot_asr", {"doubao": {"api_key": "dev-key"}})
     assert get_tts_param("deskbot_asr")
@@ -787,7 +840,7 @@ def test_save_device_tts_config_no_device_raises(svc):
 
 
 def test_tts_config_info_device_param_wins_and_masks(svc, device):
-    from deskbot_server.infrastructure.tts.doubao import DEFAULT_RESOURCE_ID, _mask_secret
+    from deskbot_server.client.tts.doubao import DEFAULT_RESOURCE_ID, _mask_secret
 
     info = svc.tts_config_info("deskbot_asr")
     assert info["doubao"]["api_key"] == ""  # 设备未配置 key → 空（无 env 回填）
@@ -801,9 +854,9 @@ def test_tts_config_info_device_param_wins_and_masks(svc, device):
 
 def test_resolve_tts_adapter_device_params_win_over_env(svc, device, monkeypatch):
     """运行期解析：设备 tts_param 的 api_key / sample_rate 优先于 env。"""
-    from deskbot_server.infrastructure.tts.doubao import load_doubao_tts_config
-    from deskbot_server.infrastructure.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
-    from deskbot_server.infrastructure.tts.resolve import resolve_tts_adapter
+    from deskbot_server.client.tts.doubao import load_doubao_tts_config
+    from deskbot_server.client.tts.doubao_phoneme import DoubaoPhonemeTtsAdapter
+    from deskbot_server.service.tts_routing import resolve_tts_adapter
 
     monkeypatch.setenv("DOUBAO_TTS_API_KEY", "env-key")
     svc.apply_tts("doubao", "deskbot_asr")

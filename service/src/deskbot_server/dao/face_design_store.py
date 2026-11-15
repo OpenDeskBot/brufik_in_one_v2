@@ -10,7 +10,7 @@ from typing import Any
 from deskbot_server.constants import FACE_DESIGN_FILE
 from deskbot_server.dao.face_expr_scenes_store import normalize_design_scene
 from deskbot_server.pb.shapes import simplify_phoneme_key
-from deskbot_server.utils.device_data import resolve_json_path
+from deskbot_server.service.device_data_paths import resolve_json_path
 
 _design_cache: tuple[str, float, dict[str, Any] | None] | None = None
 

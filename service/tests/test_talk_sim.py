@@ -68,7 +68,7 @@ def _install_design(root: Path, doc: dict):
 def test_whole_face_phoneme_design(design_dir, monkeypatch):
     """deskbot-face.json 逐音素整脸模式：行元素与设计文件逐音素帧一致。"""
     _install_design(design_dir, _phoneme_design())
-    monkeypatch.setattr("deskbot_server.utils.device_data.DATA_DIR", design_dir)
+    monkeypatch.setattr("deskbot_server.service.device_data_paths.DATA_DIR", design_dir)
     from deskbot_server.dao.face_design_store import clear_face_design_cache
 
     clear_face_design_cache()
@@ -89,7 +89,7 @@ def test_whole_face_phoneme_design(design_dir, monkeypatch):
 
 def test_mouth_table_mode_without_design(design_dir, monkeypatch):
     """无 phonemes 设计的兜底：行来自 bundle 的 mouth_by_phoneme 口型表 + 默认眼鼻。"""
-    monkeypatch.setattr("deskbot_server.utils.device_data.DATA_DIR", design_dir)
+    monkeypatch.setattr("deskbot_server.service.device_data_paths.DATA_DIR", design_dir)
     bundle = {
         "mouth_by_phoneme": {
             "_": {"elements": [{"shape": "round_rect", "x": 10, "y": 10, "w": 40, "h": 10}], "offset": {"x": 0, "y": 0}},
@@ -115,7 +115,7 @@ def test_mouth_table_mode_without_design(design_dir, monkeypatch):
 
 def test_punctuation_maps_to_sil(design_dir, monkeypatch):
     _install_design(design_dir, _phoneme_design())
-    monkeypatch.setattr("deskbot_server.utils.device_data.DATA_DIR", design_dir)
+    monkeypatch.setattr("deskbot_server.service.device_data_paths.DATA_DIR", design_dir)
     from deskbot_server.dao.face_design_store import clear_face_design_cache
 
     clear_face_design_cache()
@@ -126,7 +126,7 @@ def test_punctuation_maps_to_sil(design_dir, monkeypatch):
 
 def test_empty_and_total_override(design_dir, monkeypatch):
     _install_design(design_dir, _phoneme_design())
-    monkeypatch.setattr("deskbot_server.utils.device_data.DATA_DIR", design_dir)
+    monkeypatch.setattr("deskbot_server.service.device_data_paths.DATA_DIR", design_dir)
     from deskbot_server.dao.face_design_store import clear_face_design_cache
 
     clear_face_design_cache()

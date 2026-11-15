@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 
+from deskbot_server.dao.decorators import delete as db_delete
+from deskbot_server.dao.decorators import insert as db_insert
+from deskbot_server.dao.decorators import select, select_one
+from deskbot_server.dao.decorators import update as db_update
 from deskbot_server.db.models import Device
-from deskbot_server.db.sql_decorators import execute, select, select_one
 
 # ────────────────────────── 查询 ──────────────────────────
 
@@ -13,6 +16,11 @@ from deskbot_server.db.sql_decorators import execute, select, select_one
 @select("SELECT * FROM devices WHERE owner_user_id = :user_id ORDER BY claimed_at DESC", model=Device)
 def list_for_user(user_id: str) -> list[Device]:
     """列出用户所有设备。"""
+
+
+@select("SELECT * FROM devices WHERE llm_provider = :provider", model=Device)
+def list_by_llm_provider(provider: str) -> list[Device]:
+    """启动时仅预热使用本地实时模型的设备。"""
 
 
 @select_one("SELECT * FROM devices WHERE device_id = :device_id", model=Device)
@@ -28,11 +36,12 @@ def device_ids_for_user(user_id: str) -> list[str]:
 # ────────────────────────── 写操作 ──────────────────────────
 
 
-@execute(
+@db_insert(
     """
     INSERT INTO devices (id, device_id, owner_user_id, display_name, volume, fps, version, auto_reply, servo_mode, live_mode, asr_provider, tts_provider, claimed_at, created_at)
     VALUES (:uid, :device_id, :user_id, :display_name, :volume, :fps, :version, 1, '', 1, 'funasr', 'moss-tts-nano', datetime('now'), datetime('now'))
-    """
+    """,
+    id_param="uid",
 )
 def insert(
     uid: str,
@@ -42,11 +51,11 @@ def insert(
     volume: int = 80,
     fps: int = 10,
     version: str | None = None,
-) -> int:
+) -> str:
     """插入新设备记录。"""
 
 
-@execute(
+@db_update(
     """
     UPDATE devices
     SET owner_user_id = :user_id,
@@ -58,37 +67,37 @@ def update_owner(device_id_pk: str, user_id: str, display_name: str) -> int:
     """更新设备归属（转绑 / 重绑）。"""
 
 
-@execute("UPDATE devices SET volume = :volume WHERE device_id = :device_id")
+@db_update("UPDATE devices SET volume = :volume WHERE device_id = :device_id")
 def update_volume(device_id: str, volume: int) -> int:
     """更新设备音量。"""
 
 
-@execute("UPDATE devices SET device_id = :new_device_id WHERE device_id = :old_device_id")
+@db_update("UPDATE devices SET device_id = :new_device_id WHERE device_id = :old_device_id")
 def update_device_id(old_device_id: str, new_device_id: str) -> int:
     """重置设备 ID（随机后缀变更）。"""
 
 
-@execute("UPDATE devices SET auto_reply = :auto_reply WHERE device_id = :device_id")
+@db_update("UPDATE devices SET auto_reply = :auto_reply WHERE device_id = :device_id")
 def update_auto_reply(device_id: str, auto_reply: bool) -> int:
     """更新自动应答开关。"""
 
 
-@execute("UPDATE devices SET servo_mode = :servo_mode WHERE device_id = :device_id")
+@db_update("UPDATE devices SET servo_mode = :servo_mode WHERE device_id = :device_id")
 def update_servo_mode(device_id: str, servo_mode: str) -> int:
     """更新舵机跟随模式。"""
 
 
-@execute("UPDATE devices SET live_mode = :live_mode WHERE device_id = :device_id")
+@db_update("UPDATE devices SET live_mode = :live_mode WHERE device_id = :device_id")
 def update_live_mode(device_id: str, live_mode: bool) -> int:
     """更新活体模式开关。"""
 
 
-@execute("UPDATE devices SET asr_provider = :asr_provider WHERE device_id = :device_id")
+@db_update("UPDATE devices SET asr_provider = :asr_provider WHERE device_id = :device_id")
 def update_asr_provider(device_id: str, asr_provider: str) -> int:
     """更新设备级 ASR provider。"""
 
 
-@execute("UPDATE devices SET quest_id = :quest_id WHERE device_id = :device_id")
+@db_update("UPDATE devices SET quest_id = :quest_id WHERE device_id = :device_id")
 def update_quest_id(device_id: str, quest_id: str | None) -> int:
     """绑定/解绑设备剧本（None 或空串 = 解绑，置 NULL）。"""
 
@@ -107,7 +116,7 @@ def set_asr_provider(device_id: str, provider: str) -> None:
     update_asr_provider(device_id, str(provider or "").strip().lower())
 
 
-@execute("UPDATE devices SET asr_param = :asr_param WHERE device_id = :device_id")
+@db_update("UPDATE devices SET asr_param = :asr_param WHERE device_id = :device_id")
 def update_asr_param(device_id: str, asr_param: str | None) -> int:
     """更新设备级 ASR 参数（JSON 文本；None 置 NULL 表示清除）。"""
 
@@ -125,7 +134,7 @@ def get_asr_param(device_id: str) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-@execute("UPDATE devices SET tts_provider = :tts_provider WHERE device_id = :device_id")
+@db_update("UPDATE devices SET tts_provider = :tts_provider WHERE device_id = :device_id")
 def update_tts_provider(device_id: str, tts_provider: str) -> int:
     """更新设备级 TTS provider。"""
 
@@ -144,7 +153,7 @@ def set_tts_provider(device_id: str, provider: str) -> None:
     update_tts_provider(device_id, str(provider or "").strip().lower())
 
 
-@execute("UPDATE devices SET tts_param = :tts_param WHERE device_id = :device_id")
+@db_update("UPDATE devices SET tts_param = :tts_param WHERE device_id = :device_id")
 def update_tts_param(device_id: str, tts_param: str | None) -> int:
     """更新设备级 TTS 参数（JSON 文本；None 置 NULL 表示清除）。"""
 
@@ -162,7 +171,7 @@ def get_tts_param(device_id: str) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-@execute("UPDATE devices SET llm_provider = :llm_provider WHERE device_id = :device_id")
+@db_update("UPDATE devices SET llm_provider = :llm_provider WHERE device_id = :device_id")
 def update_llm_provider(device_id: str, llm_provider: str) -> int:
     """更新设备级 LLM provider（空串 = 未配置）。"""
 
@@ -180,7 +189,25 @@ def set_llm_provider(device_id: str, provider: str) -> None:
     update_llm_provider(device_id, str(provider or "").strip())
 
 
-@execute("UPDATE devices SET llm_param = :llm_param WHERE device_id = :device_id")
+@db_update("UPDATE devices SET decision_llm_provider = :decision_llm_provider WHERE device_id = :device_id")
+def update_decision_llm_provider(device_id: str, decision_llm_provider: str) -> int:
+    """更新设备级「动作/表情决策模型」provider（空串按 unee 处理）。"""
+
+
+def get_decision_llm_provider(device_id: str) -> str:
+    """设备级决策模型 provider；设备不存在或未设置 → 空串（调用侧回落 unee）。"""
+    dev = get_by_device_id(device_id)
+    if dev is None:
+        return ""
+    return str(dev.decision_llm_provider or "").strip()
+
+
+def set_decision_llm_provider(device_id: str, provider: str) -> None:
+    """设置设备级「动作/表情决策模型」provider。"""
+    update_decision_llm_provider(device_id, str(provider or "").strip())
+
+
+@db_update("UPDATE devices SET llm_param = :llm_param WHERE device_id = :device_id")
 def update_llm_param(device_id: str, llm_param: str | None) -> int:
     """更新设备级 LLM 参数（JSON 文本；None 置 NULL 表示清除）。"""
 
@@ -198,7 +225,7 @@ def get_llm_param(device_id: str) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-@execute("DELETE FROM devices WHERE device_id = :device_id AND owner_user_id = :user_id")
+@db_delete("DELETE FROM devices WHERE device_id = :device_id AND owner_user_id = :user_id")
 def delete_by_device_id(device_id: str, user_id: str) -> int:
     """删除设备绑定。"""
 

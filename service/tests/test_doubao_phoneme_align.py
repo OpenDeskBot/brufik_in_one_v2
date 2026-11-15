@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from deskbot_server.ports.tts import PhonemeSegment
-from deskbot_server.infrastructure.tts.doubao_phoneme_align import (
+from deskbot_server.client.tts.doubao_phoneme_align import (
     TimedPhoneme,
     build_phoneme_segments,
     extract_timed_phonemes_from_sentence_end,

@@ -1,0 +1,41 @@
+name: Server SOP
+
+on:
+  push:
+    paths: ["service/**", ".github/workflows/service.yml"]
+  pull_request:
+    paths: ["service/**", ".github/workflows/service.yml"]
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install runtime and development dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopus0 libportaudio2 ffmpeg
+          python -m pip install -e ".[dev]"
+      - name: Build browser views
+        run: |
+          python tools/build_public.py
+          git diff --exit-code -- src/deskbot_server/public/shared/views.json
+      - name: Check source
+        run: |
+          ruff check src
+          python -m compileall -q src
+      - name: Verify service contracts and affected behavior
+        run: >-
+          pytest -q tests/test_sop_contract.py tests/test_controller_auth.py
+          tests/test_endpoint_auth.py tests/test_auth.py tests/test_scheduled_task.py
+          tests/test_session_context.py tests/test_session_store.py tests/test_memory_store.py
+          tests/test_asr_protocol.py tests/test_asr_external.py tests/test_convo_audio.py

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any, ClassVar
 
@@ -136,10 +137,8 @@ class WsUtils:
                 )
             return False
         except TimeoutError:
-            try:
+            with contextlib.suppress(Exception):
                 await websocket.close(code=1011, reason="send timeout")
-            except Exception:
-                pass
             try:
                 peer = WsUtils.peer_str(websocket)
             except Exception:

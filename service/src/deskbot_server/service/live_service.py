@@ -40,7 +40,7 @@ SOCIAL_RETRY_GAP_SEC = 120.0         # 面孔集合变化（新面孔出现/返�
 SOCIAL_NO_FACE_COOLDOWN_SEC = 60.0   # 无已识别已知用户 / 设备离线时空转冷却
 
 
-class LiveState(str, Enum):
+class LiveState(str, Enum):  # noqa: UP042 - preserve existing str(Enum) behavior
     SLEEP = "sleep"
     WANDER = "wander"
     GAZE = "gaze"
@@ -341,7 +341,7 @@ class LiveService(metaclass=SingletonMeta):
         if cached is not None and now - cached[1] < _QUEST_DB_TS_CACHE_SEC:
             return cached[0]
         try:
-            from deskbot_server.dao.device_session_mapper import get_current_session
+            from deskbot_server.service.session_service import get_current_session
             from deskbot_server.utils.async_helpers import run_blocking
 
             sess = await run_blocking(get_current_session, device_id)

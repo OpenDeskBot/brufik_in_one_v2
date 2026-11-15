@@ -12,7 +12,7 @@ import pytest
 @pytest.fixture()
 def env(monkeypatch, tmp_path):
     """临时 data 目录 + 临时数据库（build_llm_system_prompt 内部读长期记忆表）。"""
-    from deskbot_server.utils import device_data as dd
+    from deskbot_server.service import device_data_paths as dd
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -51,7 +51,7 @@ def _freeze_clock(monkeypatch):
 
 
 def _build(device_id="dev1"):
-    from deskbot_server.infrastructure.llm.utils import build_llm_system_prompt
+    from deskbot_server.service.llm_context import build_llm_system_prompt
 
     return build_llm_system_prompt("你是助手", device_id=device_id)
 
@@ -81,7 +81,7 @@ def test_both_face_and_voice_users_injected_with_files(env, monkeypatch):
     append_daily_task_line("dev1", "小红", "我问了小红中午吃了什么")
     _patch_sights(monkeypatch, faces=[("小明", 0.9), ("小红", 0.7)], voice="小红")
 
-    from deskbot_server.infrastructure.llm.utils import recognized_known_users
+    from deskbot_server.service.llm_context import recognized_known_users
 
     assert recognized_known_users("dev1") == ["小红", "小明"]  # 声纹说话人优先
     sp = _build()
@@ -117,7 +117,7 @@ def test_last_talk_only_when_recorded(env, monkeypatch):
 
 def test_missing_files_show_placeholder_not_error(env, monkeypatch):
     _patch_sights(monkeypatch, faces=[("陌生人档案未建", 0.5)], voice=None)
-    from deskbot_server.infrastructure.llm.utils import recognized_known_users
+    from deskbot_server.service.llm_context import recognized_known_users
 
     names = recognized_known_users("dev1")
     sp = _build()
@@ -132,7 +132,7 @@ def test_recognized_users_capped_at_three(env, monkeypatch):
         faces=[("甲", 0.99), ("乙", 0.88), ("丙", 0.77), ("丁", 0.66)],
         voice=None,
     )
-    from deskbot_server.infrastructure.llm.utils import recognized_known_users
+    from deskbot_server.service.llm_context import recognized_known_users
 
     assert recognized_known_users("dev1") == ["甲", "乙", "丙"]  # 按分取前 3，丢低分
 
@@ -142,7 +142,7 @@ def test_social_context_total_char_cap(env, monkeypatch):
     # 单用户块 ≈700 字符，三人累计超 2000 → 第三人在预算处被丢弃
     _patch_sights(monkeypatch, faces=[("小明", 0.9), ("小红", 0.8), ("小刚", 0.7)], voice=None)
     from deskbot_server.dao.user_social_store import user_file_stem
-    from deskbot_server.utils.device_data import device_data_dir
+    from deskbot_server.service.device_data_paths import device_data_dir
 
     dev_dir = device_data_dir("dev1")
     dev_dir.mkdir(parents=True, exist_ok=True)
@@ -168,7 +168,7 @@ def test_direct_read_reflects_new_writes(env, monkeypatch):
 
 def test_build_no_legacy_text_tools_ad(env):
     """默认（None）语义 = 原生名单 directive：legacy 文本 tools 广告段整体移除。"""
-    from deskbot_server.infrastructure.llm.utils import build_llm_system_prompt
+    from deskbot_server.service.llm_context import build_llm_system_prompt
 
     sp = build_llm_system_prompt("你是助手", device_id="nobody")
     # 原生 directive 在，且不出现文本 JSON 形式的工具写法
@@ -182,7 +182,7 @@ def test_build_no_legacy_text_tools_ad(env):
 
 def test_build_no_tools_mention_when_names_empty(env):
     """收口/无工具轮（native_tool_names=[]）→ prompt 完全不提工具。"""
-    from deskbot_server.infrastructure.llm.utils import build_llm_system_prompt
+    from deskbot_server.service.llm_context import build_llm_system_prompt
 
     sp = build_llm_system_prompt("你是助手", device_id="nobody", native_tool_names=[])
     assert "可用工具" not in sp

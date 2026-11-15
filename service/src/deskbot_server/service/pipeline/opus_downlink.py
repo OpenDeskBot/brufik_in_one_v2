@@ -63,7 +63,12 @@ def decode_opus_batch_to_pcm_s16le(
     if not payload:
         return b""
     frame_samples = opus_frame_samples(sample_rate)
-    if opus_frames is None or opus_frames <= 1:
+    if opus_frames is None or opus_frames <= 0:
+        return decoder.decode(payload, frame_samples)
+    if opus_frames == 1 and (
+        len(payload) < 2 or _OPUS_LP_HDR.unpack_from(payload)[0] != len(payload) - 2
+    ):
+        # Legacy callers supplied one bare packet with opus_frames=1.
         return decoder.decode(payload, frame_samples)
     pcm_parts: list[bytes] = []
     offset = 0

@@ -10,7 +10,7 @@ import wave
 
 import pytest
 
-from deskbot_server.infrastructure.asr.protocol import (
+from deskbot_server.client.asr.protocol import (
     ERR_AUDIO_TOO_LARGE,
     ERR_EMPTY_PCM,
     ERR_INVALID_RESPONSE,

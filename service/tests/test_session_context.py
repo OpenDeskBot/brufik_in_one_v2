@@ -24,7 +24,7 @@ def temp_db(monkeypatch):
 
 def _seed_turns(device_id: str, *, t0: float, turns: list[tuple[float, str, str]]):
     """turns: (now_ts, user_text, assistant_text)，按序落库到同一 session。"""
-    from deskbot_server.dao.device_session_mapper import append_turn, ensure_active_session
+    from deskbot_server.service.session_service import append_turn, ensure_active_session
 
     first_ts = turns[0][0]
     session_id = str(ensure_active_session(device_id, user_text=turns[0][1], now=first_ts)["session_id"])
@@ -34,7 +34,7 @@ def _seed_turns(device_id: str, *, t0: float, turns: list[tuple[float, str, str]
 
 
 def test_context_window_cuts_at_gap_over_limit(temp_db):
-    from deskbot_server.dao.device_session_mapper import session_context_window
+    from deskbot_server.service.session_service import session_context_window
 
     t0 = 1_700_000_000.0
     sid = _seed_turns(
@@ -54,7 +54,7 @@ def test_context_window_cuts_at_gap_over_limit(temp_db):
 
 
 def test_context_window_keeps_continuous_turns(temp_db):
-    from deskbot_server.dao.device_session_mapper import session_context_window
+    from deskbot_server.service.session_service import session_context_window
 
     t0 = 1_700_000_000.0
     sid = _seed_turns(
@@ -72,7 +72,7 @@ def test_context_window_keeps_continuous_turns(temp_db):
 
 
 def test_session_access_is_scoped_to_device(temp_db):
-    from deskbot_server.dao.device_session_mapper import (
+    from deskbot_server.service.session_service import (
         append_turn,
         load_session,
         session_context_window,
