@@ -25,12 +25,15 @@ def build():
     # A new loader URL also updates clients that cached an older loader without
     # the no-store fetch option. Tie it to both the page bundle and loader code.
     loader = (PUBLIC / "shared/page-loader.js").read_text(encoding="utf-8")
-    version = hashlib.sha256((serialized + loader).encode()).hexdigest()[:12]
+    runtime = (PUBLIC / "shared/ui-runtime.js").read_text(encoding="utf-8")
+    version = hashlib.sha256((serialized + loader + runtime).encode()).hexdigest()[:12]
     for section in ("site", "admin"):
         shell = PUBLIC / section / "index.html"
         source = shell.read_text(encoding="utf-8")
         source = re.sub(r"/static/page-loader\.js(?:\?v=[a-f0-9]+)?",
                         f"/static/page-loader.js?v={version}", source)
+        source = re.sub(r"/static/ui-runtime\.js(?:\?v=[a-f0-9]+)?",
+                        f"/static/ui-runtime.js?v={version}", source)
         shell.write_text(source, encoding="utf-8")
     print(f"Built {len(views)} browser views")
 

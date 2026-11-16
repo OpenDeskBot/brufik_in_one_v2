@@ -194,7 +194,7 @@ def api_select_device(request: Request, user: RequireUser):
 def api_unbind_device(request: Request, user: RequireUser, device_id: str):
     if not UserService().unbind_device(user.id, device_id):
         return jsonify({"ok": False, "error": "设备不存在"}), 404
-    if get_current_device_id(request) == device_id:
+    if request.session.get("current_device_id") == device_id:
         clear_current_device(request)
     return jsonify({"ok": True})
 
@@ -462,7 +462,7 @@ def api_create_memory(request: Request, user: RequireUser):
     if not text:
         return jsonify({"ok": False, "error": "text 不能为空"}), 400
     try:
-        entry = add_memory(text, device_id=device_id)
+        entry = add_memory(text, device_id=device_id, request_key=request.headers.get("idempotency-key"))
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "memory": entry})

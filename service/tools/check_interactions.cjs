@@ -1,0 +1,56 @@
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
+const assert=require('node:assert/strict');
+(async()=>{
+ const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH || undefined});
+ const page=await browser.newPage();const errors=[];page.on('pageerror',e=>{errors.push(e.message);console.log('PAGEERROR',e.message)});
+ const base=process.env.DESKBOT_BROWSER_URL;assert(base && new URL(base).hostname==='127.0.0.1','Use the isolated browser runner');
+ try{
+  await page.goto(base+'/login');await page.locator('#email').fill('browser-ux@example.com');await page.locator('#password').fill('browser-password-123');
+  await page.locator('button[type=submit]').click();await page.waitForURL('**/home');console.log('PASS login');
+  await page.locator('.topbar').waitFor();
+  await page.evaluate(()=>DeskbotUI.switchDevice('agent-browser-device'));
+  await page.goto(base+'/robot-settings');await page.waitForFunction(()=>document.querySelector('#realtime-prompt')?.value==='Device A prompt');
+  await page.locator('#tbDevSel').click();await page.locator('.tb-devrow[data-id="agent-browser-device-b"]').click();
+  await page.waitForFunction(()=>document.querySelector('#realtime-prompt')?.value==='Device B prompt');
+  assert((await page.locator('#tbDevLabel').innerText()).includes('device-b'));console.log('PASS device switch reloads bound form');
+  await page.locator('#realtime-prompt').fill('Edited B');
+  page.once('dialog',d=>d.dismiss());await page.locator('a.navlink[href="/my/memories"]').click();
+  assert(new URL(page.url()).pathname==='/robot-settings');assert.equal(await page.locator('#realtime-prompt').inputValue(),'Edited B');console.log('PASS dirty navigation cancelled');
+  await page.getByRole('button',{name:'保存对话方式',exact:true}).click();await page.getByText('对话方式已保存，机器人将自动重连',{exact:true}).waitFor();
+  const b=(await (await page.request.get(base+'/api/robot-settings')).json()).conversation;assert.equal(b.prompt,'Edited B');
+  await page.request.post(base+'/app/api/devices/select',{data:{device_id:'agent-browser-device'}});
+  await page.reload();await page.waitForFunction(()=>document.querySelector('#realtime-prompt')?.value==='Edited B');
+  assert((await page.locator('#tbDevLabel').innerText()).includes('device-b'));console.log('PASS another tab session selection cannot redirect this page writes or reload');
+  await page.evaluate(()=>window._auditHeader=document.querySelector('.topbar'));
+  await page.locator('a.navlink[href="/my/memories"]').click();await page.waitForURL('**/my/memories');
+  assert(await page.evaluate(()=>window._auditHeader===document.querySelector('.topbar')));assert.equal(await page.locator('#page-status').count(),0);console.log('PASS navigation retains shell without intermediate screen');
+  const draft=page.locator('input[placeholder="加一条它该记住的事…"]');await draft.waitFor();
+  await page.route('**/app/api/memories',async route=>{if(route.request().method()==='POST')await new Promise(r=>setTimeout(r,300));await route.continue()});
+  await draft.fill('duplicate-audit');await page.getByRole('button',{name:'＋ 加一条',exact:true}).evaluate(b=>{b.click();b.click()});
+  await page.waitForFunction(()=>document.querySelector('input[placeholder="加一条它该记住的事…"]').value==='');
+  let items=(await (await page.request.get(base+'/app/api/memories',{headers:{'X-Deskbot-Device':'agent-browser-device-b'}})).json()).memories;assert.equal(items.filter(m=>m.text==='duplicate-audit').length,1);console.log('PASS double-click one write');
+  await page.unroute('**/app/api/memories');let dropped=false;
+  await page.route('**/app/api/memories',async route=>{if(route.request().method()==='POST'&&!dropped){dropped=true;await route.fetch();await route.abort();}else await route.continue()});
+  await draft.fill('uncertain-retry');await page.getByRole('button',{name:'＋ 加一条',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('p.lead')?.textContent.includes('连接失败'));
+  assert.equal(await draft.inputValue(),'uncertain-retry');
+  await page.getByRole('button',{name:'＋ 加一条',exact:true}).click();await page.waitForFunction(()=>document.querySelector('input[placeholder="加一条它该记住的事…"]').value==='');
+  items=(await (await page.request.get(base+'/app/api/memories',{headers:{'X-Deskbot-Device':'agent-browser-device-b'}})).json()).memories;assert.equal(items.filter(m=>m.text==='uncertain-retry').length,1);console.log('PASS failed response preserves draft and retry creates no duplicate');
+  await page.unroute('**/app/api/memories');
+  await page.locator('a.navlink[href="/my/reminders"]').click();await page.waitForURL('**/my/reminders');
+  await page.goBack();await page.waitForURL('**/my/memories');await draft.waitFor();console.log('PASS browser back');
+  await page.route('**/api/pages/my/people',route=>route.fulfill({status:503,contentType:'application/json',body:'{"error":"暂时无法读取"}'}));
+  await page.locator('a.navlink[href="/my/people"]').click();
+  await page.locator('#ui-notice button').waitFor();assert.equal(new URL(page.url()).pathname,'/my/memories');await draft.waitFor();
+  await page.unroute('**/api/pages/my/people');await page.locator('#ui-notice button').click();await page.waitForURL('**/my/people');console.log('PASS failed navigation preserves content and retry');
+  await page.route('**/api/pages/my/memories',async route=>{await new Promise(r=>setTimeout(r,400));await route.continue().catch(()=>{});});
+  await page.locator('a.navlink[href="/my/memories"]').click();await page.locator('a.navlink[href="/my/reminders"]').click();await page.waitForURL('**/my/reminders');await page.waitForTimeout(500);assert.equal(new URL(page.url()).pathname,'/my/reminders');console.log('PASS latest navigation wins');
+  await page.clock.install();
+  await page.route('**/api/pages/my/people',async route=>{await new Promise(r=>setTimeout(r,1000));await route.continue().catch(()=>{});});
+  await page.locator('a.navlink[href="/my/people"]').click();await page.clock.fastForward(26000);
+  await page.waitForFunction(()=>document.querySelector('#ui-notice')?.textContent.includes('超时'));
+  assert.equal(new URL(page.url()).pathname,'/my/reminders');console.log('PASS page request timeout retains content');
+  assert.deepEqual(errors,[]);
+ }catch(e){console.log('BODY', (await page.locator('body').innerText()).slice(0,1400));throw e;}
+ finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exit(1)});

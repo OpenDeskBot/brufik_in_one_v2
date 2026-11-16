@@ -8,6 +8,11 @@
     const target = new URL(form.action || location.href, location.origin);
     if (target.origin !== location.origin || !["/login", "/register", "/logout"].includes(target.pathname)) return;
     event.preventDefault();
+    if (target.pathname === '/logout' && window.DeskbotUI) {
+      if (!DeskbotUI.canLeave()) return;
+      DeskbotUI.clean();
+      try { sessionStorage.removeItem('deskbot.current-device'); } catch (_) { /* Storage is optional. */ }
+    }
     const submit = form.querySelector('[type="submit"]');
     if (submit) submit.disabled = true;
     try {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import Any
 
@@ -38,15 +39,19 @@ def list_memory_for_device(device_id: str | None = None, *, limit: int = _MAX_PR
     return [_row_to_dict(r) for r in rows[:limit]]
 
 
-def add_memory(text: str, *, device_id: str | None = None) -> dict[str, Any]:
+def add_memory(text: str, *, device_id: str | None = None, request_key: str | None = None) -> dict[str, Any]:
     """添加一条记忆，返回 dict（兼容旧 memory_store.add_memory）。"""
     dev = str(device_id or "").strip()
-    title = uuid.uuid4().hex[:12]
+    if request_key is not None and not 1 <= len(request_key) <= 128:
+        raise ValueError("请求标识无效")
+    title = "request-" + hashlib.sha256(request_key.encode()).hexdigest() if request_key else uuid.uuid4().hex[:12]
     with transaction() as tx:
         insert(dev, title, "", str(text or "").strip(), transaction=tx)
         row = get_by_device_and_title(dev, title, transaction=tx)
         if row is None:
             raise RuntimeError("创建记忆失败")
+        if row.text != str(text or "").strip():
+            raise ValueError("请求标识已用于其他内容，请重新提交")
         return _row_to_dict(row)
 
 

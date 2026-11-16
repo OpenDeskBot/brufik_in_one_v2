@@ -39,3 +39,4 @@ jobs:
           tests/test_endpoint_auth.py tests/test_auth.py tests/test_scheduled_task.py
           tests/test_session_context.py tests/test_session_store.py tests/test_memory_store.py
           tests/test_asr_protocol.py tests/test_asr_external.py tests/test_convo_audio.py
+          tests/test_ux_requests.py

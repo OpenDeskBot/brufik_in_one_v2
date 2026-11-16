@@ -48,3 +48,9 @@ def enforce_access(request: Request, kind: str) -> None:
         raise HTTPException(401, detail={"ok": False, "error": "unauthorized"})
     if kind == "developer" and not user.is_developer:
         raise HTTPException(403, detail={"ok": False, "error": "需要开发者权限"})
+    explicit_device = request.headers.get("x-deskbot-device")
+    if explicit_device is not None and explicit_device != "__none__":
+        from deskbot_server.service.user_service import UserService
+
+        if not explicit_device.strip() or not UserService().user_owns_device(user.id, explicit_device.strip()):
+            raise HTTPException(403, detail={"ok": False, "error": "设备不属于当前账号"})

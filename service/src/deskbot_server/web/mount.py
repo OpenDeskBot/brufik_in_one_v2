@@ -95,8 +95,8 @@ def mount_web(app: FastAPI) -> None:
     async def prepare_legacy_body(request: Request, call_next):
         await _prepare_body(request)
         response = await call_next(request)
-        if request.url.path in {"/static/views.json", "/static/page-loader.js", "/static/page-renderer.js"}:
-            response.headers["Cache-Control"] = "no-store"
+        if request.url.path in {"/static/views.json", "/static/page-loader.js", "/static/page-renderer.js", "/static/ui-runtime.js"}:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if request.query_params.get("v") else "no-store"
         return response
 
     from deskbot_server.controller.registry import register_routers

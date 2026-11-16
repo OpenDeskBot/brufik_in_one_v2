@@ -152,7 +152,7 @@
     </div>
   </div>
 </div>
-<script>
+<script data-shell>
   (function(){
     var el=document.getElementById('tbClock'); if(!el) return;
     var p=function(n){return String(n).padStart(2,'0');};
@@ -243,17 +243,14 @@
     }
     function select(id){
       if(id===state.current) return;
-      fetch('/app/api/devices/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:id})})
-        .then(function(r){return r.json();}).then(function(d){
-          if(d.ok){ wrap.classList.remove('open'); load(); }
-        }).catch(function(){});
+      void DeskbotUI.switchDevice(id).then(function(ok){ if(ok){wrap.classList.remove('open');load();} });
     }
     function removeDevice(id){
       if(!confirm('确定删除（解绑）设备 '+id+'？解绑后当前账号将无法再看到这台设备。')) return;
       fetch('/app/api/devices/'+encodeURIComponent(id),{method:'DELETE'}).then(function(r){return r.json();}).then(function(d){
         if(d.ok){
           if(manageMsg){ manageMsg.className='modal-msg ok'; manageMsg.textContent='已解绑 '+id; }
-          load();
+          if(id===DeskbotUI.device)void DeskbotUI.reloadDevice('');else load();
         }else{
           if(manageMsg){ manageMsg.className='modal-msg err'; manageMsg.textContent=d.error||'删除失败'; }
         }
@@ -307,7 +304,7 @@
         .then(function(r){return r.json();}).then(function(d){
           if(d.ok){
             bindModal.hidden=true; bindMsg.textContent=''; bindInput.value='';
-            load();
+            void DeskbotUI.switchDevice(d.current_device_id || id);
           }else{
             bindMsg.className='modal-msg err'; bindMsg.textContent=d.error||'绑定失败';
           }
@@ -337,6 +334,7 @@
     bindModal.querySelector('#tbBindCancel').addEventListener('click', function(){ bindModal.hidden=true; });
     bindOk.addEventListener('click', doBind);
     bindInput.addEventListener('keydown', function(e){ if(e.key==='Enter') doBind(); });
+    window.addEventListener('deskbot:device-changed', load);
     load();
     setInterval(load, 15000); // 周期刷新在线状态与最近时间
   })();

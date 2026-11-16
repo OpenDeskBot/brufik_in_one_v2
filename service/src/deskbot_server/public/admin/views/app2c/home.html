@@ -381,6 +381,7 @@ createApp({
       let THREE;
       try{ THREE = await this.ensureHomeThree(); }
       catch(_e){ this.homeRobotError = 'Three.js 加载失败'; return; }
+      if(!host.isConnected) return;
       let renderer;
       try{ renderer = new THREE.WebGLRenderer({antialias:true,alpha:false,preserveDrawingBuffer:true}); }
       catch(_e){ this.homeRobotError = 'WebGL 不可用'; return; }

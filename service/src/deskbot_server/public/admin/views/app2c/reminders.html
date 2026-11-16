@@ -8,10 +8,14 @@
     <div class="bar" :class="{off: i%2===1}"></div>
     <div class="body"><b>[[ t.description || t.title || '提醒' ]]</b>
       <small>[[ (t.cron_expr || t.cron || '') + ' · 下次 ' + (t.next_run_at || '') ]]</small>
-      <button class="btn ghost" style="margin-top:10px" @click="del(t)">删除</button>
+      <button :disabled="!!busyAction" class="btn ghost" style="margin-top:10px" @click="del(t)">删除</button>
     </div>
   </div>
-  <p class="lead" v-if="!noDevice && !tasks.length">还没有提醒。</p>
+  <p class="lead" v-if="!loading && !loadError && !noDevice && !tasks.length">还没有提醒。</p>
+  <p v-if="loading" role="status">正在读取数据…</p>
+  <p v-if="!loading && noDevice">请先在顶栏选择设备。</p>
+  <button v-if="loadError" class="btn" @click="load">重试加载</button>
+  <p v-if="busyAction" role="status">正在处理，请稍候…</p>
   <p class="lead" v-if="msg">[[ msg ]]</p>
 </div>
 {% endblock %}

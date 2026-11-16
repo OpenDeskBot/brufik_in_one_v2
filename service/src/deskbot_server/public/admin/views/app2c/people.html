@@ -13,17 +13,17 @@
       <b v-else>[[ p.name || ('#'+p.person_id) ]]</b>
       <div class="btngroup compact">
         <template v-if="editing==='f'+p.person_id">
-          <button class="btn primary" @click="saveName('face', p)">保存</button>
-          <button class="btn ghost" @click="cancelEdit">取消</button>
+          <button :disabled="!!busyAction" class="btn primary" @click="saveName('face', p)">保存</button>
+          <button :disabled="!!busyAction" class="btn ghost" @click="cancelEdit">取消</button>
         </template>
         <template v-else>
-          <button class="btn ghost" @click="startEdit('f', p)">改名</button>
-          <button class="btn ghost" @click="del('face', p)">删除</button>
+          <button :disabled="!!busyAction" class="btn ghost" @click="startEdit('f', p)">改名</button>
+          <button :disabled="!!busyAction" class="btn ghost" @click="del('face', p)">删除</button>
         </template>
       </div>
     </div>
   </div>
-  <p class="lead" v-if="!noDevice && !profiles.length">还没有通过摄像头记住的人。</p>
+  <p class="lead" v-if="!loading && !loadError && !noDevice && !profiles.length">还没有通过摄像头记住的人。</p>
 
   <div style="font-weight:600;color:var(--ink);margin:22px 0 6px;font-size:13px;letter-spacing:.05em">🎙 记住的声音 · VOICES</div>
   <div class="people" v-if="!noDevice">
@@ -33,18 +33,22 @@
       <b v-else>[[ p.name || ('#'+p.person_id) ]]</b>
       <div class="btngroup compact">
         <template v-if="editing==='v'+p.person_id">
-          <button class="btn primary" @click="saveName('voice', p)">保存</button>
-          <button class="btn ghost" @click="cancelEdit">取消</button>
+          <button :disabled="!!busyAction" class="btn primary" @click="saveName('voice', p)">保存</button>
+          <button :disabled="!!busyAction" class="btn ghost" @click="cancelEdit">取消</button>
         </template>
         <template v-else>
-          <button class="btn ghost" @click="startEdit('v', p)">改名</button>
-          <button class="btn ghost" @click="del('voice', p)">删除</button>
+          <button :disabled="!!busyAction" class="btn ghost" @click="startEdit('v', p)">改名</button>
+          <button :disabled="!!busyAction" class="btn ghost" @click="del('voice', p)">删除</button>
         </template>
       </div>
     </div>
   </div>
-  <p class="lead" v-if="!noDevice && !voiceProfiles.length">还没有记住的声音：对机器人说一句完整的话后说「记住我的声音，我叫xx」，
+  <p class="lead" v-if="!loading && !loadError && !noDevice && !voiceProfiles.length">还没有记住的声音：对机器人说一句完整的话后说「记住我的声音，我叫xx」，
   或在「机器人设置」中确认声纹识别已开启。</p>
+  <p v-if="loading" role="status">正在读取数据…</p>
+  <p v-if="!loading && noDevice">请先在顶栏选择设备。</p>
+  <button v-if="loadError" class="btn" @click="load">重试加载</button>
+  <p v-if="busyAction" role="status">正在处理，请稍候…</p>
   <p class="lead" v-if="msg">[[ msg ]]</p>
 </div>
 {% endblock %}

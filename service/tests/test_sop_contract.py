@@ -150,7 +150,10 @@ def test_published_settings_include_flecket_and_mutable_resources_are_not_cached
             assert resource.status_code == 200
             assert resource.headers["Cache-Control"] == "no-store"
         loader = client.get("/static/page-loader.js").text
-        assert 'fetch("/static/views.json", { cache: "no-store" })' in loader
+        assert "/static/views.json?v=" in loader
+        assert "Promise.all" in loader
+        versioned = client.get("/static/views.json?v=test-version")
+        assert "immutable" in versioned.headers["Cache-Control"]
 
 
 def test_service_transaction_commits_together_and_rolls_back_inner_failure(database):

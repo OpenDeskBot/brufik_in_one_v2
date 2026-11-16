@@ -169,6 +169,7 @@
     }
 
     async function selectDevice(deviceId) {
+      if (window.DeskbotUI) { await DeskbotUI.switchDevice(deviceId); return; }
       await apiJson(API_SELECT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

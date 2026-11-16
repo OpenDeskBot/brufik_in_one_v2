@@ -6,7 +6,7 @@
   <div class="pagehd"><div><div class="eyebrow">MEMORY · [[ items.length ]] ENTRIES</div><h1>记忆</h1><p>机器人记住的关于你的小事，随时可改可删。</p></div></div>
   <div style="display:flex;gap:8px;margin-bottom:18px;max-width:560px" v-if="!noDevice">
     <input class="tinput" v-model="draft" placeholder="加一条它该记住的事…" @keyup.enter="add">
-    <button class="btn primary" @click="add">＋ 加一条</button>
+    <button :disabled="!!busyAction" class="btn primary" @click="add">＋ 加一条</button>
   </div>
   <div class="colwrap">
     <div class="note" v-for="(m,i) in items" :key="m.id">
@@ -16,16 +16,20 @@
       <small>[[ m.created_at_fmt || '' ]]</small>
       <div class="btngroup" style="margin-top:12px">
         <template v-if="editing===m.id">
-          <button class="btn primary" @click="saveEdit(m)">保存</button>
-          <button class="btn ghost" @click="cancelEdit">取消</button>
+          <button :disabled="!!busyAction" class="btn primary" @click="saveEdit(m)">保存</button>
+          <button :disabled="!!busyAction" class="btn ghost" @click="cancelEdit">取消</button>
         </template>
         <template v-else>
-          <button class="btn ghost" @click="startEdit(m)">编辑</button>
-          <button class="btn ghost" @click="del(m)">删除</button>
+          <button :disabled="!!busyAction" class="btn ghost" @click="startEdit(m)">编辑</button>
+          <button :disabled="!!busyAction" class="btn ghost" @click="del(m)">删除</button>
         </template>
       </div>
     </div>
   </div>
+  <p v-if="loading" role="status">正在读取数据…</p>
+  <p v-if="!loading && noDevice">请先在顶栏选择设备。</p>
+  <button v-if="loadError" class="btn" @click="load">重试加载</button>
+  <p v-if="busyAction" role="status">正在处理，请稍候…</p>
   <p class="lead" v-if="msg">[[ msg ]]</p>
 </div>
 {% endblock %}

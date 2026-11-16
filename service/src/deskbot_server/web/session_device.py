@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from deskbot_server.service.user_service import UserService
 from deskbot_server.web.deps import load_session_user
@@ -9,6 +9,15 @@ SESSION_DEVICE_KEY = "current_device_id"
 
 
 def get_current_device_id(request: Request) -> str | None:
+    explicit = request.headers.get("x-deskbot-device")
+    if explicit is not None:
+        if explicit == "__none__":
+            return None
+        user = load_session_user(request)
+        device_id = explicit.strip()
+        if not user or not device_id or not UserService().user_owns_device(user.id, device_id):
+            raise HTTPException(status_code=403, detail="设备不属于当前账号")
+        return device_id
     raw = request.session.get(SESSION_DEVICE_KEY)
     if not raw:
         return None
