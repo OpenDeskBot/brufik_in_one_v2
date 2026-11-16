@@ -199,6 +199,7 @@
 
     async function unbindDevice(deviceId) {
       await apiJson(`/app/api/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
+      if (window.DeskbotUI && DeskbotUI.device === deviceId) { await DeskbotUI.reloadDevice(''); return; }
       if (currentId === deviceId) {
         currentId = "";
         dispatchDeviceChanged("");
@@ -291,8 +292,10 @@
     }, 30000);
   }
 
-  document.addEventListener("DOMContentLoaded", () => {
+  function initialize() {
     const root = document.getElementById("appDeviceBar");
     if (root) initDeviceSelector(root);
-  });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initialize, { once: true });
+  else initialize();
 })();

@@ -16,6 +16,9 @@ def seed():
         raise RuntimeError("Browser fixtures require a temporary database")
     init_database()
     user = UserService().register("browser-ux@example.com", "browser-password-123")
+    from tests._auth_compat import set_user_developer
+
+    set_user_developer(user.id)
     for device, label in (("agent-browser-device", "A"), ("agent-browser-device-b", "B")):
         device_mapper.insert("pk-" + label, device, user.id, "Agent " + label)
         set_conversation(device, "flecket", json.dumps({"flecket": {

@@ -95,7 +95,7 @@ async function render(html,payload,device,valid=()=>true){
   else if(node.tagName==='SCRIPT'&&!node.src)await script(node);
  }
  if(reuse){document.querySelector('.shell .app>main').replaceWith(doc.querySelector('.shell .app>main'));document.querySelector('.shell .side').innerHTML=doc.querySelector('.shell .side').innerHTML;}
- else document.body.replaceChildren(...doc.body.childNodes);
+ else {document.body.className=doc.body.className;document.body.style.cssText=doc.body.style.cssText;document.body.replaceChildren(...doc.body.childNodes);}
  const deviceLabel=document.getElementById('tbDevLabel');if(deviceLabel)deviceLabel.textContent=scope.device?scope.device+' · 更新状态中':'未选择设备';
  if(reuse){document.querySelectorAll('.modal-overlay').forEach(el=>{el.hidden=true;});document.getElementById('tbDevWrap')?.classList.remove('open');}
  for(const node of bodyScripts){if(!valid())return false;if(reuse&&node.hasAttribute('data-shell'))continue;await script(node);}

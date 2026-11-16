@@ -22,7 +22,7 @@ async function navigate(raw,{device,replace=false,approved=false,initial=false,p
   const payload=await response.json();if(payload.redirect)return navigate(payload.redirect,{replace:true,approved:true});
   if(!response.ok)throw new Error(payload.message||payload.error||'页面暂时无法加载');
   const html=DeskbotPages.render(bundle,payload);if(turn!==serial)return false;
-  if(!initial&&!html.includes('class="topbar"')){ui.clean();location.assign(url.href);return true;}
+  if(!initial&&!html.includes('class="topbar"')){ui.clean();if(device!==undefined){try{sessionStorage.setItem('deskbot.current-device',device);}catch(_){}}location.assign(url.href);return true;}
   if(!await ui.render(html,payload,device,()=>turn===serial) || turn!==serial)return false;
   if(!initial&&!pop){history.replaceState({...history.state,y:oldY},'',displayed);}
   if(!initial&&!pop)history[replace?'replaceState':'pushState']({deskbot:true},'',url.pathname+url.search+url.hash);
