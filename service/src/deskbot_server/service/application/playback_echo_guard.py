@@ -44,10 +44,9 @@ class PlaybackEchoGuard:
             self._windows.append([req, now, now + 45])
         elif kind == "pb_progress" and req == self._active_req and self._windows:
             self._windows[-1][2] = now + 45
-        elif kind in {"pb_audio_end", "pb_end", "pb_cancelled", "pb_error"}:
-            if req == self._active_req and self._windows:
-                self._windows[-1][2] = now + .45
-                self._active_req = None
+        elif kind in {"pb_audio_end", "pb_end", "pb_cancelled", "pb_error"} and req == self._active_req and self._windows:
+            self._windows[-1][2] = now + .45
+            self._active_req = None
 
     def defer_onset(self, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now

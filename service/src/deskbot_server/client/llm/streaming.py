@@ -107,12 +107,14 @@ async def stream_tool_completion(
                     final_response = event.get("response") or {}
                     usage = _usage_from_response(final_response, protocol=cfg.protocol)
                     finished = True
-                elif kind in {"response.output_item.added", "response.function_call_arguments.delta"}:
-                    if (
+                elif (
+                    kind in {"response.output_item.added", "response.function_call_arguments.delta"}
+                    and (
                         kind == "response.function_call_arguments.delta"
                         or (event.get("item") or {}).get("type") == "function_call"
-                    ):
-                        first = False
+                    )
+                ):
+                    first = False
                 continue
             choices = event.get("choices") or []
             for choice in choices[:1]:
