@@ -81,6 +81,16 @@ def list_device_faces(device_id: str) -> dict[int, dict[str, Any]]:
     return {int(k): dict(v) for k, v in mem.items()}
 
 
+def get_perception_snapshot(device_id: str) -> dict:
+    """Read one atomic, allowlisted identity snapshot; never return embeddings."""
+    with _lock:
+        faces = _snapshots.get(device_id, {})
+        return {"observed_at": _detect_ts.get(device_id), "count": len(faces), "people": [
+            {"track_id": fid, "profile_id": face.get("id"), "name": face.get("person_name"),
+             "confidence": face.get("identity_score")} for fid, face in list(faces.items())[:5]
+        ]}
+
+
 def clear_device(device_id: str) -> None:
     """删除设备快照与检测时间戳（设备清除数据时调用）。
 

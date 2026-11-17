@@ -23,6 +23,27 @@ class RealtimeVoiceprint:
         self.task = None
         self.closed = False
         self.mute_until = 0.0
+        self.request_id = None
+        self.submitted_turn = None
+        self.use_turn_events = False
+
+    def begin_turn(self, request_id):
+        self.request_id = request_id
+        self.submitted_turn = None
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+
+    def finish_turn(self, request_id):
+        if request_id == self.request_id and self.voiced_frames >= 15:
+            self._submit()
+        self.reset()
+
+    def _submit(self):
+        if self.use_turn_events and (not self.request_id or self.submitted_turn == self.request_id):
+            return
+        if self.task is None or self.task.done() or self.task.cancelling():
+            self.submitted_turn = self.request_id
+            self.task = asyncio.create_task(self._identify(bytes(self.audio), self.request_id))
 
     def reset(self):
         self.audio.clear()
@@ -47,14 +68,13 @@ class RealtimeVoiceprint:
         self.quiet_frames = 0 if voiced else self.quiet_frames+1
         if self.quiet_frames < 30 and len(self.audio) < 8*32000:
             return
-        if self.voiced_frames >= 30 and (self.task is None or self.task.done()):
-            audio = bytes(self.audio)
-            self.task = asyncio.create_task(self._identify(audio))
+        if self.voiced_frames >= 30:
+            self._submit()
         self.reset()
 
-    async def _identify(self, pcm):
+    async def _identify(self, pcm, request_id):
         try:
-            await self.service.identify(device_id=self.device_id, pcm_bytes=pcm, sample_rate=16000)
+            await self.service.identify(device_id=self.device_id, pcm_bytes=pcm, sample_rate=16000, request_id=request_id)
         except Exception:
             # Perception failures must never terminate a conversation session.
             logger.warning("[vpr] realtime sample failed device_id=%s", self.device_id)

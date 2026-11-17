@@ -179,6 +179,6 @@ def test_scheduler_uses_external_agent_and_only_completes_after_playback(monkeyp
         await asyncio.gather(*list(scheduler._workers))
         stored = scheduled_task_mapper.get(task["id"])
         assert stored.status == ("completed" if played else "active")
-        announce.assert_awaited_once_with("该喝水了")
+        announce.assert_awaited_once_with("该喝水了", task_id=task["id"], scheduled_at=task["next_run_at"])
         assert not scheduler._devices
     asyncio.run(run())

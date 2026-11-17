@@ -537,6 +537,7 @@ class FlecketBridge(MossLiveBridge):
         self._response_media = {}
         self._announcements = {}
         self._response_announcements = {}
+        self._completed_reminders = deque(maxlen=128)
         super().__init__(hub, device_id, websocket,
                          client=client or FlecketLiveClient(flecket_config(device_id), tool_handler=execute_agent_tool), prefill_ms=prefill_ms)
         self.client.robot_tool = self.performances.schema()
@@ -546,10 +547,22 @@ class FlecketBridge(MossLiveBridge):
         self.client.agent_tools = self.agent_tools.schemas()
         self.client.agent_instructions = self.agent_tools.instructions()
         self.client.agent_tool_handler = self.agent_tools.execute
+        from deskbot_server.service.system_event_service import PerceptionEvents
+        self.perception_events = PerceptionEvents(device_id)
+        self.voiceprint.use_turn_events = True
+        self.client.system_event_provider = self._perception_for_turn
         self.media = DeviceMedia(self)
 
-    async def announce(self, text, *, timeout=45):
+    async def _perception_for_turn(self, turn_id):
+        self.voiceprint.finish_turn(turn_id)
+        return await self.perception_events.for_turn(turn_id)
+
+    async def announce(self, text, *, timeout=45, task_id=None, scheduled_at=None):
         """An external Agent reminder succeeds only after the ROM played it."""
+        from deskbot_server.service.system_event_service import reminder_event
+        event = reminder_event(self.device_id, text, task_id=task_id, scheduled_at=scheduled_at)
+        if event.event_id in self._completed_reminders:
+            return {"ok": True, "status": "completed", "deduplicated": True}
         if self.closed or not self.ready or not callable(getattr(self.client, "idle", None)) or not self.client.idle():
             return {"ok": False, "error": "设备离线或正在交互"}
         if self._announcements:
@@ -561,10 +574,13 @@ class FlecketBridge(MossLiveBridge):
         self._response_plans.clear()
         self._accepted_generation = None
         try:
-            if not await self.client.send_announcement(str(text)[:1000], token):
+            if not await self.client.send_announcement(event, token):
                 return {"ok": False, "error": "设备正在交互"}
             async with asyncio.timeout(timeout):
-                return await future
+                result = await future
+                if result.get("ok"):
+                    self._completed_reminders.append(event.event_id)
+                return result
         except (TimeoutError, asyncio.CancelledError) as exc:
             for run in list(self.runs.values()):
                 if run.announcement == token:
@@ -666,6 +682,7 @@ class FlecketBridge(MossLiveBridge):
 
     async def _on_event(self, action, data):
         if action == "input.speech.started":
+            self.voiceprint.begin_turn(data.get("turn_id"))
             self._performance_generation = getattr(self.client, "_input_generation", self._performance_generation + 1)
             self._plans.clear()
             self._response_plans.clear()

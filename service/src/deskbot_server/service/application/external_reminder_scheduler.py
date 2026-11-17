@@ -73,7 +73,7 @@ class ExternalReminderScheduler:
             if not callable(announce) or not await asyncio.to_thread(get_auto_reply, did):
                 await asyncio.to_thread(mapper.release_claim, task_id, "设备离线、未启用自动回复或不支持外部提醒")
                 return
-            result = await announce(item["description"])
+            result = await announce(current["description"], task_id=task_id, scheduled_at=current["next_run_at"])
             if result.get("ok"):
                 await asyncio.to_thread(finish_scheduled_task, task_id, ok=True, summary="设备已确认播完提醒")
             else:
