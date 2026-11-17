@@ -1,0 +1,253 @@
+{% extends "base_2c.html" %}
+{% block page_title %}模型配置 · 小歪{% endblock %}
+{% block extra_head %}
+<script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>
+<style>
+.cap-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-top:4px}
+.cap-card{background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--rl);padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+.cap-head{display:flex;align-items:center;gap:10px}
+.cap-head .cap-ico{width:34px;height:34px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--accent)}
+.cap-head b{font-size:15px;color:var(--ink)}
+.cap-head small{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--faint)}
+.cap-warn{display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.5;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:8px 10px}
+.cap-warn.err{color:#ff6b6b;background:rgba(255,107,107,.08);border-color:rgba(255,107,107,.3)}
+.cap-opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;cursor:pointer;transition:border-color .15s}
+.cap-opt:hover{border-color:var(--dim)}
+.cap-opt.on{border-color:var(--accent);background:rgba(255,90,0,.05)}
+.cap-opt input{margin-top:3px;accent-color:#ff5a00}
+.cap-opt b{font-size:13px;color:var(--ink)}
+.cap-opt small{display:block;font-size:12px;color:var(--dim);line-height:1.5;margin-top:3px}
+.cap-opt.disabled{opacity:.45;cursor:not-allowed}
+.cap-opt.disabled input{pointer-events:none}
+.cap-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;font-size:10px;letter-spacing:.05em;vertical-align:1px}
+.cap-badge.exp{background:#2b1010;color:#ff6b6b;border:1px solid rgba(255,107,107,.4)}
+.cap-badge.svc-off{background:#1f232d;color:#8a8a94}
+.cap-serv{display:inline-block;margin-left:6px;font-family:var(--mono);font-size:10px}
+.cap-serv.on{color:#4ade80}
+.cap-serv.off{color:#ff6b6b}
+.cap-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:auto}
+.cap-cur{font-size:12px;color:var(--faint)}
+.cap-cur b{color:var(--dim);font-family:var(--mono);font-weight:600}
+.cap-ovr{font-size:12px;line-height:1.5;color:#7dd3fc;background:rgba(56,130,246,.08);border:1px solid rgba(56,130,246,.25);border-radius:8px;padding:8px 10px;display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.cap-ovr .btn{padding:2px 9px;font-size:11px;line-height:1.5}
+.cap-env{font-size:12px;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:8px 10px;line-height:1.6}
+.cap-meta{font:11px/1.6 "Space Mono",monospace;color:var(--faint);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;word-break:break-all;margin:0}
+.cap-hint{font-size:11px;color:var(--faint);line-height:1.5}
+.cap-apply{min-width:96px}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.cap-tts-cur{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim)}
+.cap-tts-cur b{color:var(--ink)}
+.cap-tts-note{font-size:12px;color:var(--faint);line-height:1.6}
+/* TTS 配置/测试对话框 */
+.rts-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:100}
+.rts-modal-box{background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--rl);box-shadow:var(--shadow);width:min(560px,92vw);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
+.rts-modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line)}
+.rts-modal-head b{font-size:14px;color:var(--ink)}
+.rts-modal-body{padding:14px 18px;overflow:auto}
+.rts-modal-body h4{font-size:12px;color:var(--dim);letter-spacing:.06em;margin:0 0 6px}
+.rts-field{margin-bottom:12px}
+.rts-field>label{display:block;margin-bottom:6px;font-size:12px;font-weight:600}
+#flecket-agent{display:block;width:100%;margin-bottom:14px}
+.rts-field textarea,.rts-field input{width:100%;background:var(--panel2);border:var(--bw) solid var(--line);border-radius:8px;color:var(--ink);padding:9px 11px;font:13px/1.6 inherit;box-sizing:border-box}
+.rts-field select{background:var(--panel2);border:var(--bw) solid var(--line);border-radius:8px;color:var(--ink);padding:8px 10px;font-size:13px;max-width:100%}
+.rts-hint{font-size:11px;color:var(--faint);line-height:1.5}
+.rts-actions{display:flex;align-items:center;gap:10px;margin-top:4px}
+.rts-audio{display:block;width:100%;height:36px;margin:10px 0 6px;border:var(--bw) solid var(--line);border-radius:8px;background:var(--panel2)}
+.rts-ok{font-size:12px;color:#4ade80}
+.rts-fail{font-size:12px;color:#ff6b6b;line-height:1.5}
+.rts-meta{font:11px/1.6 "Space Mono",monospace;color:var(--faint);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:8px 0 0;word-break:break-all}
+.cap-opt{position:relative}
+.cap-opt-main{flex:1}
+.cap-opt-test{margin-left:6px;padding:3px 10px;font-size:11px;line-height:1.5;flex-shrink:0}
+/* 顶部控制面板：自动回复 / 人脸跟随（设备级，devices 表 auto_reply / servo_mode） */
+.ctl-row{display:flex;align-items:stretch;flex-wrap:wrap;gap:12px 26px;background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--rl);padding:14px 18px;margin:0 0 16px}
+.ctl-kv{display:flex;align-items:center;gap:12px;padding:2px 0}
+.ctl-name{display:block;font-size:10px;letter-spacing:.14em;color:var(--faint);margin-bottom:7px;text-transform:uppercase}
+.ctl-copy{display:flex;flex-direction:column;gap:2px;min-width:170px}
+.ctl-copy b{font-size:13px;color:var(--ink)}
+.ctl-copy small{font-size:11px;color:var(--faint);line-height:1.5}
+.ctl-div{width:1px;align-self:stretch;background:var(--line);margin:2px 0}
+.ctl-btns{display:flex;gap:8px;flex-wrap:wrap}
+.ctl-btns .btn{font-size:12px}
+.ctl-btns .btn.on{border-color:var(--accent);background:rgba(255,90,0,.08);color:var(--accent)}
+.ctl-switch{position:relative;display:inline-block;width:42px;height:24px;flex-shrink:0;vertical-align:middle}
+.ctl-switch input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;z-index:1}
+.ctl-switch i{position:absolute;inset:0;border-radius:999px;background:var(--panel2);border:1px solid var(--line);transition:background .15s,border-color .15s}
+.ctl-switch i::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--dim);transition:left .15s,background .15s}
+.ctl-switch.on i{background:rgba(255,90,0,.22);border-color:var(--accent)}
+.ctl-switch.on i::after{left:20px;background:var(--accent)}
+.ctl-switch input:disabled{cursor:not-allowed}
+.ctl-switch input:disabled ~ i{opacity:.45}
+</style>
+{% endblock %}
+{% block content %}
+<div id="robotApp">
+  <div class="pagehd">
+    <div>
+      <div class="eyebrow">MODEL CONFIGURATION</div>
+      <h1>模型配置</h1>
+      <p>为当前设备配置外部 Agent、服务器地址、密钥和识别服务。</p>
+    </div>
+    <div class="btngroup">
+      <button type="button" class="btn ghost" @click="load">刷新</button>
+    </div>
+  </div>
+
+  <div v-if="err" class="cap-warn err" style="margin-bottom:12px">[[ err ]]</div>
+  <div v-if="msg" class="cap-warn" style="margin-bottom:12px">[[ msg ]]</div>
+
+  <section class="cap-card" aria-label="模型选择" style="margin-bottom:16px">
+    <div class="cap-head"><div><b>模型选择</b><small>当前设备 · 保存后自动重连</small></div></div>
+    <div class="rts-field">
+      <select v-model="conversationDraft.provider" @change="changeConversationProvider" :disabled="noDevice || conversationBusy" aria-label="模型选择">
+        <option value="moss-live">MOSS Live 实时语音</option><option value="flecket">外部 Agent（flecket / Realtime）</option>
+      </select>
+    </div>
+    <div>
+      <div v-if="conversationDraft.provider==='flecket'" class="rts-field">
+        <label for="flecket-agent">已保存的 Agent</label>
+        <select id="flecket-agent" :value="conversationAgentModel" @change="selectAgent($event.target.value)" :disabled="noDevice || conversationBusy">
+          <option value="">选择预设，或在下方填写其他 Agent 地址</option>
+          <option v-for="agent in conversationProfile.agents || []" :key="agent.model" :value="agent.model">[[ agent.name ]]</option>
+        </select>
+        <label for="flecket-url">Agent 服务地址</label>
+        <input id="flecket-url" type="text" v-model="conversationDraft.url" placeholder="ws://127.0.0.1:9110/v1/realtime?model=flecket">
+      </div>
+      <div class="rts-field"><label for="realtime-key">[[ conversationDraft.provider==='flecket' ? 'flecket API Key' : 'MOSS API 密钥' ]]</label>
+        <input id="realtime-key" type="password" autocomplete="new-password" v-model="conversationDraft.api_key"
+               :placeholder="conversationProfile.configured ? '已配置，留空保留' : (conversationDraft.provider==='flecket' ? '填写密钥，或使用服务端 FLECKET_API_KEY' : '填写密钥，或使用服务端 MOSS_API_KEY')">
+      </div>
+      <div class="rts-field"><label for="realtime-voice">声音</label>
+        <input v-if="conversationDraft.provider==='flecket'" id="realtime-voice" type="text" maxlength="128" v-model="conversationDraft.voice" placeholder="留空使用 flecket 服务默认音色">
+        <select v-else id="realtime-voice" v-model="conversationDraft.voice"><option v-for="(name,id) in conversationProfile.voices" :key="id" :value="id">[[ name ]]</option></select>
+      </div>
+      <div class="rts-field"><label for="realtime-prompt">人设</label><textarea id="realtime-prompt" rows="3" maxlength="4000" v-model="conversationDraft.prompt" :placeholder="conversationDraft.provider==='flecket' ? '留空使用 Agent 已保存的人设和工具' : '填写人设'"></textarea></div>
+      <label v-if="conversationDraft.provider==='flecket'"><input type="checkbox" v-model="conversationDraft.allow_barge_in"> 允许播放时插话（需设备回声消除稳定，否则可能自我打断）</label>
+      <div v-if="conversationDraft.provider==='flecket' && !conversationDraft.allow_barge_in" class="cap-hint">播报期间暂停接收语音，播完后恢复，避免机器人听到自己的声音并反复回答。</div>
+      <label><input type="checkbox" v-model="conversationDraft.camera"> 将摄像头画面发送给 [[ conversationDraft.provider==='flecket' ? 'flecket' : 'MOSS Live' ]]</label>
+      <div class="cap-hint">所选服务直接负责语音识别、对话生成与语音合成；启用摄像头后会发送画面。口型由机器人本地生成。</div>
+    </div>
+    <div class="cap-foot"><span class="cap-cur">当前：[[ conversation.provider==='flecket' ? 'flecket' : 'MOSS Live' ]]</span>
+      <button class="btn" :disabled="noDevice || conversationBusy" @click="saveConversation">[[ conversationBusy ? '保存中…' : '保存模型选择' ]]</button>
+    </div>
+    <div class="cap-hint">选择外部 Agent 后，直接连接其服务；声音、人设留空时使用 Agent 的配置。</div>
+  </section>
+
+  <div class="cap-grid">
+    <section class="cap-card" v-for="kind in ['face','voiceprint']" :key="kind">
+      <div class="cap-head"><b>[[ kind==='face' ? '人脸识别' : '声纹识别' ]]</b></div>
+      <div class="rts-field"><label :for="'selected-'+kind">识别服务</label>
+        <select :id="'selected-'+kind" v-model="selected[kind]" :disabled="perceptionBusy">
+          <option v-for="c in capability(kind).candidates" :key="c.id" :value="c.id">[[ c.name ]]</option>
+        </select>
+      </div>
+      <button type="button" class="btn" :disabled="perceptionBusy || selected[kind]===capability(kind).current" @click="applyPerception(kind)">应用</button>
+    </section>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const { createApp } = Vue;
+createApp({
+  delimiters: ['[[', ']]'],
+  data(){
+    return {
+      status:null, isModelConfiguration:{{ model_configuration|tojson }},
+      conversationDraft:{provider:'flecket',api_key:'',voice:'',prompt:'',camera:false,url:'',allow_barge_in:false},
+      conversationLoaded:false, conversationBusy:false,
+      selected:{face:null,voiceprint:null}, perceptionBusy:false, behaviorBusy:false,
+      err:'',msg:'',
+    };
+  },
+  computed:{
+    conversation(){ return this.status?.conversation || {provider:'flecket',configured:false,profiles:{}}; },
+    conversationProfile(){ return this.conversation.profiles?.[this.conversationDraft.provider] || this.conversation; },
+    conversationAgentModel(){
+      try{
+        const model=new URL(this.conversationDraft.url).searchParams.get('model');
+        return (this.conversationProfile.agents || []).some(a=>a.model===model) ? model : '';
+      }catch(e){ return ''; }
+    },
+    noDevice(){ return !this.status?.device_id; },
+    behavior(){ return this.status?.behavior || {auto_reply:true}; },
+    autoReplyOn(){ return !!this.behavior.auto_reply; },
+  },
+  methods:{
+    async api(url,opts){
+      const r=await fetch(url,{cache:'no-store',...opts});
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok || data.ok===false) throw new Error(data.error || ('HTTP '+r.status));
+      return data;
+    },
+    capability(kind){ return this.status?.capabilities?.[kind] || {candidates:[],current:null}; },
+    async load(){
+      this.err=''; this.msg='';
+      try{
+        this.status=await this.api('/api/robot-settings');
+        if(!this.conversationLoaded){
+          Object.assign(this.conversationDraft,this.conversation,{api_key:''});
+          this.conversationLoaded=true;
+        }
+        for(const kind of ['face','voiceprint']){
+          if(this.selected[kind]===null) this.selected[kind]=this.capability(kind).current;
+        }
+      }catch(e){ this.err='加载失败：'+e.message; }
+    },
+    selectAgent(model){
+      if(!model) return;
+      try{
+        const url=new URL(this.conversationDraft.url);
+        url.searchParams.set('model',model);
+        Object.assign(this.conversationDraft,{url:url.toString(),voice:'',prompt:''});
+      }catch(e){ this.err='请先填写有效的 Agent 服务地址'; }
+    },
+    changeConversationProvider(){
+      const provider=this.conversationDraft.provider;
+      const profile=this.conversation.profiles?.[provider] || {};
+      this.conversationDraft={provider,voice:'',prompt:'',camera:false,url:'',allow_barge_in:false,...profile,api_key:''};
+    },
+    conversationPayload(){
+      const d=this.conversationDraft;
+      if(this.isModelConfiguration) return d;
+      return {provider:d.provider,voice:d.voice,prompt:d.prompt,camera:d.camera,allow_barge_in:d.allow_barge_in};
+    },
+    async saveConversation(){
+      if(this.noDevice || this.conversationBusy) return;
+      this.err=''; this.msg=''; this.conversationBusy=true;
+      try{
+        const d=await this.api('/api/robot-settings/conversation',{method:'POST',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify(this.conversationPayload())});
+        this.status.conversation=d.conversation;
+        Object.assign(this.conversationDraft,d.conversation,{api_key:''});
+        this.msg='模型选择已保存，机器人将自动重连';
+      }catch(e){ this.err='保存失败：'+e.message; }
+      finally{ this.conversationBusy=false; }
+    },
+    async toggleAutoReply(){
+      if(this.noDevice || this.behaviorBusy) return;
+      this.err=''; this.msg=''; this.behaviorBusy=true;
+      try{
+        const d=await this.api('/api/robot-settings/behavior',{method:'POST',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_reply:!this.autoReplyOn})});
+        this.status.behavior=d.behavior;
+        this.msg='自动回复已保存';
+      }catch(e){ this.err='保存失败：'+e.message; }
+      finally{ this.behaviorBusy=false; }
+    },
+    async applyPerception(kind){
+      if(this.perceptionBusy) return;
+      this.err=''; this.msg=''; this.perceptionBusy=true;
+      try{
+        const d=await this.api('/api/robot-settings/'+kind,{method:'POST',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:this.selected[kind]})});
+        this.status={...this.status,...d};
+        this.msg='识别服务设置已保存';
+      }catch(e){ this.err='保存失败：'+e.message; }
+      finally{ this.perceptionBusy=false; }
+    },
+  },
+  mounted(){ this.load(); },
+}).mount('#robotApp');
+</script>
+{% endblock %}

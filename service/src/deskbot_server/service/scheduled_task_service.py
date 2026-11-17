@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -201,21 +202,26 @@ def create_scheduled_task(
 
     kind = validate_task_kind(task_kind)
     expr_raw = str(cron or cron_expr or "").strip()
+    relative_target = None
     if not expr_raw:
         if delay_minutes is not None or delay_seconds is not None:
+            seconds = float(delay_minutes) * 60 if delay_minutes is not None else float(delay_seconds)
+            if not math.isfinite(seconds) or not 0 < seconds <= 366*86400:
+                raise ValueError("提醒延迟必须大于 0，且不超过一年")
+            relative_target = cst_now() + timedelta(seconds=seconds)
             expr_raw = delay_to_once_cron(delay_minutes=delay_minutes, delay_seconds=delay_seconds)
             kind = _TASK_ONCE
         else:
             raise ValueError("需要 cron 或 delay_minutes/delay_seconds")
     expr = normalize_cron_expr(expr_raw)
-    nxt = compute_next_run(expr)
-    if nxt <= cst_now():
+    nxt = relative_target or compute_next_run(expr)
+    if relative_target is None and nxt <= cst_now():
         nxt = compute_next_run(expr, base=cst_now() + timedelta(seconds=1))
 
     sid = str(session_id or "").strip() or None
     with db_transaction() as tx:
         existing = mapper.find_active(dev, desc, expr, kind, transaction=tx)
-        if existing is not None:
+        if existing is not None and (relative_target is None or abs((_as_cst(existing.next_run_at)-relative_target).total_seconds()) <= 2):
             return {**_task_to_dict(existing), "deduped": True}
         uid = _new_id()
         mapper.create(uid, dev, desc, expr, kind, _sql_time(nxt), sid, _sql_time(cst_now()), transaction=tx)

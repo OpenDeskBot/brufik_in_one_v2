@@ -21,7 +21,7 @@ const assert = require('node:assert/strict');
     await page.waitForURL('**/home');
     await page.locator('#home').waitFor();
     const pages = ['/home','/my/devices','/my/memories','/my/reminders','/my/people','/advanced',
-      '/robot-settings','/expr','/quest','/dev/users','/debug/devices','/debug/llm','/debug/tts','/debug/simulation','/flash','/my/miot','/lab'];
+      '/robot-settings','/model-settings','/expr','/quest','/dev/users','/debug/devices','/debug/llm','/debug/tts','/debug/simulation','/flash','/my/miot','/lab'];
     for (const path of pages) {
       await page.goto(base+path);
       await page.waitForFunction(() => !document.querySelector('#page-status'));

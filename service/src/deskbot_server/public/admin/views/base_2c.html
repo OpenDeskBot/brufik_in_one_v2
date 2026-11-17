@@ -72,10 +72,13 @@
         <div class="lbl">日常</div>
         <a href="{{ url_for('app2c.memories') }}" class="navlink {{ 'on' if active_nav=='memory' }}">{{ icon('memory') }}记忆</a>
         <a href="{{ url_for('app2c.reminders') }}" class="navlink {{ 'on' if active_nav=='remind' }}">{{ icon('remind') }}提醒</a>
+        <a href="{{ url_for('media.page') }}" class="navlink {{ 'on' if active_nav=='media' }}">{{ icon('memory') }}媒体库</a>
         <a href="{{ url_for('app2c.people') }}" class="navlink {{ 'on' if active_nav=='people' }}">{{ icon('people') }}认识的人</a>
         <a href="{{ url_for('app2c.miot') }}" class="navlink {{ 'on' if active_nav=='miot' }}">{{ icon('miot') }}米家</a>
         {% if nav_is_developer %}
         <div class="lbl">开发者选项</div>
+        <a href="{{ url_for('perception.page') }}" class="navlink {{ 'on' if active_nav=='perception' }}">{{ icon('service') }}感知服务</a>
+        <a href="{{ url_for('robot_settings.models') }}" class="navlink {{ 'on' if active_nav=='model_settings' }}">{{ icon('robot') }}模型配置</a>
         <a href="{{ url_for('app2c.expr') }}" class="navlink {{ 'on' if active_nav=='expr' }}">{{ icon('expr') }}表情设计</a>
         <a href="{{ url_for('quest.page') }}" class="navlink {{ 'on' if active_nav=='quest' }}">{{ icon('quest') }}剧情设计</a>
         <a href="{{ url_for('debug.dev_users_page') }}" class="navlink {{ 'on' if active_nav=='users' }}">{{ icon('users') }}用户管理</a>

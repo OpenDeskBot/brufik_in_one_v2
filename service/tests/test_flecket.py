@@ -140,12 +140,46 @@ def test_saved_agent_clock_tool_continues_once_after_generation():
         ws.emit("response.done", response=response)  # Duplicate events must not rerun tools.
         ws.emit("conversation.item.input_audio_transcription.completed", transcript="几点")
         assert (await value.receive()).data["text"] == "几点"
+        async with asyncio.timeout(2):
+            while sum(event["type"] == "response.create" for event in ws.sent) != 1:
+                await asyncio.sleep(0)
         results = [event["item"] for event in ws.sent if event["type"] == "conversation.item.create"]
         assert len(results) == 2
         clock = json.loads(results[0]["output"])
         assert clock["local_time"].endswith("+08:00")
         assert "error" in json.loads(results[1]["output"])
         assert sum(event["type"] == "response.create" for event in ws.sent) == 1
+        await value.close()
+
+    asyncio.run(run())
+
+
+def test_silent_mixed_tools_execute_gesture_first_without_spoken_continuation():
+    async def run():
+        value = client()
+        value.agent_tools = [{"name": "play_music"}]
+        executed = []
+
+        async def performance(arguments, **context):
+            executed.append(("robot_perform", arguments))
+            return {"ok": True, "status": "completed", "speak": arguments["speak"]}
+
+        async def generic(name, arguments, **context):
+            executed.append((name, arguments))
+            return {"ok": True, "status": "started", "speak": arguments["speak"]}
+
+        value.performance_handler = performance
+        value.agent_tool_handler = generic
+        await value._complete_tools({"id": "mixed", "status": "completed", "output": [
+            {"type": "function_call", "call_id": "song", "name": "play_music",
+             "arguments": '{"asset_id":"song","speak":false}'},
+            {"type": "function_call", "call_id": "gesture", "name": "robot_perform",
+             "arguments": '{"gesture":"nod"}'},
+        ]})
+        assert [name for name, _ in executed] == ["robot_perform", "play_music"]
+        assert all(args["speak"] is False for _, args in executed)
+        assert len(value.ws.sent) == 2
+        assert all(event["type"] == "conversation.item.create" for event in value.ws.sent)
         await value.close()
 
     asyncio.run(run())

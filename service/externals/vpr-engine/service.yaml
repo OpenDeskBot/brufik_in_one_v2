@@ -28,4 +28,4 @@ healthcheck:
   startup_grace_s: 180 # torch + ResNet34 模型加载；超时后进程仍活只标记 unhealthy 不杀
   timeout_s: 3
   max_failures: 3
-auto_start: false
+auto_start: true

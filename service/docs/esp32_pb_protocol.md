@@ -532,3 +532,15 @@ ROM 校验下载字节数、SHA-256、格式和资源引用，写入 FFat 双槽
 资源打包器统一输出 `lipsync={classifier:"rms-v1",closed_phoneme:"sil",open_phoneme:"a"}`（开闭嘴资源可自定义）。旧文档中的 MFCC 配置在导出时转换成 RMS 并丢弃音色模板、元音映射和分类参数；这些旧字段不再影响资源内容版本。口型完全由实际播放 PCM 音量与开闭嘴资源驱动。普通口播不发送 TTS 音素。新固件若因资源更新失败而仍使用旧包，服务端会省略版本不匹配的可选表情，继续下发音频／舵机，不退回在线传输图元。独立表情命令仍检查版本和 ID。
 
 本地待机与远程指令由同一个 ROM 调度器仲裁；无下行指令到期后按资源包播放动画／动作，远程轮次未结束时不启动。新远程指令立即终止待机执行，既不丢弃新队列内容，也不向网络报告虚假的播放完成。服务端生成结束、音频执行结束与表情／舵机全部完成继续分别处理。
+
+## ROM 工具命令（rom_tools_v1）
+
+ROM 在 device_hello 声明 `rom_tools_v1` 与 `image_rgb565_v1`。控制包走同一条已打包的 WebSocket，与 PB 发送共用串行队列；请求 id 为 32 位十六进制，服务端只接受当前连接正在等待的 id。
+
+```json
+{"type":"rom_command","id":"0123456789abcdef0123456789abcdef","op":"volume","arguments":{"action":"adjust","value":10},"next_bin_len":0}
+```
+
+`volume` 支持 get/set/adjust；set 0～100，adjust -100～100，计算后限制到 0～100。返回 `rom_result`、相同 id、ok、status=completed 和实际 volume。相同 id 的近期重复包使用缓存结果，不重复相对调节。
+
+`image` 的 arguments 为 width=284、height=240、duration_ms=1000～30000；紧随 JSON 的二进制是精确 136320 字节的 RGB565 小端像素。屏幕任务拥有像素缓冲，绘制后返回 status=displayed，持续到约定时长或取消；禁止在 WS 接收任务中长时间绘制。`stop_image` 无 binary，取消显示并恢复机器人画面。队列丢弃、资源不足或参数错误返回 ok=false。控制包不改变 PB 的音频元数据或 epoch。

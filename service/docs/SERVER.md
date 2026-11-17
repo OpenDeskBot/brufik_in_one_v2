@@ -1,6 +1,6 @@
 # deskbot-server
 
-主服务：VAD → 外部 funasr 服务（独立进程，9102）→ LLM（多轮 tools）→ TTS → pb 下行。环境搭建见 [../README.md](../README.md)。
+主服务仅桥接外部 Flecket / MOSS Live 会话，VAD、ASR、LLM、TTS 统一由上游负责。环境搭建见 [../README.md](../README.md)。
 
 ## 启动
 
@@ -11,7 +11,7 @@ SKIP_SETUP=1 ./start.sh
 ```
 
 ```bash
-cp .env.example .env   # 填 SILICONFLOW_API_KEY（系统默认大脑，硅基流动）
+cp .env.example .env   # 配置 FLECKET_API_KEY 或 MOSS_API_KEY
 ```
 
 | 端口 | 服务 |
@@ -26,6 +26,8 @@ cp .env.example .env   # 填 SILICONFLOW_API_KEY（系统默认大脑，硅基�
 
 | 路径 | 说明 |
 |------|------|
+| `/robot-settings` | 机器人配置：模型选择后展开模型、音色、人设等使用设置；不显示服务地址和密钥 |
+| `/model-settings` | 开发者选项 → 模型配置：当前设备的 Agent 预设、服务器地址、API Key 及实时会话连接参数，仅开发者可进入 |
 | `/app` | 工作台：用量概览 |
 | `/app/devices` | 我的设备：绑定、切换 `device_id` |
 | `/app/scheduled-tasks` | 定时任务：cron 任务列表（东八区），可删除 |
@@ -67,24 +69,35 @@ cp .env.example .env   # 填 SILICONFLOW_API_KEY（系统默认大脑，硅基�
 
 ---
 
-## LLM 与工具
+## 外部实时会话与工具
 
-对话采用 **JSON 回复 + `tools` 数组**；有 tools 时服务端执行后再次调用 LLM（最多 8 轮），无 tools 时走 TTS / pb。
+所有设备仅支持 `flecket` 与 `moss-live`。旧 `local` 选择在启动迁移时改为
+`flecket`，新设备默认 Flecket；既有外部服务配置、密钥和旧模型参数保留。
+本地模型组合已从启动、设备语音入口和模型设置页移除，不再作为失败回退。
 
-| 工具 | 说明 |
-|------|------|
-| `schedule_task` | cron 定时任务增删改查（北京时间）；用户说「N 分钟后提醒我…」时**必须**调用，禁止口头答应 |
-| `set_camera_follow` | 人脸舵机跟随 |
-| `capture_camera` | 获取最近相机帧 |
-| `register_face` | 注册 / 更新人脸档案 |
-| `memory_add` / `memory_delete` | 长期记忆 |
-| `session` | 查询对话 session |
-| `webfetch` / `websearch` | 联网抓取 / 搜索 |
-| `read` / `write` | 读写 `data/{device_id}/tmp/` |
+Flecket 保存的 Agent 管理基础人设、工具定义和音色。连接时读取原工具列表，合并当前设备的工具；同名内置工具采用设备端定义，其他上游工具保留。原人设后追加机器人规则和当前记忆，音色留空时沿用上游配置。
 
-定时任务由后台调度器每分钟轮询，到期后复用创建时的 `session_id` 作为 LLM 上下文并播报提醒。
+| 工具 | 执行位置 | 行为 |
+|---|---|---|
+| `robot_perform` | 服务端编排、ROM 执行 | 预设动作与表情；支持说话前、同时、说话后，以及纯动作 |
+| `get_current_time` | 服务端 | 北京时间与 UTC |
+| `memory` | 服务端 | 本设备长期记忆 list/get/add/update/delete；写入后更新会话记忆上下文 |
+| `schedule_task` | 服务端 | 一次性、周期性提醒 CRUD，支持相对秒／分钟与五段 cron |
+| `rom_volume` | ROM | get/set/adjust 实际扬声器音量，确认后同步设备设置 |
+| `media_list` | 服务端 | 查询本设备上传的音乐与图片 |
+| `play_music` | 服务端传输、ROM 播放 | 默认先简短回复再播放；speak=false 直接播放 |
+| `show_image` | ROM | 默认先回复再展示；speak=false 直接展示，收到实际绘制回执才报告 displayed |
+| `stop_media` | 服务端与 ROM | 停止音乐、取消图片 |
 
-人设与工具说明：`data/global/llm_system.txt`（全局模板，所有设备共用，不再复制到设备目录）。
+工具回传遵循 `function_call_output`。慢工具在独立任务中执行，不阻塞音频和打断接收；call_id 去重，重连或新输入阻止旧轮续写。所有工具可用 `speak=false` 安静执行。未知工具返回错误，不执行任意代码。ROM 工具只在设备声明对应能力时注册。
+
+`robot_perform` 参数：`gesture`、`expression`（当前设备枚举，none 表示不使用）、`duration_ms`（200～3000）、`timing`（before_speech/with_speech/after_speech）、可选 `speak`。一轮最多一个表现计划；说话同时执行的轨迹和音频共用 PB/epoch，必要时补静音尾段维持设备时间轴，回传上游的已播放语音位置不包含补齐静音。纯动作等待 PB 完成回执；scheduled 只是已安排。
+
+新的外部提醒调度器默认每 5 秒轮询，由 `scheduler.external_poll_interval_sec` 调整（1～60）。只在一个实例启用，`DESKBOT_SCHEDULER_ENABLED=0` 可关闭。提醒通过连接中的 Flecket 发起新回复，真正播完才完成；用户交互、离线、打断时重试，默认超过 5 分钟未能播报的提醒按现有过期规则记为失败。重启会恢复未完成的 running 任务。不会调用旧 ChatService 或本地 TTS。剧情／社交主动对话仍停用。
+
+媒体页面 `/my/media`，API：`GET/POST /api/device-media`、`GET /api/device-media/{id}/file`、`DELETE /api/device-media/{id}`、`POST /api/device-media/control`。均校验当前用户的设备归属。资源按设备隔离，Agent 使用 id 访问，不能传任意本地路径或下载 URL。上传上限 20 MB，音乐保留前 3 分钟，最多 100 个资源；ffmpeg 仅启用受限本地媒体格式。
+
+MOSS Live 继续提供直接语音桥接，以上 Agent 工具和主动提醒目前接在 Flecket。旧本地 TTS、场景口播入口 `/api/device_tts`、`/api/scene_playbook/run` 返回 410；直接舵机、表情、PB 播放接口继续可用。
 
 ---
 
@@ -106,9 +119,10 @@ cp .env.example .env   # 填 SILICONFLOW_API_KEY（系统默认大脑，硅基�
 
 ## 配置
 
-- **`.env`**：`SILICONFLOW_API_KEY`（硅基流动，**系统默认大脑的密钥**；`config.yaml` 的 `llm.api_key_env` 指名此变量，`llm_provider` 为空的设备共用它——见下方「LLM 密钥分层」）、`ARK_API_KEY` / `ARK_MODEL`（火山方舟，仅设备选用 ark 时需要；密钥实际存 `devices.llm_param["ark"]`）、`DOUBAO_TTS_*`（豆包 TTS）、`DOUBAO_ASR_API_KEY` / `DOUBAO_ASR_RESOURCE_ID` / `DOUBAO_ASR_UID`（豆包 ASR 2.0 全局兜底凭证；设备级配置优先存 `devices.asr_param`）、`ASR_MODEL_DIR`、`DESKBOT_WEB_PUBLIC_HOST`（多网卡时填局域网 IP）、`DESKBOT_WEB_SECRET_KEY`（生产必设）
-- **LLM 密钥分层**：系统默认（`config.yaml` llm 段，当前 = 硅基流动）的密钥是**服务端公共凭证**，从 `llm.api_key_env` 指名的环境变量读取，所有未单独配置的设备共用；设备级 `ark` 的密钥存在设备表 `llm_param["ark"]`，互不影响。**改 `.env` 后必须重启服务**才生效（`load_dotenv` 只在启动时读一次）。
-- **`config.yaml`**：`audio.input_codec`、`llm.*`（系统默认大脑：protocol / base_url / model_name / api_key_env / context_window）、`tts.provider`（`moss-tts-nano` 默认 / `doubao`）、`server.asr_chat_device_pb_only`、`debug.asr_auto_reply`
+- **`.env`**：`FLECKET_API_KEY` / `MOSS_API_KEY`，以及 Web 会话配置。
+- **`config.yaml`**：`conversation.flecket` 配置默认地址和 Agent 清单；设备保存的地址优先。音频和 PB 设置用于媒体传输。
+- **设备配置**：`conversation_provider` / `conversation_param` 保存外部服务选择和连接参数，API 不回显密钥。
+- 主服务启动不再下载 Silero VAD 模型，也不依赖进程内 ONNX Runtime。
 
 架构概要：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
@@ -129,3 +143,11 @@ python tools/test_client.py \
 source .venv/bin/activate
 pytest tests/ -q
 ```
+
+## 感知服务管理
+
+`/perception-services` 与 `/api/perception-services` 为开发者入口，仅允许人脸 `insightface-engine` 和声纹 `wespeaker-resnet34`。`POST /api/perception-services/{name}/{operation}` 支持 install/start/stop/restart/auto-start；后者参数为布尔型 enabled。原 `/api/services` 和本地语音编排继续停用。
+
+两个独立进程由应用启动时的限定管理器拉起并监控，自动启动选择保存在 `data/services/state.json`，应用退出时先关闭实时会话再停止感知进程。声纹首次安装需在页面安装；已有独立环境可经部署检查后复用。健康检查要求 model_ready，且人脸 embedding_ready 为真；进程启动或端口可访问不代表模型就绪。
+
+Realtime 摄像头分支同时启动限频人脸分析，保留即时网页预览；Flecket/MOSS 上传 PCM 同时交给有界声纹采样器。识别快照供实验台和人物注册使用。本次不自动将识别姓名注入 Flecket 人设，也不替换上游 VAD、ASR、LLM 或 TTS。

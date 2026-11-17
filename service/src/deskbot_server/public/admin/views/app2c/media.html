@@ -1,0 +1,68 @@
+{% extends "base_2c.html" %}
+{% block page_title %}媒体库 · 小歪{% endblock %}
+{% block extra_head %}
+<script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>
+<style>
+.media-panel{background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--rl);padding:20px;margin-bottom:18px}
+.media-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.media-row label{display:grid;gap:6px;min-width:130px}
+.media-row input,.media-row select{max-width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--ink)}
+.media-row label{max-width:100%;min-width:0}.media-row input[type=file]{width:100%;box-sizing:border-box}
+.media-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:18px}
+.media-card{display:flex;flex-direction:column;gap:12px;min-width:0}.media-card img{width:100%;height:210px;object-fit:contain;background:#171717;border-radius:8px}
+.media-card audio{width:100%;max-width:100%}.media-card h3{margin:0;overflow-wrap:anywhere}.media-note{color:var(--dim);font-size:13px;line-height:1.6}
+.media-error{color:#b42318}.media-success{color:#197044}.media-feedback{min-height:24px;margin:12px 0}
+</style>
+{% endblock %}
+{% block content %}
+<div id="mediaApp">
+  <div class="pagehd"><div><div class="eyebrow">MUSIC & PICTURES</div><h1>媒体库</h1><p>把喜欢的音乐和图片交给小歪，也可以直接说“播放音乐”或“展示图片”。</p></div><button class="btn ghost" @click="load">刷新</button></div>
+  <div class="media-feedback" role="status"><span class="media-error">[[ error ]]</span><span class="media-success">[[ message ]]</span></div>
+  <section class="media-panel" aria-label="上传媒体">
+    <div class="media-row">
+      <label>资料类型<select v-model="kind"><option value="image">图片</option><option value="music">音乐</option></select></label>
+      <label>选择文件<input type="file" @change="chooseFile" accept="image/png,image/jpeg,image/webp,image/gif,audio/*,.mp3,.wav,.flac,.ogg,.m4a"></label>
+      <label>名称<input v-model="title" maxlength="100" placeholder="例如：晚安曲、小猫照片"></label>
+      <button class="btn" :disabled="!file || !deviceId || busy" @click="upload">[[ busy ? '正在处理…' : '上传到当前设备' ]]</button>
+    </div>
+    <p class="media-note">每个文件最多 20 MB，每台设备最多 100 个资源。音乐保留前 3 分钟；图片自动适配机器人屏幕。</p>
+  </section>
+  <section class="media-panel" aria-label="设备播放控制">
+    <div class="media-row"><b>[[ online ? '设备在线' : '设备离线' ]]</b><span>[[ stateLabel ]]</span><button class="btn ghost" :disabled="!online || controlling" @click="control('stop_media',{})">停止音乐 / 图片</button></div>
+    <div class="media-row" style="margin-top:16px">
+      <label>扬声器音量<input aria-label="扬声器音量" type="range" min="0" max="100" v-model.number="volume" :disabled="!romReady || controlling"></label>
+      <span>[[ volume ]]%</span><button class="btn ghost" :disabled="!romReady || controlling" @click="control('rom_volume',{action:'set',value:volume})">应用音量</button>
+      <button class="btn ghost" :disabled="!romReady || controlling" @click="control('rom_volume',{action:'get'})">读取设备音量</button>
+    </div>
+    <p v-if="online && !romReady" class="media-note">图片展示和音量控制需要升级设备固件。音乐可使用已有的流式播放能力。</p>
+    <p class="media-note">播放时插话由「机器人配置」控制。未开启时，可以在这里停止音乐。</p>
+  </section>
+  <p v-if="deviceId && !assets.length" class="media-note">这里还没有资料。上传后，小歪就能按名字找到它们。</p>
+  <div class="media-grid">
+    <article v-for="asset in assets" :key="asset.id" class="media-panel media-card">
+      <img v-if="asset.kind==='image'" :src="fileUrl(asset)" :alt="asset.title">
+      <audio v-else controls preload="none" :src="fileUrl(asset)"></audio>
+      <h3>[[ asset.title ]]</h3><span class="media-note">[[ asset.kind==='image' ? '图片' : '音乐 · '+Math.ceil(asset.duration_ms/1000)+' 秒' ]]</span>
+      <div class="media-row"><button class="btn" :disabled="!online || controlling || (asset.kind==='image' && !romReady)" @click="control(asset.kind==='music'?'play_music':'show_image',{asset_id:asset.id})">[[ asset.kind==='music' ? '在机器人播放' : '在机器人展示' ]]</button><button class="btn ghost" :disabled="busy" @click="remove(asset)">删除</button></div>
+    </article>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+Vue.createApp({
+  delimiters:['[[',']]'],
+  data(){return{assets:[],deviceId:'',online:false,capabilities:[],playback:{state:'idle'},kind:'image',file:null,title:'',volume:80,busy:false,controlling:false,error:'',message:'',timer:null};},
+  computed:{romReady(){return this.online && this.capabilities.includes('rom_tools_v1');},stateLabel(){return {idle:'尚未播放',starting:'正在准备音乐',playing:'正在播放音乐',completed:'播放完成',stopped:'已停止',failed:'播放失败'}[this.playback.state] || this.playback.state;}},
+  methods:{
+    async api(url,options){const r=await fetch(url,{cache:'no-store',...options});const d=await r.json().catch(()=>({}));if(!r.ok || d.ok===false)throw new Error(d.error || d.detail || ('HTTP '+r.status));return d;},
+    async load(){try{const d=await this.api('/api/device-media');this.assets=d.assets;this.deviceId=d.device_id;this.online=d.online;this.capabilities=d.capabilities;this.playback=d.playback;}catch(e){this.error=e.message;}},
+    chooseFile(e){this.file=e.target.files[0] || null;if(this.file){this.title=this.file.name.replace(/\.[^.]+$/,'');this.kind=this.file.type.startsWith('audio/') || /\.(mp3|wav|flac|ogg|m4a)$/i.test(this.file.name)?'music':'image';}},
+    async upload(){this.busy=true;this.error='';this.message='';try{const body=new FormData();body.append('file',this.file);body.append('kind',this.kind);body.append('title',this.title);await this.api('/api/device-media',{method:'POST',body});this.message='上传成功，现在可以让小歪播放或展示了';await this.load();}catch(e){this.error=e.message;}finally{this.busy=false;}},
+    fileUrl(asset){return '/api/device-media/'+encodeURIComponent(asset.id)+'/file?device_id='+encodeURIComponent(this.deviceId);},
+    async control(tool,args){this.controlling=true;this.error='';this.message='';try{const d=await this.api('/api/device-media/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tool,arguments:args})});if(typeof d.volume==='number')this.volume=d.volume;this.message=tool==='rom_volume'?'设备音量：'+d.volume+'%':(tool==='show_image'?'图片已在设备展示':(tool==='stop_media'?'播放已停止':'设备已开始播放'));await this.load();}catch(e){this.error=e.message;}finally{this.controlling=false;}},
+    async remove(asset){this.error='';this.message='';try{await this.api('/api/device-media/'+encodeURIComponent(asset.id),{method:'DELETE'});this.message='资料已删除';await this.load();}catch(e){this.error=e.message;}},
+  },
+  mounted(){this.load();this.timer=setInterval(()=>this.load(),4000);},beforeUnmount(){clearInterval(this.timer);},
+}).mount('#mediaApp');
+</script>
+{% endblock %}

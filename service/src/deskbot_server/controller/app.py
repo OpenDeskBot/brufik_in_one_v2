@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from contextlib import asynccontextmanager
@@ -26,6 +27,11 @@ def create_fastapi_app(runtime: AppRuntime | None = None, *, web_only: bool = Fa
     async def lifespan(app: FastAPI):
         if runtime is not None:
             set_runtime(runtime)
+            app.state.perception_services = getattr(runtime, "perception_services", None)
+            if app.state.perception_services is not None:
+                app.state.perception_services.start_watchdog()
+                # Model loading stays outside the HTTP startup critical path.
+                app.state.perception_startup = asyncio.create_task(app.state.perception_services.apply_auto_start())
             if runtime.scheduler is not None and callable(getattr(runtime.scheduler, "start", None)):
                 runtime.scheduler.start()
             logger.info("FastAPI started ws_path=%s", runtime.ws_path)
@@ -42,16 +48,19 @@ def create_fastapi_app(runtime: AppRuntime | None = None, *, web_only: bool = Fa
                     except Exception:
                         logger.exception("scheduler.stop failed")
             if runtime is not None:
+                startup = getattr(app.state, "perception_startup", None)
+                if startup is not None:
+                    startup.cancel()
+                    await asyncio.gather(startup, return_exceptions=True)
+                manager = getattr(app.state, "perception_services", None)
                 try:
                     await runtime.device_ws.shutdown()
                 except Exception:
                     logger.exception("device_ws.shutdown failed")
-                try:
-                    close = getattr(runtime.chat, "aclose", None)
-                    if close is not None:
-                        await close()
-                except Exception:
-                    logger.exception("chat.aclose failed")
+                if manager is not None:
+                    await manager.shutdown()
+                from deskbot_server.client.registry import aclose_clients
+                await aclose_clients()
             logger.info("FastAPI stopped")
 
     app = FastAPI(title="deskbot-server", version="0.1.0", lifespan=lifespan)

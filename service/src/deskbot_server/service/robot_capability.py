@@ -279,6 +279,7 @@ class RobotCapabilityService:
         return load_config(self._config_path)
 
     def get_status(self, device_id: str | None = None) -> dict[str, Any]:
+        """独立适配器诊断状态；设备实时会话使用 get_external_status。"""
         cfg = self._load_cfg()
         return {
             "device_id": device_id,
@@ -291,6 +292,17 @@ class RobotCapabilityService:
                 "voiceprint": self._voiceprint_status(cfg),
             },
             "services": {},  # External services are managed by their provider.
+        }
+
+    def get_external_status(self, device_id: str | None = None) -> dict[str, Any]:
+        """当前设备控制面：语音能力由外部 Agent 配置，仅单列独立感知服务。"""
+        cfg = self._load_cfg()
+        return {
+            "device_id": device_id,
+            "capabilities": {
+                "face": self._face_status(cfg),
+                "voiceprint": self._voiceprint_status(cfg),
+            },
         }
 
     def _asr_status(self, device_id: str | None) -> dict[str, Any]:

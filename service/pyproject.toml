@@ -19,9 +19,6 @@ dependencies = [
     "python-multipart>=0.0.9",
     "SQLAlchemy==2.0.41",
     "Pillow>=12.2.0",
-    # onnxruntime 为主服务进程内 Silero VAD 使用；mediapipe/insightface/opencv 等
-    # 模型推理依赖已随人脸/ASR/TTS/声纹/LLM 迁入各外部服务独立 venv（externals/*/install.sh）
-    "onnxruntime>=1.17.0",
     "croniter==2.0.7",
     "pypinyin>=0.53.0",
     "g2p-en>=2.1.0",

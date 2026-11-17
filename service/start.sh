@@ -10,12 +10,9 @@
 #   PYTHON_BIN=             显式指定 Python 可执行文件（跳过自动查找）
 #   SKIP_SETUP=1            跳过 venv/依赖安装，仅启动服务
 #   FAST_START=1            跳过 pip 安装（venv 须已完整）；未设置时若依赖已就绪也会自动跳过
-#   SKIP_MODEL_DOWNLOAD=1   跳过 Silero VAD 模型自动下载
 #   SKIP_SYSTEM_CHECK=1     跳过 ffmpeg 等系统依赖警告
 #
-# 模型加载边界：本脚本只负责主服务进程内仍加载的 Silero VAD（对话打断切句）；
-# 人脸 / ASR / TTS / 声纹 / LLM 模型均由各独立外部服务自备
-# （externals/*/install.sh：独立 venv + 服务目录内模型副本），经 9101-9106 端口调用。
+# 主服务不下载或加载语音模型；VAD / ASR / LLM / TTS 由外部实时服务负责。
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -83,15 +80,6 @@ ensure_local_scripts() {
   fi
 }
 
-# 仅主服务进程内加载的模型：Silero VAD（onnxruntime，对话打断/切句）。
-# 人脸模型归 externals/insightface-engine（install.sh 自备），不再由此下载。
-SILERO_VAD_MODEL_PATH="$ROOT/models/silero_vad/silero_vad.onnx"
-SILERO_VAD_MODEL_URL="https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
-
-silero_vad_model_ready() {
-  [[ -f "$SILERO_VAD_MODEL_PATH" ]]
-}
-
 deskbot_venv_python() {
   platform_venv_python "$ROOT" || {
     echo "未找到 .venv，请先完成 setup（不要设 SKIP_SETUP=1）。" >&2
@@ -108,36 +96,6 @@ ensure_deskbot_env() {
   if [[ -f "$ROOT/.env" ]]; then
     # shellcheck source=/dev/null
     set -a && source "$ROOT/.env" && set +a
-  fi
-}
-
-download_silero_vad_model() {
-  echo "[setup] 下载 Silero VAD 模型（约 2.3MB）..."
-  mkdir -p "$(dirname "$SILERO_VAD_MODEL_PATH")"
-  if command -v curl >/dev/null 2>&1; then
-    curl -L --fail -o "$SILERO_VAD_MODEL_PATH" "$SILERO_VAD_MODEL_URL"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$SILERO_VAD_MODEL_PATH" "$SILERO_VAD_MODEL_URL"
-  else
-    echo "[warn] 未找到 curl/wget，跳过 Silero VAD 下载；语音打断/切句链路将不可用。" >&2
-    return 1
-  fi
-}
-
-ensure_models() {
-  if [[ "${SKIP_MODEL_DOWNLOAD:-0}" == "1" ]]; then
-    echo "SKIP_MODEL_DOWNLOAD=1，跳过模型下载检查。"
-    if ! silero_vad_model_ready; then
-      echo "Silero VAD 模型缺失: $SILERO_VAD_MODEL_PATH（主服务进程内 VAD 依赖，不可跳过）" >&2
-      exit 1
-    fi
-    return 0
-  fi
-
-  if ! silero_vad_model_ready; then
-    download_silero_vad_model
-  else
-    echo "[setup] Silero VAD 模型已就绪: $SILERO_VAD_MODEL_PATH"
   fi
 }
 
@@ -164,6 +122,5 @@ else
 fi
 
 ensure_deskbot_env
-ensure_models
 
 run_services

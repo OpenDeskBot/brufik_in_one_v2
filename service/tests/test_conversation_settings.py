@@ -17,6 +17,7 @@ from tests.test_controller_auth import api_client as api_client
 @pytest.fixture
 def device(monkeypatch):
     monkeypatch.delenv("MOSS_API_KEY", raising=False)
+    monkeypatch.delenv("FLECKET_API_KEY", raising=False)
     user_mapper.create("u", "conversation@example.com", "unused", False)
     device_mapper.insert("pk", "robot", "u", "robot")
     device_mapper.update_llm_provider("robot", "realtime")
@@ -26,7 +27,7 @@ def device(monkeypatch):
 
 def test_default_switch_and_preserve_local_settings(device):
     async def run():
-        assert conversation_provider(device) == "local"
+        assert conversation_provider(device) == "flecket"
         with pytest.raises(ValueError):
             await save_conversation(device, {"provider": "moss-live"})
         status = await save_conversation(
@@ -41,8 +42,9 @@ def test_default_switch_and_preserve_local_settings(device):
         )
         assert status["configured"] and status["camera"] and status["provider"] == "moss-live"
         assert "not-returned" not in json.dumps(status)
-        await save_conversation(device, {"provider": "local", "api_key": ""})
-        assert conversation_provider(device) == "local"
+        with pytest.raises(ValueError, match="本地模型组合已移除"):
+            await save_conversation(device, {"provider": "local", "api_key": ""})
+        assert conversation_provider(device) == "moss-live"
         before = device_mapper.get_by_device_id(device)
         assert before.llm_provider == "realtime" and before.tts_provider == "macos"
         assert json.loads(get_conversation(device)["conversation_param"])["api_key"] == "not-returned"
@@ -68,7 +70,7 @@ def test_invalid_settings_leave_state_unchanged(device, body):
     async def run():
         with pytest.raises(ValueError):
             await save_conversation(device, body)
-        assert conversation_provider(device) == "local"
+        assert conversation_provider(device) == "flecket"
 
     asyncio.run(run())
 
@@ -94,7 +96,7 @@ def test_migration_keeps_existing_local_models_and_is_idempotent(tmp_path):
         r = c.execute(
             text("SELECT conversation_provider,conversation_param,llm_provider,tts_provider FROM devices")
         ).one()
-        assert tuple(r) == ("local", None, "realtime", "macos")
+        assert tuple(r) == ("flecket", None, "realtime", "macos")
     engine.dispose()
 
 
@@ -104,7 +106,7 @@ def test_api_requires_owner_and_never_returns_key(api_client, monkeypatch):
     assert api_client.post(url, json={"provider": "local"}).status_code == 401
     _login(api_client, current_device_id="device-other")
     assert api_client.post(url, json={"provider": "local"}).status_code == 400
-    assert conversation_provider("device-other") == "local"
+    assert conversation_provider("device-other") == "flecket"
     assert api_client.post(url + "?device_id=device-other", json={"provider": "local"}).status_code == 400
     api_client.cookies.clear()
     _login(api_client, current_device_id="device-owner")
@@ -112,7 +114,7 @@ def test_api_requires_owner_and_never_returns_key(api_client, monkeypatch):
     assert response.status_code == 200, response.text
     assert "private-test-key" not in response.text
     assert response.json()["conversation"]["configured"]
-    assert api_client.post(url, json={"provider": "local"}).status_code == 200
+    assert api_client.post(url, json={"provider": "local"}).status_code == 400
 
 
 def test_flecket_settings_are_independent_and_secret(device, monkeypatch):
@@ -137,7 +139,7 @@ def test_flecket_settings_are_independent_and_secret(device, monkeypatch):
         await save_conversation(device, {"provider": "flecket", "api_key": "********"})
         assert flecket_config(device).voice == "Tingting"
         assert flecket_config(device).api_key == "flecket-secret"
-        await save_conversation(device, {"provider": "local", "voice": DEFAULT_VOICE, "camera": False})
+        await save_conversation(device, {"provider": "moss-live", "voice": DEFAULT_VOICE, "camera": False})
         assert flecket_config(device).camera is True
         assert moss_config(device).api_key == "moss-secret"
         await save_conversation(device, {"provider": "flecket"})
@@ -162,7 +164,7 @@ def test_flecket_environment_key_and_owner_api(api_client, monkeypatch):
     _login(api_client, current_device_id="device-other")
     response = api_client.post("/api/robot-settings/conversation", json={"provider": "flecket"})
     assert response.status_code == 400
-    assert conversation_provider("device-other") == "local"
+    assert conversation_provider("device-other") == "flecket"
 
 
 def test_flecket_barge_in_is_explicitly_configurable(device, monkeypatch):

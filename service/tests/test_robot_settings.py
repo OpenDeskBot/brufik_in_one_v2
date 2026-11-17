@@ -494,26 +494,22 @@ def test_api_robot_settings_endpoints(temp_db):
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["ok"] is True
-    assert payload["capabilities"]["asr"]["current"] in ("funasr", "doubao")
-    assert payload["capabilities"]["tts"]["current"] in ("moss-tts-nano", "doubao")
-    # 走真实 config.yaml（create_app 默认路径）：系统默认已切到硅基流动，未选设备时即它
-    assert payload["capabilities"]["llm"]["current"] == "siliconflow"
-    # 决策模型默认 unee（未选设备也展示默认值）
-    assert payload["capabilities"]["decision"]["current"] == "unee"
+    assert set(payload["capabilities"]) == {"face", "voiceprint"}
+    assert payload["conversation"]["provider"] == "flecket"
+    assert set(payload["conversation"]["profiles"]) == {"flecket", "moss-live"}
 
     # 行为开关（未选设备）：GET 回落默认值，写操作 → 400
     assert payload["behavior"] == {"auto_reply": True, "follow_mode": ""}
     assert client.post("/api/robot-settings/behavior", json={"auto_reply": False}).status_code == 400
-    assert client.post("/api/robot-settings/decision", json={"provider": "unee"}).status_code == 400
+    assert client.post("/api/robot-settings/decision", json={"provider": "unee"}).status_code == 404
 
-    # 非法 provider → 400
+    # 旧本地模型配置接口已移除
     bad = client.post("/api/robot-settings/asr", json={"provider": "bogus"})
-    assert bad.status_code == 400
-    assert bad.get_json()["ok"] is False
+    assert bad.status_code == 404
 
-    # 未选择设备时清除覆盖 → 400
+    # 旧清除覆盖接口已移除
     clear = client.post("/api/robot-settings/llm/clear-device-override")
-    assert clear.status_code == 400
+    assert clear.status_code == 404
 
 
 def test_robot_settings_page_renders(temp_db):
@@ -531,33 +527,14 @@ def test_robot_settings_page_renders(temp_db):
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
     assert "机器人配置" in html
-    assert "语音识别 ASR" in html
-    assert "大脑 LLM" in html
-    assert "决策模型" in html
-    assert "/api/robot-settings/decision" in html
-    assert "语音合成 TTS" in html
-    assert "/api/robot-settings" in html
-    assert "cap-opt-test" in html  # 候选行配置按钮（ASR/LLM/TTS）
-    assert "openLlmCfg" in html    # LLM 配置对话框（字段 + 试聊）
-    assert "/api/robot-settings/llm/config-info" in html
-    # siliconflow 配置分支：模型下拉 + 服务端 .env 凭证提示（守住对话框分支不被误删）。
-    # 注意断言的是模板里的标识符而非 SILICONFLOW_API_KEY 字面量 —— 后者由 Vue 运行时注入，
-    # 不出现在服务端渲染的 HTML 里。
-    assert "llmCfg.provider==='siliconflow'" in html
-    assert "llmCfg.models" in html
-    assert "llmCfg.apiKeyEnv" in html
-    assert "openTtsCfg" in html    # TTS 配置对话框（音色/凭证设置 + 试听）
-    assert "保存配置" in html
-    assert "/api/robot-settings/tts/config" in html
-    assert "openAsrCfg" in html    # ASR 候选行配置按钮 + 对话框
-    assert "/api/robot-settings/asr/config-info" in html
-    # 顶部控制面板：自动回复 / 人脸跟随
-    assert "控制面板" in html
-    assert "/api/robot-settings/behavior" in html
-    assert "自动回复" in html
-    assert "跟随人脸" in html
-    assert "跟随正脸" in html
-    assert "注视人脸" in html
+    assert 'value="flecket"' in html
+    assert 'value="moss-live"' in html
+    assert 'id="realtime-prompt"' in html
+    assert "/api/robot-settings/conversation" in html
+    assert 'value="local"' not in html
+    assert 'id="selected-asr"' not in html
+    assert 'id="llm-model"' not in html
+    assert 'id="tts-voice"' not in html
 
 
 def test_robot_settings_behavior_writes_device(temp_db):

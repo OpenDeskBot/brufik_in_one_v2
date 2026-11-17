@@ -21,7 +21,7 @@ from deskbot_server.model.realtime import (
 
 def conversation_provider(device_id: str | None) -> str:
     row = get_conversation(device_id) if device_id else None
-    return row["conversation_provider"] if row and row["conversation_provider"] in {"moss-live", "flecket"} else "local"
+    return row["conversation_provider"] if row and row["conversation_provider"] in {"moss-live", "flecket"} else "flecket"
 
 
 def _params(row) -> dict:
@@ -74,7 +74,6 @@ def conversation_status(device_id: str | None) -> dict:
     flecket = raw.get("flecket") or {}
     defaults = _flecket_defaults()
     profiles = {
-        "local": {"configured": False, "voice": DEFAULT_VOICE, "prompt": DEFAULT_PROMPT, "camera": False},
         "moss-live": {
             "configured": bool(raw.get("api_key") or read_secret("MOSS_API_KEY")),
             "voice": raw.get("voice") or DEFAULT_VOICE,
@@ -92,9 +91,8 @@ def conversation_status(device_id: str | None) -> dict:
             "camera": flecket.get("camera") is True,
         },
     }
-    provider = row["conversation_provider"] if row and row["conversation_provider"] in profiles else "local"
-    # Keep legacy local-mode fields for existing clients, without returning secrets.
-    current = profiles["moss-live"] if provider == "local" else profiles[provider]
+    provider = conversation_provider(device_id)
+    current = profiles[provider]
     return {"provider": provider, **current, "profiles": profiles}
 
 
@@ -104,10 +102,10 @@ async def save_conversation(device_id: str, body: dict) -> dict:
     if not device_id or not (row := get_conversation(device_id)):
         raise ValueError("请先选择已绑定的设备")
     provider = body.get("provider")
-    if not isinstance(provider, str) or provider not in {"local", "moss-live", "flecket"}:
-        raise ValueError("请选择本地模型、MOSS Live 或 flecket")
+    if not isinstance(provider, str) or provider not in {"moss-live", "flecket"}:
+        raise ValueError("请选择外部 Agent（flecket）或 MOSS Live；本地模型组合已移除")
     raw = _params(row)
-    target = dict(raw.get("flecket") or {}) if provider == "flecket" else (dict(raw) if provider == "local" else raw)
+    target = dict(raw.get("flecket") or {}) if provider == "flecket" else raw
     for key in ("voice", "prompt", "camera", "api_key", "url", "allow_barge_in"):
         if key not in body:
             continue
@@ -142,12 +140,9 @@ async def save_conversation(device_id: str, body: dict) -> dict:
             raise ValueError("请填写 flecket API Key，或设置服务端 FLECKET_API_KEY")
         raw["flecket"] = target
     set_conversation(device_id, provider, json.dumps(raw, ensure_ascii=False))
-    # Cancel old local producers as well as already enqueued speech. A reconnect
-    # gives each upstream session exactly one ROM connection generation.
-    from deskbot_server.service.application.interaction_arbiter import interaction_arbiter
+    # A reconnect gives each upstream session one ROM connection generation.
     from deskbot_server.service.device_ws_service import DeviceWsService
 
-    interaction_arbiter.interrupt(device_id)
     hub = DeviceWsService.instance()
     if hub:
         await hub.interrupt_current_playback(device_id, reason="conversation_switch")

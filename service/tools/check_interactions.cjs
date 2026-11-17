@@ -16,7 +16,7 @@ const assert=require('node:assert/strict');
   await page.locator('#realtime-prompt').fill('Edited B');
   page.once('dialog',d=>d.dismiss());await page.locator('a.navlink[href="/my/memories"]').click();
   assert(new URL(page.url()).pathname==='/robot-settings');assert.equal(await page.locator('#realtime-prompt').inputValue(),'Edited B');console.log('PASS dirty navigation cancelled');
-  await page.getByRole('button',{name:'保存对话方式',exact:true}).click();await page.getByText('对话方式已保存，机器人将自动重连',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'保存模型选择',exact:true}).click();await page.getByText('模型选择已保存，机器人将自动重连',{exact:true}).waitFor();
   const b=(await (await page.request.get(base+'/api/robot-settings')).json()).conversation;assert.equal(b.prompt,'Edited B');
   await page.request.post(base+'/app/api/devices/select',{data:{device_id:'agent-browser-device'}});
   await page.reload();await page.waitForFunction(()=>document.querySelector('#realtime-prompt')?.value==='Edited B');

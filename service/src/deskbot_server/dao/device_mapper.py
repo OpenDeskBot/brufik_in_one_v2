@@ -38,8 +38,8 @@ def device_ids_for_user(user_id: str) -> list[str]:
 
 @db_insert(
     """
-    INSERT INTO devices (id, device_id, owner_user_id, display_name, volume, fps, version, auto_reply, servo_mode, live_mode, asr_provider, tts_provider, claimed_at, created_at)
-    VALUES (:uid, :device_id, :user_id, :display_name, :volume, :fps, :version, 1, '', 1, 'funasr', 'moss-tts-nano', datetime('now'), datetime('now'))
+    INSERT INTO devices (id, device_id, owner_user_id, display_name, volume, fps, version, auto_reply, servo_mode, live_mode, asr_provider, tts_provider, conversation_provider, claimed_at, created_at)
+    VALUES (:uid, :device_id, :user_id, :display_name, :volume, :fps, :version, 1, '', 1, 'funasr', 'moss-tts-nano', 'flecket', datetime('now'), datetime('now'))
     """,
     id_param="uid",
 )

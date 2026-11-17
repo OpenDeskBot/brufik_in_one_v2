@@ -1,9 +1,10 @@
-"""机器人设置：ASR / LLM / TTS 能力查看与热切换（页面 + REST API）。"""
+"""机器人设置：外部实时会话与独立感知服务。"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from deskbot_server.auth.permissions import RequireDeveloper
 from deskbot_server.controller.decorators import access
 from deskbot_server.dao.device_mapper import (
     get_auto_reply,
@@ -12,24 +13,11 @@ from deskbot_server.dao.device_mapper import (
     set_auto_reply,
     set_camera_servo_auto_mode,
 )
-from deskbot_server.service.robot_capability import (
-    DEFAULT_ASR_TEST_AUDIO,
-    DOUBAO_ASR_FIELDS,
-    CapabilityError,
-    RobotCapabilityService,
-)
+from deskbot_server.service.robot_capability import CapabilityError, RobotCapabilityService
 from deskbot_server.web.deps import RequireUser
 from deskbot_server.web.pages import page
 from deskbot_server.web.session_device import get_current_device_id
-from deskbot_server.web.view_helpers import (
-    ViewAPIRoute,
-    files_get,
-    form_get,
-    get_json,
-    jsonify,
-    read_upload_bytes,
-    render_template,
-)
+from deskbot_server.web.view_helpers import ViewAPIRoute, get_json, jsonify, render_template
 
 router = APIRouter(route_class=ViewAPIRoute, tags=["robot_settings"])
 
@@ -42,7 +30,14 @@ def _svc() -> RobotCapabilityService:
 @access('user')
 @page('app2c/robot_settings.html')
 def robot_settings_page(request: Request, user: RequireUser):
-    return render_template(request, "app2c/robot_settings.html", active_nav="robot_settings")
+    return render_template(request, "app2c/robot_settings.html", active_nav="robot_settings", model_configuration=False)
+
+
+@router.get("/model-settings")
+@access('developer')
+@page('app2c/model_settings.html')
+def model_settings_page(request: Request, user: RequireDeveloper):
+    return render_template(request, "app2c/model_settings.html", active_nav="model_settings", model_configuration=True)
 
 
 @router.get("/api/robot-settings")
@@ -50,7 +45,7 @@ def robot_settings_page(request: Request, user: RequireUser):
 def api_robot_settings_status(request: Request, user: RequireUser):
     try:
         device_id = get_current_device_id(request)
-        status = _svc().get_status(device_id)
+        status = _svc().get_external_status(device_id)
         # 行为开关（设备级，落 devices 表）：自动回复 auto_reply / 人脸跟随 servo_mode
         status["behavior"] = {
             "auto_reply": get_auto_reply(device_id),
@@ -122,189 +117,15 @@ async def api_robot_settings_conversation(request: Request, user: RequireUser):
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
-@router.post("/api/robot-settings/asr")
-@access('user')
-def api_robot_settings_apply_asr(request: Request, user: RequireUser):
-    body = get_json(request) or {}
-    try:
-        status = _svc().apply_asr(str(body.get("provider") or ""), get_current_device_id(request))
-        return jsonify({"ok": True, **status})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.post("/api/robot-settings/asr/clear-device-override")
-@access('user')
-def api_robot_settings_clear_device_asr_override(request: Request, user: RequireUser):
-    try:
-        status = _svc().clear_device_asr_override(get_current_device_id(request))
-        return jsonify({"ok": True, **status})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.get("/api/robot-settings/asr/config-info")
-@access('user')
-def api_robot_settings_asr_config_info(request: Request, user: RequireUser):
-    """ASR 配置对话框元信息：默认测试音频 / funasr 端点 / 豆包当前值（设备 asr_param 优先）。"""
-    try:
-        return jsonify({"ok": True, **_svc().asr_config_info(get_current_device_id(request))})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.get("/api/robot-settings/asr/default-audio")
-@access('user')
-def api_robot_settings_asr_default_audio(request: Request, user: RequireUser):
-    """返回默认测试音频 data/test/asr.wav（配置对话框播放试听用）。"""
-    from fastapi.responses import FileResponse
-
-    if not DEFAULT_ASR_TEST_AUDIO.is_file():
-        return jsonify({"ok": False, "error": "默认音频文件缺失（data/test/asr.wav）"}), 404
-    return FileResponse(DEFAULT_ASR_TEST_AUDIO, media_type="audio/wav", filename=DEFAULT_ASR_TEST_AUDIO.name)
-
-
-@router.post("/api/robot-settings/asr/config")
-@access('user')
-def api_robot_settings_asr_save_config(request: Request, user: RequireUser):
-    """保存设备级 ASR 配置到 device 表 asr_param（JSON，掩码/空值保留已有），不再写全局 .env。"""
-    body = get_json(request) or {}
-    try:
-        return jsonify({"ok": True, **_svc().save_device_asr_config(get_current_device_id(request), body)})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.post("/api/robot-settings/asr/test")
-@access('user')
-async def api_robot_settings_asr_test(request: Request, user: RequireUser):
-    """ASR 测试：multipart 上传音频（或 use_default=1 用 data/test/asr.wav）。
-
-    doubao_* 四字段为表单覆盖值（空/掩码回落设备 asr_param → env），可不保存直接测试。
-    执行结果恒 200 ok:true + success 字段；参数非法才 400。
-    """
-    upload = files_get(request, "audio")
-    raw = read_upload_bytes(upload) if upload is not None else None
-    use_default = str(form_get(request, "use_default") or "").lower() in ("1", "true", "on")
-    overrides = {k: str(form_get(request, "doubao_" + k) or "") for k in DOUBAO_ASR_FIELDS}
-    try:
-        result = await _svc().asr_test(
-            str(form_get(request, "provider") or ""),
-            raw,
-            use_default=use_default,
-            doubao_overrides=overrides,
-            device_id=get_current_device_id(request),
-        )
-        return jsonify(result)
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.post("/api/robot-settings/llm")
-@access('user')
-def api_robot_settings_apply_llm(request: Request, user: RequireUser):
-    body = get_json(request) or {}
-    try:
-        status = _svc().apply_llm(str(body.get("provider") or ""), get_current_device_id(request))
-        return jsonify({"ok": True, **status})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.post("/api/robot-settings/decision")
-@access('user')
-def api_robot_settings_apply_decision(request: Request, user: RequireUser):
-    """切换设备级「动作/表情决策模型」provider（默认 unee，写 device 表即生效）。"""
-    body = get_json(request) or {}
-    try:
-        status = _svc().apply_decision(str(body.get("provider") or ""), get_current_device_id(request))
-        return jsonify({"ok": True, **status})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.get("/api/robot-settings/llm/config-info")
-@access('user')
-def api_robot_settings_llm_config_info(request: Request, user: RequireUser):
-    """LLM 配置对话框元信息：ark 当前值（设备 llm_param，api_key 掩码）；本地模型只读固定端点。"""
-    provider = str(request.query_params.get("provider") or "").strip()
-    try:
-        return jsonify({"ok": True, **_svc().llm_config_info(provider, get_current_device_id(request))})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.post("/api/robot-settings/llm/config")
-@access('user')
-def api_robot_settings_llm_save_config(request: Request, user: RequireUser):
-    """保存设备级 ark 配置到 device 表 llm_param["ark"]（掩码/空值保留已有），不再写 .env / config.yaml。"""
-    body = get_json(request) or {}
-    try:
-        device_id = get_current_device_id(request)
-        return jsonify({"ok": True, **_svc().save_device_llm_config(device_id, str(body.get("provider") or ""), body)})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.post("/api/robot-settings/llm/test")
-@access('user')
-async def api_robot_settings_llm_test(request: Request, user: RequireUser):
-    """LLM 试聊：临时 ResolvedLlmConfig 合成（overrides 为表单临时值，不落盘；空/掩码回落设备 llm_param）。
-
-    本地引擎免 key；ark 依赖当前设备 llm_param 或 overrides 中的密钥/模型。执行结果恒 200 ok:true + 字段；参数非法才 400。"""
-    body = get_json(request) or {}
-    overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
-    try:
-        result = await _svc().llm_test(
-            str(body.get("provider") or ""),
-            str(body.get("text") or ""),
-            device_id=get_current_device_id(request),
-            overrides=overrides,
-        )
-        return jsonify({"ok": True, **result})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
-
-
-@router.post("/api/robot-settings/tts")
-@access('user')
-def api_robot_settings_apply_tts(request: Request, user: RequireUser):
-    """切换 TTS provider（设备级，写 device 表 tts_provider 即生效）。"""
-    body = get_json(request) or {}
-    try:
-        status = _svc().apply_tts(str(body.get("provider") or ""), get_current_device_id(request))
-        return jsonify({"ok": True, **status})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
 @router.post("/api/robot-settings/face")
 @access('user')
 def api_robot_settings_apply_face(request: Request, user: RequireUser):
     """人脸识别能力切换：none=不识别；insightface=外部独立服务（config.yaml 真源，保存即生效）。"""
     body = get_json(request) or {}
     try:
-        status = _svc().apply_face(str(body.get("mode") or ""))
+        svc = _svc()
+        svc.apply_face(str(body.get("mode") or ""))
+        status = svc.get_external_status(get_current_device_id(request))
         return jsonify({"ok": True, **status})
     except CapabilityError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -318,7 +139,9 @@ def api_robot_settings_apply_voiceprint(request: Request, user: RequireUser):
     """声纹识别能力切换：none=不识别；vpr=外部 wespeaker 独立服务（config.yaml 真源，保存即生效）。"""
     body = get_json(request) or {}
     try:
-        status = _svc().apply_voiceprint(str(body.get("mode") or ""))
+        svc = _svc()
+        svc.apply_voiceprint(str(body.get("mode") or ""))
+        status = svc.get_external_status(get_current_device_id(request))
         return jsonify({"ok": True, **status})
     except CapabilityError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -326,86 +149,4 @@ def api_robot_settings_apply_voiceprint(request: Request, user: RequireUser):
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-@router.get("/api/robot-settings/tts/config-info")
-@access('user')
-def api_robot_settings_tts_config_info(request: Request, user: RequireUser):
-    """TTS 配置对话框元信息：音色列表 + 当前设备参数（api_key 掩码，设备 tts_param 优先回落 .env）。"""
-    try:
-        return jsonify({"ok": True, **_svc().tts_config_info(get_current_device_id(request))})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.post("/api/robot-settings/tts/config")
-@access('user')
-def api_robot_settings_tts_save_config(request: Request, user: RequireUser):
-    """保存设备级 TTS 参数到 device 表 tts_param（JSON，掩码/空值按回填链保留），不再写全局 .env。"""
-    body = get_json(request) or {}
-    try:
-        return jsonify({"ok": True, **_svc().save_device_tts_config(get_current_device_id(request), body)})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.post("/api/robot-settings/tts/clear-device-override")
-@access('user')
-def api_robot_settings_tts_clear_override(request: Request, user: RequireUser):
-    """重置设备 TTS：provider 回落 moss-tts-nano，并清空设备级参数。"""
-    try:
-        status = _svc().clear_device_tts_override(get_current_device_id(request))
-        return jsonify({"ok": True, **status})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.get("/api/robot-settings/tts/test-info")
-@access('user')
-def api_robot_settings_tts_test_info(request: Request, user: RequireUser):
-    try:
-        return jsonify({"ok": True, **_svc().tts_test_info(get_current_device_id(request))})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@router.post("/api/robot-settings/tts/test")
-@access('user')
-async def api_robot_settings_tts_test(request: Request, user: RequireUser):
-    """TTS 合成测试：设备参数优先，overrides / voice_id 为临时覆盖（不落盘）。
-
-    body: {provider, text, voice_id?, overrides?: {api_key, speaker, ...}}。
-    执行结果恒 200 ok:true + 合成字段；参数非法才 400。
-    """
-    body = get_json(request) or {}
-    overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
-    try:
-        result = await _svc().tts_test(
-            str(body.get("provider") or ""),
-            str(body.get("text") or ""),
-            device_id=get_current_device_id(request),
-            voice_id=str(body.get("voice_id") or "").strip() or None,
-            overrides=overrides,
-        )
-        return jsonify({"ok": True, **result})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
-
-
-@router.post("/api/robot-settings/llm/clear-device-override")
-@access('user')
-def api_robot_settings_clear_device_override(request: Request, user: RequireUser):
-    try:
-        status = _svc().clear_device_llm_override(get_current_device_id(request))
-        return jsonify({"ok": True, **status})
-    except CapabilityError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-ENDPOINTS = {"robot_settings.page": "/robot-settings"}
+ENDPOINTS = {"robot_settings.page": "/robot-settings", "robot_settings.models": "/model-settings"}

@@ -1,6 +1,1 @@
-"""音频管线：VAD / Opus / ConnectionSession。"""
-
-from deskbot_server.service.pipeline.audio import AudioConfig, ConnectionSession, RomUplinkFlush
-from deskbot_server.service.pipeline.silero_vad import SileroVadConfig, SileroVadStream
-
-__all__ = ["AudioConfig", "ConnectionSession", "RomUplinkFlush", "SileroVadConfig", "SileroVadStream"]
+"""媒体传输编解码；外部服务负责语音识别、对话生成和合成。"""

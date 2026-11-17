@@ -49,7 +49,7 @@ class Device(Base):
     auto_reply: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     servo_mode: Mapped[str] = mapped_column(String(16), default="", nullable=False)
     live_mode: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    conversation_provider: Mapped[str] = mapped_column(String(32), default="local", server_default="local", nullable=False)
+    conversation_provider: Mapped[str] = mapped_column(String(32), default="flecket", server_default="flecket", nullable=False)
     conversation_param: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 设备级 ASR provider：funasr（默认）/ doubao；空/NULL 按 funasr 处理
     asr_provider: Mapped[str] = mapped_column(String(32), default="funasr", server_default="funasr", nullable=False)

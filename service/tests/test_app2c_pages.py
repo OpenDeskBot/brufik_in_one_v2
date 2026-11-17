@@ -23,7 +23,7 @@ def temp_db(monkeypatch):
 PAGES = ["/home", "/lab", "/my/memories", "/my/reminders", "/my/people", "/my/devices", "/advanced", "/robot-settings"]
 
 # 开发者选项菜单下的页面：仅开发者身份可访问（导航隐藏不是门禁）
-DEV_PAGES = ["/expr", "/quest"]
+DEV_PAGES = ["/expr", "/quest", "/model-settings"]
 
 
 @pytest.mark.parametrize("path", PAGES)
@@ -83,6 +83,27 @@ def test_2c_dev_pages_render_for_developer(temp_db, path):
     client.post("/login", data={"email": "dev-only@example.com", "password": "password1234"})
     resp = client.get(path)
     assert resp.status_code == 200
+
+
+def test_model_configuration_moves_connection_fields_out_of_robot_settings(temp_db):
+    from deskbot_server.web.app import create_app
+    from tests._auth_compat import create_user
+
+    create_user("model-dev@example.com", "password1234")
+    client = create_app().test_client()
+    client.post("/login", data={"email": "model-dev@example.com", "password": "password1234"})
+    consumer = client.get("/robot-settings").get_data(as_text=True)
+    developer = client.get("/model-settings").get_data(as_text=True)
+    assert 'aria-label="模型选择"' in consumer
+    assert 'id="realtime-prompt"' in consumer
+    for legacy in ('value="local"', 'id="llm-model"', 'id="tts-voice"', 'id="selected-asr"'):
+        assert legacy not in consumer
+        assert legacy not in developer
+    for field in ('id="flecket-agent"', 'id="flecket-url"', 'id="realtime-key"'):
+        assert field not in consumer
+        assert field in developer
+    assert 'href="/model-settings"' in developer
+    assert '<h1>模型配置</h1>' in developer
 
 
 def test_2c_advanced_json_apis(temp_db):

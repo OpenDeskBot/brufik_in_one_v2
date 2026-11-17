@@ -25,22 +25,13 @@ from deskbot_server.model.pb_seq import PbBlock, PbSeq, PbType, PlaybackOutcome,
 from deskbot_server.pb.media_wire import CAPABILITIES as MEDIA_CAPABILITIES
 from deskbot_server.pb.media_wire import MediaWire
 from deskbot_server.pb.wire import device_pb_json_msg
-from deskbot_server.service.application.asr_chat_uplink import (
-    coerce_audio_flush,
-    pack_ws_downlink_frame,
-    parse_packed_frame,
-)
-from deskbot_server.service.application.boot_wake import deliver_boot_wake_scene
-from deskbot_server.service.application.chat_service import ChatService
+from deskbot_server.service.application.asr_chat_uplink import pack_ws_downlink_frame, parse_packed_frame
 from deskbot_server.service.application.playback_echo_guard import PlaybackEchoGuard
 from deskbot_server.service.camera_face_service import CameraFaceService
-from deskbot_server.service.pipeline.audio import AudioConfig, ConnectionSession
-from deskbot_server.service.vad_service import VadService
 from deskbot_server.utils.async_helpers import spawn
 from deskbot_server.utils.singleton import SingletonMeta
-from deskbot_server.utils.util import _json_msg, format_exc_detail
+from deskbot_server.utils.util import _json_msg
 from deskbot_server.utils.ws_utils import WsUtils
-from deskbot_server.ws.uplink_rate_stats import ensure_uplink_rate_stats_started, note_uplink_audio, remove_device
 
 logger = logging.getLogger("deskbot-server")
 
@@ -110,9 +101,9 @@ class _DeviceEntry:
     audio_ready_mono: float = 0.0
     barge_until_mono: float = 0.0
     raw_preview_seen: bool = False
-    audio_session: ConnectionSession | None = None
-    conversation_provider: str = "local"
+    conversation_provider: str = ""  # Set when the primary realtime session attaches.
     conversation_session: Any = None
+    rom_waiters: dict[str, asyncio.Future] = field(default_factory=dict)
     user_engaged_until_mono: float = 0.0
     echo_guard: PlaybackEchoGuard = field(default_factory=PlaybackEchoGuard)
 
@@ -183,8 +174,6 @@ class DeviceWsService(metaclass=SingletonMeta):
         self._cleanup_task: asyncio.Task | None = None
 
         # ── 应用依赖（bind 注入）──
-        self._pipeline: ChatService | None = None
-        self._audio_cfg: AudioConfig | None = None
         self._bus_service: Any | None = None
         self._live_service: Any = None  # LiveService | None
 
@@ -227,15 +216,8 @@ class DeviceWsService(metaclass=SingletonMeta):
     # 生命周期
     # ======================================================================
 
-    def bind(
-        self,
-        pipeline: ChatService,
-        audio_cfg: AudioConfig,
-        bus_service: Any | None = None,
-    ) -> None:
-        """注入全局依赖（应用启动时调用一次）。"""
-        self._pipeline = pipeline
-        self._audio_cfg = audio_cfg
+    def bind(self, *, bus_service: Any | None = None) -> None:
+        """注入设备事件总线；语音识别、对话与合成均由外部服务负责。"""
         self._bus_service = bus_service
 
     def bind_live_service(self, ls: Any) -> None:
@@ -305,8 +287,7 @@ class DeviceWsService(metaclass=SingletonMeta):
                 entry.audio_ready_mono = 0.0
                 entry.barge_until_mono = 0.0
                 entry.raw_preview_seen = False
-                entry.audio_session = None
-                entry.conversation_provider = "local"
+                entry.conversation_provider = ""
                 entry.conversation_session = None
                 entry.user_engaged_until_mono = 0.0
 
@@ -405,7 +386,7 @@ class DeviceWsService(metaclass=SingletonMeta):
     # ======================================================================
 
     async def send(
-        self, device_id: str, pb_seq: PbSeq, *, wait: bool = False
+        self, device_id: str, pb_seq: PbSeq, *, wait: bool = False, expected_generation: int | None = None
     ) -> int:
         """发送 PbSeq 到设备。
 
@@ -417,6 +398,9 @@ class DeviceWsService(metaclass=SingletonMeta):
 
         async with self._queue_lock:
             entry = self._devices.get(device_id)
+            if entry is not None and expected_generation is not None and entry.generation != expected_generation:
+                pb_seq.finish(PlaybackStatus.DISCONNECTED, reason="connection_replaced")
+                return 0
             if entry is None or entry.stopped:
                 logger.warning("[send] 设备不可用 device_id=%s entry=%s stopped=%s", device_id, entry is not None, getattr(entry, 'stopped', None) if entry else None)
                 pb_seq.finish(PlaybackStatus.DROPPED, reason="device_unavailable")
@@ -429,17 +413,65 @@ class DeviceWsService(metaclass=SingletonMeta):
             await pb_seq._done.wait()
         return n
 
-    async def send_and_wait(self, device_id: str, pb_seq: PbSeq) -> PlaybackOutcome:
+    async def send_and_wait(self, device_id: str, pb_seq: PbSeq, *, expected_generation: int | None = None) -> PlaybackOutcome:
         """发送并返回明确播放终态；旧 ``send`` 接口继续返回入队结果以保持兼容。"""
-        accepted = await self.send(device_id, pb_seq, wait=False)
+        accepted = await self.send(device_id, pb_seq, wait=False, expected_generation=expected_generation)
         if accepted:
             await pb_seq._done.wait()
         return pb_seq.outcome or pb_seq.finish(PlaybackStatus.DROPPED, reason="not_accepted")
 
-    async def open_speech_stream(self, device_id: str, req: str, *, sr: int, fmt: str, level: int = 1, voice_key: str = ""):
+    async def rom_command(self, device_id: str, op: str, arguments: dict, *, media: bytes = b"", timeout: float = 8,
+                          expected_generation: int | None = None) -> dict:
+        """Send a connection-scoped ROM command and await its actual result."""
+        entry = self._devices.get(device_id)
+        if entry is None or entry.ws is None or entry.stopped:
+            return {"ok": False, "error": "设备未连接"}
+        if expected_generation is not None and entry.generation != expected_generation:
+            return {"ok": False, "status": "cancelled", "error": "设备连接已变更"}
+        if "rom_tools_v1" not in entry.capabilities:
+            return {"ok": False, "error": "当前 ROM 不支持设备工具，请升级固件"}
+        if op == "image" and "image_rgb565_v1" not in entry.capabilities:
+            return {"ok": False, "error": "当前 ROM 不支持图片显示，请升级固件"}
+        if op not in {"volume", "image", "stop_image"} or len(entry.rom_waiters) >= 8:
+            return {"ok": False, "error": "设备指令无效或过于繁忙"}
+        command_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        entry.rom_waiters[command_id] = future
+        packet = {"type": "rom_command", "id": command_id, "op": op, "arguments": arguments, "next_bin_len": len(media)}
+        try:
+            if not await self._enqueue_dl(device_id, json.dumps(packet), binaries=[media] if media else [], generation=entry.generation):
+                return {"ok": False, "error": "设备指令发送失败"}
+            async with asyncio.timeout(timeout):
+                result = await future
+            expected_status = "displayed" if op == "image" else "completed"
+            if result.get("ok") and result.get("status") != expected_status:
+                return {"ok": False, "error": "设备回执没有确认操作完成"}
+            if result.get("ok") and op == "volume" and (type(result.get("volume")) is not int or not 0 <= result["volume"] <= 100):
+                return {"ok": False, "error": "设备返回的音量无效"}
+            if result.get("ok") and op == "volume" and type(result.get("volume")) is int and 0 <= result["volume"] <= 100:
+                from deskbot_server.dao.device_mapper import update_volume
+                await asyncio.to_thread(update_volume, device_id, result["volume"])
+            return result
+        except TimeoutError:
+            return {"ok": False, "error": "设备未在时限内确认指令"}
+        finally:
+            entry.rom_waiters.pop(command_id, None)
+
+    def accept_rom_result(self, device_id: str, data: dict) -> None:
+        entry = self._devices.get(device_id)
+        command_id = data.get("id")
+        if entry is not None and isinstance(command_id, str):
+            future = entry.rom_waiters.get(command_id)
+            if future is not None and not future.done() and isinstance(data.get("ok"), bool):
+                future.set_result({k: v for k, v in data.items() if k in {"ok", "status", "error", "volume", "width", "height"}})
+
+    async def open_speech_stream(self, device_id: str, req: str, *, sr: int, fmt: str, level: int = 1, voice_key: str = "",
+                                 expected_generation: int | None = None):
         from deskbot_server.service.application.pb_stream import PbSpeechStream
         async with self._queue_lock:
             entry = self._devices.get(device_id)
+            if entry is not None and expected_generation is not None and entry.generation != expected_generation:
+                return None
             if entry is None or entry.stopped or "pb_stream_v1" not in entry.capabilities:
                 return None
             entry.speech_epoch += 1
@@ -986,6 +1018,10 @@ class DeviceWsService(metaclass=SingletonMeta):
         绝不在持有 _queue_lock/_lock 期间等待任何任务结束。
         """
         tasks: list[asyncio.Task] = []
+        for future in list(entry.rom_waiters.values()):
+            if not future.done():
+                future.set_result({"ok": False, "error": "设备已断开或重连"})
+        entry.rom_waiters.clear()
         async with self._queue_lock:
             entry.stopped = True
             for queued in entry.queue:
@@ -1139,257 +1175,14 @@ class DeviceWsService(metaclass=SingletonMeta):
     # ======================================================================
 
     async def handle_asr_chat(self, websocket, device_id: str | None) -> None:
-        """/asr_chat WS：新固件打包帧上行（音频 + 摄像头）；pb_ack 流控。"""
-        from deskbot_server.service.conversation_service import conversation_provider
-        if device_id and (provider := conversation_provider(device_id)) in {"moss-live", "flecket"}:
-            from deskbot_server.service.moss_live_service import handle_moss_connection
-            await handle_moss_connection(self, websocket, device_id, provider=provider)
+        """设备媒体连接只接外部实时会话，不回退到本地模型组合。"""
+        if not device_id:
+            await websocket.close(code=1008, reason="device_id required")
             return
-        pipeline = self._pipeline
-        audio_cfg = self._audio_cfg
-        if pipeline is None or audio_cfg is None:
-            raise RuntimeError("DeviceWsService 尚未 bind，请先调用 bind() 注入依赖")
+        from deskbot_server.service.conversation_service import conversation_provider
+        from deskbot_server.service.moss_live_service import handle_moss_connection
 
-        try:
-            session = VadService().create_connection_session(pipeline)
-        except RuntimeError:
-            session = ConnectionSession(pipeline, audio_cfg)
-        peer = WsUtils.peer_str(websocket)
-
-        from deskbot_server.service.application.barge_in_probe import BargeInProbe
-        from deskbot_server.service.asr_service import AsrService
-
-        def probe_token():
-            entry = self._devices.get(device_id)
-            if entry is None or entry.ws is not websocket:
-                return None
-            req = entry.echo_guard.active_request()
-            return (entry.generation, entry.speech_revision, entry.confirmed_asr_mono, req) if req else None
-
-        async def transcribe_preview(pcm, sr):
-            return await AsrService().transcribe_preview(pcm, sr, device_id=device_id)
-
-        async def confirm_barge(token, text):
-            if probe_token() != token:
-                return
-            from deskbot_server.service.application.interaction_arbiter import interaction_arbiter
-            entry = self._devices.get(device_id)
-            entry.speech_revision += 1
-            entry.barge_until_mono = time.monotonic() + 8
-            entry.user_engaged_until_mono = time.monotonic() + 30
-            raw, raw_sr = barge_probe.raw_snapshot()
-            interaction_arbiter.interrupt(device_id)
-            await self.interrupt_current_playback(device_id, reason="confirmed_stop_preview", expected_req=token[-1])
-            if raw:
-                await session.begin_raw_barge(raw, raw_sr)
-            logger.info("[barge-in] stop_preview device_id=%s req=%s text=%r", device_id, token[-1], text)
-
-        def spoken_fragment(text, token):
-            entry = self._devices.get(device_id)
-            return entry is None or entry.echo_guard.spoken_fragment(text, token[-1])
-
-        barge_probe = BargeInProbe(transcribe_preview, probe_token, confirm_barge, spoken_fragment)
-
-        ensure_uplink_rate_stats_started()
-        if device_id:
-            await self.register(device_id, websocket)
-            self._devices[device_id].audio_session = session
-            logger.info("[/asr_chat] 接入 device_id=%s peer=%s", device_id, peer)
-        else:
-            logger.warning(
-                "[/asr_chat] 接入缺失 device_id peer=%s —— 不会出现在 /api/devices 设备列表，"
-                "请改用 ws://host:9000/asr_chat?device_id=<设备ID>",
-                peer,
-            )
-        try:
-            ready_json = _json_msg({"type": "ready", "device_id": device_id,
-                                    "capabilities": ["raw_preview_pcm_v1", *MEDIA_CAPABILITIES]})
-            ready_ok = await WsUtils.safe_send(websocket, ready_json)
-            logger.info("[/asr_chat] ready device_id=%s peer=%s sent=%s", device_id, peer, ready_ok)
-            if not ready_ok:
-                return
-            if device_id:
-                await deliver_boot_wake_scene(self, device_id)
-
-            async for message in websocket:
-                try:
-                    if isinstance(message, (bytes, bytearray)):
-                        payload = bytes(message)
-                        wire_entry = self._devices.get(device_id)
-                        frame = wire_entry.media_wire.uplink(payload) if wire_entry and wire_entry.ws is websocket else parse_packed_frame(payload)
-                        if frame is None:
-                            logger.warning("[/asr_chat] 无法解析打包帧 device_id=%s bytes=%d", device_id, len(payload))
-                            continue
-                        data = frame.doc
-                        attached_media = frame.bin
-                        msg_type = data.get("type")
-
-                        if msg_type == "audio":
-                            flush_audio = coerce_audio_flush(data)
-                            if not attached_media:
-                                if not flush_audio:
-                                    logger.warning("[/asr_chat] audio 帧缺少 binary device_id=%s", device_id)
-                                    continue
-                                # 固件在一段语音已经发完、batch 恰好为空时会发送
-                                # next_bin_len=0 + flush=1，要求服务端立即让 VAD 收尾。
-                                flushed = session.flush()
-                                await self.touch(device_id)
-                                if flushed:
-                                    logger.info(
-                                        "[/asr_chat] flush 切句完成 device_id=%s pcm_bytes=%d -> 触发ASR",
-                                        device_id,
-                                        len(flushed.pcm),
-                                    )
-                                    spawn(
-                                        self._run_asr_turn(
-                                            websocket,
-                                            pipeline,
-                                            flushed.pcm,
-                                            device_id=device_id,
-                                            uplink_sr=flushed.sample_rate,
-                                            uplink_ch=flushed.channels,
-                                            uplink_codec=flushed.codec,
-                                            speech_revision=self._devices[device_id].speech_revision if device_id in self._devices else None,
-                                        )
-                                    )
-                                continue
-                            codec = data.get("codec")
-                            sr_raw = data.get("sr")
-                            ch_raw = data.get("ch")
-                            opus_frames_raw = data.get("opus_frames") or data.get("frames") or data.get("n_frames")
-                            uplink_sr = int(sr_raw) if sr_raw is not None else audio_cfg.sample_rate
-                            uplink_ch = int(ch_raw) if ch_raw is not None else audio_cfg.channels
-                            note_uplink_audio(device_id)
-                            audio_entry = self._devices.get(device_id)
-                            if audio_entry is not None and audio_entry.ws is websocket:
-                                audio_entry.audio_ready_mono = time.monotonic()
-                            await self.touch(device_id)
-                            opus_frames = int(opus_frames_raw) if opus_frames_raw is not None else None
-                            from deskbot_server.service.application.uplink_preview import split_uplink_preview
-                            opus_media, raw_preview = split_uplink_preview(data, attached_media)
-                            if raw_preview:
-                                if audio_entry is not None and not audio_entry.raw_preview_seen:
-                                    audio_entry.raw_preview_seen = True
-                                    logger.info("[barge-in] raw preview enabled device_id=%s sr=8000 bytes=%d",
-                                                device_id, len(raw_preview))
-                                barge_probe.feed_raw(raw_preview)
-                            feed_revision = audio_entry.speech_revision if audio_entry else None
-                            utterance, _, speech_started = await session.feed_audio(
-                                opus_media, codec, sample_rate=uplink_sr, channels=uplink_ch, opus_frames=opus_frames,
-                                raw_preview=raw_preview,
-                            )
-                            if audio_entry and audio_entry.speech_revision != feed_revision:
-                                utterance, speech_started = None, False
-                            if not raw_preview and barge_probe.ready() and probe_token() is not None:
-                                barge_probe.feed(await session.speech_preview(), session.rom_sr)
-                            if speech_started and device_id:
-                                from deskbot_server.service.application.interaction_arbiter import interaction_arbiter
-                                entry = self._devices.get(device_id)
-                                if entry is None or entry.ws is not websocket:
-                                    continue
-                                if entry.echo_guard.defer_onset():
-                                    logger.info("[barge-in] verify speaker-overlap onset device_id=%s", device_id)
-                                else:
-                                    entry.speech_revision += 1
-                                    interaction_arbiter.interrupt(device_id)
-                                    await self.interrupt_current_playback(device_id, reason="speech_started")
-                                    logger.info("[barge-in] speech_started device_id=%s", device_id)
-                            if utterance:
-                                logger.info("[/asr_chat] VAD切句完成 device_id=%s pcm_bytes=%d -> 触发ASR", device_id, len(utterance))
-                                spawn(self._run_asr_turn(
-                                    websocket, pipeline, utterance,
-                                    device_id=device_id,
-                                    uplink_sr=session.rom_sr,
-                                    uplink_ch=session.rom_ch,
-                                    uplink_codec=session.rom_codec,
-                                    speech_revision=self._devices[device_id].speech_revision if device_id in self._devices else None,
-                                ))
-                            if flush_audio:
-                                flushed = session.flush()
-                                if flushed:
-                                    logger.info(
-                                        "[/asr_chat] 尾包 flush 切句完成 device_id=%s pcm_bytes=%d -> 触发ASR",
-                                        device_id,
-                                        len(flushed.pcm),
-                                    )
-                                    spawn(
-                                        self._run_asr_turn(
-                                            websocket,
-                                            pipeline,
-                                            flushed.pcm,
-                                            device_id=device_id,
-                                            uplink_sr=flushed.sample_rate,
-                                            uplink_ch=flushed.channels,
-                                            uplink_codec=flushed.codec,
-                                            speech_revision=self._devices[device_id].speech_revision if device_id in self._devices else None,
-                                        )
-                                    )
-                            continue
-
-                        if msg_type == "camera_frame":
-                            if attached_media:
-                                self._accept_camera_frame(device_id, attached_media, source="asr_chat")
-                            continue
-
-                        if msg_type == "device_hello":
-                            if device_id:
-                                async with self._queue_lock:
-                                    entry = self._devices.get(device_id)
-                                    if entry is not None and entry.ws is websocket:
-                                        caps = data.get("capabilities", [])
-                                        entry.capabilities = {c for c in caps if isinstance(c, str)} if isinstance(caps, list) else set()
-                                        entry.media_wire.capabilities = entry.capabilities.intersection(MEDIA_CAPABILITIES)
-                                        version = data.get("anim_version", "")
-                                        entry.anim_version = version if isinstance(version, str) else ""
-                                logger.info("[device hello] device_id=%s capabilities=%s", device_id, caps)
-                            continue
-
-                        if msg_type == "boot_connect":
-                            if device_id:
-                                await deliver_boot_wake_scene(self, device_id)
-                            continue
-
-                        if msg_type == "pb_ack":
-                            from deskbot_server.utils.util import _normalize_incoming_pb_ack
-
-                            norm = _normalize_incoming_pb_ack(data)
-                            if norm is not None and device_id:
-                                async with self._lock:
-                                    entry = self._devices.get(device_id)
-                                    sending = entry.sending_seq if entry else None
-                                    sending_req = sending.req if sending else None
-                                    sending_level = sending.level if sending else None
-                                logger.debug(
-                                    "[pb_ack RX] device_id=%s ack_type=%s req=%s space=%s | sending_seq req=%s level=%s",
-                                    device_id,
-                                    norm.get("ack_type"),
-                                    norm.get("req"),
-                                    norm.get("space"),
-                                    sending_req,
-                                    sending_level,
-                                )
-                                await self.ack(device_id, norm)
-                                await self.record_pb_ack(device_id, norm)
-                            continue
-
-                        logger.debug("[/asr_chat] 未知打包帧 type=%r device_id=%s", msg_type, device_id)
-                        continue
-
-                except Exception as exc:
-                    logger.exception("处理客户端消息失败: %s", format_exc_detail(exc))
-        except ConnectionClosed as closed:
-            logger.info("WebSocket 已关闭: %s", closed)
-        finally:
-            await barge_probe.aclose()
-            entry = self._devices.get(device_id)
-            if entry is not None and entry.audio_session is session:
-                entry.audio_session = None
-            # 调试：保存上行音频WAV
-            with contextlib.suppress(Exception):
-                session.save_debug_wav()
-            if device_id:
-                remove_device(device_id)
-                await self.unregister(device_id, websocket)
+        await handle_moss_connection(self, websocket, device_id, provider=conversation_provider(device_id))
 
     def _accept_camera_frame(self, device_id: str | None, media: bytes, *, source: str) -> None:
         """缓存最新帧并投递耗时业务；调用方的 WS 接收循环不等待处理完成。"""
@@ -1400,6 +1193,9 @@ class DeviceWsService(metaclass=SingletonMeta):
         if entry is not None and entry.conversation_provider in {"moss-live", "flecket"}:
             if entry.conversation_session is not None:
                 entry.conversation_session.offer_camera(frame)
+            # Web preview is independent of upstream camera opt-in and face inference.
+            spawn(CameraFaceService().try_emit_video_frame(device_id, frame, meta={"source": source}))
+            spawn(CameraFaceService().process(device_id, frame, frame_source=source, log_channel=f"/{source}"))
             if self._bus_service is not None:
                 spawn(self._broadcast_camera_frame(device_id, frame))
             return
@@ -1450,241 +1246,3 @@ class DeviceWsService(metaclass=SingletonMeta):
                     await self.touch(device_id)
         except ConnectionClosed as closed:
             logger.info("[/camera_uplink] closed device_id=%s peer=%s: %s", device_id, peer, closed)
-
-    async def _run_asr_turn(
-        self,
-        websocket,
-        pipeline,
-        pcm_segment: bytes,
-        *,
-        device_id: str | None = None,
-        uplink_sr: int = 16000,
-        uplink_ch: int = 1,
-        uplink_codec: str = "opus",
-        speech_revision: int | None = None,
-    ) -> None:
-        """VAD 切出一句后：ASR → LLM → TTS。"""
-        from deskbot_server.service.application.capability_labels import asr_model_label
-        from deskbot_server.service.application.convo_audio_store import ConvoAudioStore
-        from deskbot_server.service.application.ws_chat_turn import publish_ws_chat_turn, run_ws_chat_turn
-        from deskbot_server.service.asr_service import AsrService
-
-        request_id = uuid.uuid4().hex[:16]
-        sample_rate = uplink_sr or 16000
-        # 声纹识别与 ASR 并行：每次 VAD 判定通过即对 utterance 做说话人识别（写快照，
-        # 供本轮 LLM user 正文「语音转写，声纹判定：…」括号注记读取）；任何装配异常都不阻塞 ASR 轮
-        vpr_task = None
-        vpr_wait_budget_s = 0.0
-        try:
-            from deskbot_server.service.voiceprint_service import VOICEPRINT_WAIT_BUDGET_S, VoiceprintService
-
-            if VoiceprintService().enabled():
-                vpr_task = asyncio.create_task(
-                    VoiceprintService().identify(
-                        device_id=device_id,
-                        pcm_bytes=pcm_segment,
-                        sample_rate=sample_rate,
-                        request_id=request_id,
-                    ),
-                    name=f"voiceprint:{device_id}:{request_id}",
-                )
-                vpr_wait_budget_s = float(VOICEPRINT_WAIT_BUDGET_S)
-        except Exception:
-            logger.debug("[vpr] 声纹识别任务启动失败（忽略，不阻塞 ASR 轮）", exc_info=True)
-            vpr_task = None
-            vpr_wait_budget_s = 0.0
-        seg_duration_ms = int(len(pcm_segment) / 2 / max(1, sample_rate) * 1000)
-        logger.info("[ASR] 开始识别 device_id=%s req=%s pcm_bytes=%d audio_ms=%d sr=%d", device_id, request_id, len(pcm_segment), seg_duration_ms, sample_rate)
-        t_asr_start = time.monotonic()
-
-        try:
-            text = await AsrService().transcribe(pcm_segment, sample_rate, device_id=device_id)
-        except Exception:
-            text = await pipeline.asr(pcm_segment, sample_rate=sample_rate, device_id=device_id)
-        t_asr_text = time.monotonic()
-        asr_ms = (t_asr_text - t_asr_start) * 1000
-
-        if not text:
-            logger.info(
-                "[ASR] 结果为空 device_id=%s req=%s audio_ms=%d asr_ms=%.0f",
-                device_id, request_id, seg_duration_ms, asr_ms,
-            )
-            return
-
-        entry = self._devices.get(device_id)
-        confirmed_barge = bool(entry and entry.ws is websocket and t_asr_start < entry.barge_until_mono)
-        if speech_revision is not None and entry and entry.ws is websocket and entry.speech_revision != speech_revision:
-            logger.info("[barge-in] discard stale ASR before routing device_id=%s req=%s", device_id, request_id)
-            if vpr_task is not None and not vpr_task.done():
-                vpr_task.cancel()
-                await asyncio.gather(vpr_task, return_exceptions=True)
-            return
-        if confirmed_barge:
-            import re
-            stop = re.search(r"停一下|听一下|等一下|先停|暂停|别说了|别说|打住", text)
-            if stop and text[stop.end():].strip("，。！？ ,.!?"):
-                text = text[stop.end():].lstrip("，。！？ ,.!?")
-                logger.info("[barge-in] retained follow-up device_id=%s req=%s text=%r", device_id, request_id, text)
-            elif stop:
-                logger.info("[barge-in] stop-only accepted, waiting for follow-up device_id=%s req=%s", device_id, request_id)
-                if vpr_task is not None and not vpr_task.done():
-                    vpr_task.cancel()
-                    await asyncio.gather(vpr_task, return_exceptions=True)
-                return
-        if entry is not None and entry.ws is websocket:
-            echo_reason = entry.echo_guard.reject(
-                text, segment_start=t_asr_start - seg_duration_ms / 1000,
-                segment_end=t_asr_start,
-            )
-            if echo_reason and not confirmed_barge:
-                logger.info("[ASR echo] ignored device_id=%s req=%s reason=%s text=%r",
-                            device_id, request_id, echo_reason, text)
-                if vpr_task is not None and not vpr_task.done():
-                    vpr_task.cancel()
-                    await asyncio.gather(vpr_task, return_exceptions=True)
-                return
-
-        try:
-            asr_ok = AsrService().is_valid_text(text, device_id=device_id)
-        except Exception:
-            asr_ok = pipeline.is_valid_asr_text(text, device_id=device_id)
-        if not asr_ok:
-            logger.info(
-                "[ASR] 结果被过滤 device_id=%s req=%s audio_ms=%d asr_ms=%.0f text=%r",
-                device_id, request_id, seg_duration_ms, asr_ms, text,
-            )
-            return
-
-        logger.info(
-            "[ASR] 识别成功 device_id=%s req=%s audio_ms=%d asr_ms=%.0f text=%r",
-            device_id, request_id, seg_duration_ms, asr_ms, text,
-        )
-
-        # 先留存媒体（原声 / 最近帧），再发 asr_done：让用户气泡在 ASR 完成当下
-        # 就能拿到音频与人脸图（live 广播即时渲染，不等 LLM/TTS 终态事件）
-        # 采集门控：仅当后台有订阅者查看该设备实时对话时才留存（无人查看不采集）
-        _bus = self._bus_service
-        _watching = bool(_bus) and bool(getattr(_bus, "has_subscribers_sync", None) and _bus.has_subscribers_sync(device_id))
-        audio_saved = False
-        face_saved = False
-        if _watching:
-            audio_saved = ConvoAudioStore().put(device_id, request_id, "asr", pcm_segment, sample_rate=sample_rate)
-            frame_jpeg = self.latest_camera_frame(device_id)
-            face_saved = bool(frame_jpeg) and ConvoAudioStore().put_raw(device_id, request_id, "face", frame_jpeg)
-
-        # asr_done stage：仅广播给页面订阅者，供前端先渲染用户气泡（不向设备下发）
-        from deskbot_server.ws.stages import _emit_stage
-
-        asr_model = asr_model_label(device_id)
-        await _emit_stage(
-            websocket, device_id, request_id, "asr_done",
-            send_client=False,
-            event_fields={
-                "asr_text": text,
-                "asr_ms": int(asr_ms),
-                "asr_model": asr_model,
-                "audio_asr": audio_saved,
-                "face_img": face_saved,
-                "source": "asr",
-            },
-            bus_service=self._bus_service,
-        )
-
-        # 等本句声纹判定落地再进对话轮（与 ASR 并行启动，通常已就绪；超时不阻塞，
-        # 快照由后台任务补写，后续轮次/展示仍可读到）
-        from deskbot_server.service.application.asr_attention_gate import is_explicit_robot_request
-        direct_request = is_explicit_robot_request(text)
-        active_dialogue = bool(entry and t_asr_start < entry.user_engaged_until_mono)
-        addressed_input = confirmed_barge or direct_request or active_dialogue
-        if vpr_task is not None and not addressed_input:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(asyncio.shield(vpr_task), timeout=vpr_wait_budget_s)
-
-        # ── 对话注意力门控（闲聊过滤）：相机最近画面无人 + 本句声纹判定不是认识的
-        # 人 → 疑似周围人在闲聊，跳过 LLM/TTS 流程。声纹只在引擎启用（起了识别
-        # 任务）时采信；引擎无结论一律放行（避免故障期机器人「变哑」）。
-        from deskbot_server.service.application.asr_attention_gate import AttentionVerdict, decide_round
-        from deskbot_server.service.application.voice_snapshot_cache import get_voice_snapshot
-
-        vpr_engine_on = vpr_task is not None
-        verdict = AttentionVerdict(True, "addressed_input", "explicit request or active dialogue") if addressed_input else await decide_round(
-            self, device_id, vpr_engine_on=vpr_engine_on,
-            voice_snapshot=(get_voice_snapshot(device_id) if vpr_engine_on else None),
-        )
-        if not verdict.engage and not confirmed_barge:
-            logger.info(
-                "[ASR] 忽略疑似闲聊 device_id=%s req=%s audio_ms=%d asr_ms=%.0f text=%r reason=%s note=%s",
-                device_id, request_id, seg_duration_ms, asr_ms, text, verdict.reason, verdict.note,
-            )
-            # 静默不理会：只给页面订阅者留一条忽略标记（asr_done 已在上方发出）
-            await _emit_stage(
-                websocket,
-                device_id,
-                request_id,
-                "asr_ignored",
-                send_client=False,
-                event_fields={
-                    "asr_text": text,
-                    "asr_ms": int(asr_ms),
-                    "asr_model": asr_model,
-                    "ignore_reason": verdict.reason,
-                    "note": verdict.note,
-                    "source": "asr",
-                },
-            )
-            return
-
-        if speech_revision is not None:
-            entry = self._devices.get(device_id)
-            if (entry is None or entry.ws is not websocket or entry.speech_revision != speech_revision
-                    or t_asr_start < entry.confirmed_asr_mono):
-                logger.info("[barge-in] discard stale ASR device_id=%s req=%s", device_id, request_id)
-                return
-            # Deferred echo onsets do not invalidate an actual user's ASR.
-            # Among confirmed overlaps, a late older ASR cannot replace a newer one.
-            entry.confirmed_asr_mono = t_asr_start
-            entry.barge_until_mono = 0.0
-            entry.user_engaged_until_mono = time.monotonic() + 30
-            if entry.audio_session is not None:
-                entry.audio_session.end_raw_barge()
-        try:
-            from deskbot_server.service.application.interaction_arbiter import interaction_arbiter
-            interaction_arbiter.interrupt(device_id or "")
-            if device_id:
-                await self.interrupt_current_playback(device_id, reason="recognized_user_speech")
-            flow = await run_ws_chat_turn(
-                websocket,
-                pipeline,
-                text,
-                request_id=request_id,
-                device_ws=self,
-                device_id=device_id,
-                t_asr_start=t_asr_start,
-                t_asr_text=t_asr_text,
-                bus_service=self._bus_service,
-            )
-        except Exception as exc:
-            logger.exception("[ASR] 对话轮次异常 device_id=%s req=%s", device_id, request_id)
-            await publish_ws_chat_turn(
-                self._bus_service,
-                self,
-                device_id,
-                source="asr",
-                asr_text=text,
-                t_asr_start=t_asr_start,
-                t_asr_text=t_asr_text,
-                flow={"status": "error", "error": str(exc), "t_llm_end": t_asr_text, "t_tts_end": t_asr_text},
-                request_id=request_id,
-            )
-            return
-        await publish_ws_chat_turn(
-            self._bus_service,
-            self,
-            device_id,
-            source="asr",
-            asr_text=text,
-            t_asr_start=t_asr_start,
-            t_asr_text=t_asr_text,
-            flow=flow,
-            request_id=request_id,
-        )

@@ -117,6 +117,7 @@ class CameraFaceService(metaclass=SingletonMeta):
         self._trackers: dict[str, FaceTracker] = {}
         self._inflight: dict[str, asyncio.Task] = {}
         self._frame_count: dict[str, int] = {}
+        self._last_inference: dict[str, float] = {}
         self._video_subs: dict[str, tuple[str | None, VideoStreamCallback]] = {}
         self._video_subs_lock = asyncio.Lock()
         self._loop: asyncio.EventLoop | None = None
@@ -332,6 +333,12 @@ class CameraFaceService(metaclass=SingletonMeta):
             )
             return
 
+        if self.runtime.mode == "none":
+            return
+        now = time.monotonic()
+        if now - self._last_inference.get(device_id, float("-inf")) < 0.35:
+            return
+        self._last_inference[device_id] = now
         task = asyncio.create_task(
             self._detect_then_post(
                 device_id=device_id, frame_bytes=frame_bytes, frame_source=frame_source, log_channel=log_channel
@@ -469,8 +476,13 @@ class CameraFaceService(metaclass=SingletonMeta):
 
             runtime = get_runtime()
             live = LiveService()
-            await live.on_face_tick(device_id, detect)
-            if not live.owns_face_tracking(device_id):
+            from deskbot_server.dao.device_mapper import get_auto_reply, get_camera_servo_auto_mode
+            mode = get_camera_servo_auto_mode(device_id)
+            if mode == "gaze" and get_auto_reply(device_id):
+                await live.on_face_tick(device_id, detect)
+            else:
+                live.on_face_lost(device_id)
+            if mode and not live.owns_face_tracking(device_id):
                 await camera_servo_follower_tick(runtime.device_ws, device_id, detect)
         except RuntimeError:
             # 独立的人脸配置/测试路径没有完整应用运行时，跳过设备下发。

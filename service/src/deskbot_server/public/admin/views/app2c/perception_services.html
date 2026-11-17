@@ -1,0 +1,45 @@
+{% extends "base_2c.html" %}
+{% block page_title %}感知服务 · 小歪{% endblock %}
+{% block global_setup_suppress_device %}1{% endblock %}
+{% block extra_head %}
+<script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>
+<style>
+.perception-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:20px}
+.perception-card{padding:22px;border:var(--bw) solid var(--line);border-radius:var(--rl);background:var(--panel);min-width:0}
+.perception-actions{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}.perception-note{color:var(--dim);line-height:1.7}
+.perception-error{color:#b42318;overflow-wrap:anywhere}.perception-card h2{margin-top:0}
+</style>
+{% endblock %}
+{% block content %}
+<div id="perceptionApp">
+  <div class="pagehd"><div><div class="eyebrow">PERCEPTION</div><h1>感知服务</h1><p>管理人脸识别与声纹识别，供所有机器人共用。</p></div><button class="btn ghost" @click="load">刷新</button></div>
+  <p role="status" class="perception-error">[[ error ]]</p><p role="status">[[ message ]]</p>
+  <div class="perception-grid">
+    <section class="perception-card" v-for="s in services" :key="s.name">
+      <h2>[[ title(s) ]]</h2><p>[[ state(s) ]]</p>
+      <p class="perception-note">[[ s.name==='insightface-engine' ? '检测画面中的人脸、匹配人物档案，并为人脸跟随提供位置。' : '从语音片段提取声纹，匹配本设备的人物档案。' ]]</p>
+      <div class="perception-actions">
+        <button class="btn" :disabled="working(s) || busy===s.name" @click="run(s,s.installed?'start':'install')">[[ s.installed?'启动':'安装' ]]</button>
+        <button class="btn ghost" :disabled="!s.pid || busy===s.name" @click="run(s,'stop')">停止</button>
+        <button class="btn ghost" :disabled="!s.installed || working(s) || busy===s.name" @click="run(s,'restart')">重启</button>
+      </div>
+      <label><input type="checkbox" :checked="s.auto_start" :disabled="busy===s.name" @change="run(s,'auto-start',{enabled:$event.target.checked})"> 随主服务自动启动</label>
+      <p v-if="s.last_error" class="perception-error">[[ s.last_error ]]</p>
+      <p class="perception-note">[[ s.installed ? '已安装 · '+(s.installed_version || s.version) : '尚未安装' ]]</p>
+    </section>
+  </div>
+  <p class="perception-note">安装后点击启动。首次加载模型可能需要几分钟；只有显示“运行正常”才表示可以识别。识别开关与人脸跟随方式仍在「模型配置／机器人配置」中设置。</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+Vue.createApp({delimiters:['[[',']]'],data(){return{services:[],busy:'',error:'',message:'',timer:null};},methods:{
+  title(s){return s.name==='insightface-engine'?'人脸识别':'声纹识别';},
+  working(s){return ['installing','starting','restarting','stopping'].includes(s.state);},
+  state(s){return {not_installed:'尚未安装',installing:'正在安装…',stopped:'已停止',starting:'正在加载模型…',restarting:'正在重启…',running:s.healthy===true?'运行正常':'已启动，等待健康检查',unhealthy:'暂不可用，请检查服务',stopping:'正在停止…',failed:'启动失败',crash_loop:'连续启动失败，请检查安装'}[s.state] || s.state;},
+  async api(path,options){const r=await fetch(path,{cache:'no-store',...options});const d=await r.json();if(!r.ok || d.ok===false)throw new Error(d.error || d.detail || '操作失败');return d;},
+  async load(){try{this.services=(await this.api('/api/perception-services')).services;}catch(e){this.error=e.message;}},
+  async run(s,op,args={}){this.busy=s.name;this.error='';this.message='';try{await this.api('/api/perception-services/'+encodeURIComponent(s.name)+'/'+op,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(args)});this.message=this.title(s)+'操作完成';await this.load();}catch(e){this.error=e.message;}finally{this.busy='';}},
+},mounted(){this.load();this.timer=setInterval(()=>this.load(),2500);},beforeUnmount(){clearInterval(this.timer);}}).mount('#perceptionApp');
+</script>
+{% endblock %}

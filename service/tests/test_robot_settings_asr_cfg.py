@@ -555,100 +555,14 @@ def _login_client(email: str):
     return client
 
 
-def test_api_asr_config_info_endpoint(temp_db, monkeypatch, tmp_path):
-    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", tmp_path / ".env")
-    client = _login_client("asr-cfg@example.com")
-    resp = client.get("/api/robot-settings/asr/config-info")
-    assert resp.status_code == 200
-    payload = resp.get_json()
-    assert payload["ok"] is True
-    assert payload["default_audio"]["path"] == "data/test/asr.wav"
-    assert payload["funasr_url"]
-    assert isinstance(payload["doubao"]["api_key_set"], bool)
-    assert "url" in payload["doubao"]
-    assert "api_key" in payload["doubao"]
 
 
-def test_api_asr_default_audio_endpoint(temp_db, monkeypatch, tmp_path):
-    """默认音频端点：返回 data/test/asr.wav 供对话框播放试听。"""
-    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", tmp_path / ".env")
-    client = _login_client("asr-audio@example.com")
-
-    resp = client.get("/api/robot-settings/asr/default-audio")
-    assert resp.status_code == 200
-    assert resp.headers.get("content-type", "").startswith("audio/wav")
-    assert resp.data[:4] == b"RIFF"  # WAV 魔数
-    assert len(resp.data) > 1000
 
 
-def test_api_asr_config_save_endpoint(temp_db, monkeypatch, tmp_path):
-    """保存 → 写当前设备 asr_param（DB），不再写 .env。"""
-    env_file = tmp_path / ".env"
-    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", env_file)
-    _clean_doubao_env(monkeypatch)
-    from deskbot_server.web.app import create_app
-    from tests._auth_compat import create_user
-    from tests.device_bind_helpers import bind_device_online
-
-    email = "asr-cfg-save@example.com"
-    user = create_user(email, "password1234")
-    bind_device_online(user.id, "brfk_asr")
-    client = create_app().test_client()
-    client.post("/login", data={"email": email, "password": "password1234"})
-    client.post("/app/api/devices/select", json={"device_id": "brfk_asr"})
-
-    resp = client.post(
-        "/api/robot-settings/asr/config",
-        json={"funasr": {"url": "http://127.0.0.1:9102"}, "doubao": {"api_key": "key-1", "uid": "u-1"}},
-    )
-    assert resp.status_code == 200
-    payload = resp.get_json()
-    assert payload["ok"] is True
-    assert payload["doubao"]["api_key_set"] is True
-    assert payload["doubao"]["uid"] == "u-1"
-    assert payload["funasr_url"] == "http://127.0.0.1:9102"
-    params = get_asr_param("brfk_asr")
-    assert params["doubao"]["api_key"] == "key-1"  # DB 落库
-    assert params["funasr"]["url"] == "http://127.0.0.1:9102"
-    assert not env_file.exists()  # .env 未创建 = 不再写全局 env
 
 
-def test_api_asr_config_save_endpoint_no_device_400(temp_db, monkeypatch, tmp_path):
-    _clean_doubao_env(monkeypatch)
-    client = _login_client("asr-cfg-nodev@example.com")  # 未选设备
-    resp = client.post(
-        "/api/robot-settings/asr/config", json={"doubao": {"api_key": "k"}}
-    )
-    assert resp.status_code == 400
-    assert resp.get_json()["ok"] is False
 
 
-def test_api_asr_test_endpoint_multipart(temp_db, monkeypatch, tmp_path):
-    monkeypatch.setattr("deskbot_server.client.tts.env_store.ENV_FILE", tmp_path / ".env")
-    client = _login_client("asr-test@example.com")
-
-    # 未提供音频且不用默认 → 400
-    resp = client.post("/api/robot-settings/asr/test", data={"provider": "funasr", "use_default": "0"})
-    assert resp.status_code == 400
-    assert resp.get_json()["ok"] is False
-
-    # 上传 WAV → 执行结果恒 200 + success 字段（funasr 9102 可能运行也可能没运行，只断言形状）
-    resp = client.post(
-        "/api/robot-settings/asr/test",
-        data={
-            "provider": "funasr",
-            "use_default": "0",
-            "audio": (io.BytesIO(_stereo_wav_bytes(4800)), "a.wav"),
-        },
-    )
-    assert resp.status_code == 200
-    payload = resp.get_json()
-    assert payload["ok"] is True
-    assert payload["provider"] == "funasr"
-    assert payload["success"] in (True, False)
-    assert "http_code" in payload
-    assert "elapsed_ms" in payload
-    assert "used_default" in payload
 
 
 # ---------- resolve_asr_adapter：设备 asr_param 优先级 ----------

@@ -26,12 +26,14 @@ def _register_endpoints_from_modules() -> None:
         auth_bp,
         debug_bp,
         flash_bp,
+        media_bp,
+        perception_bp,
         quest_bp,
         robot_settings_bp,
         site,
     )
 
-    for mod in (site, auth_bp, app_bp, app2c_bp, debug_bp, flash_bp, quest_bp, robot_settings_bp):
+    for mod in (site, auth_bp, app_bp, app2c_bp, debug_bp, flash_bp, quest_bp, robot_settings_bp, media_bp, perception_bp):
         for name, path in getattr(mod, "ENDPOINTS", {}).items():
             register_endpoint(name, path)
 
@@ -87,6 +89,8 @@ def mount_web(app: FastAPI) -> None:
     from deskbot_server.web.blueprints.auth_bp import router as auth_router
     from deskbot_server.web.blueprints.debug_bp import router as debug_router
     from deskbot_server.web.blueprints.flash_bp import router as flash_router
+    from deskbot_server.web.blueprints.media_bp import router as media_router
+    from deskbot_server.web.blueprints.perception_bp import router as perception_router
     from deskbot_server.web.blueprints.quest_bp import router as quest_router
     from deskbot_server.web.blueprints.robot_settings_bp import router as robot_settings_router
     from deskbot_server.web.blueprints.site import router as site_router
@@ -104,7 +108,7 @@ def mount_web(app: FastAPI) -> None:
 
     register_routers(app, [browser_router(router) for router in (
         site_router, auth_router, app_router, app2c_router, flash_router,
-        quest_router, robot_settings_router, debug_router,
+        quest_router, robot_settings_router, debug_router, media_router, perception_router,
     )])
 
     app.add_middleware(

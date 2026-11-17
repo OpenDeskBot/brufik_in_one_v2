@@ -7,21 +7,18 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from deskbot_server.model.settings import AppSettings
-    from deskbot_server.service.application.chat_service import ChatService
     from deskbot_server.service.bus_service import BusService
     from deskbot_server.service.device_ws_service import DeviceWsService
-    from deskbot_server.service.pipeline.audio import AudioConfig
 
 
 @dataclass
 class AppRuntime:
     settings: AppSettings
-    chat: ChatService
-    audio_cfg: AudioConfig
     ws_path: str
     bus_service: BusService
     device_ws: DeviceWsService
     scheduler: object | None = None
+    perception_services: object | None = None
 
 
 _RUNTIME: AppRuntime | None = None

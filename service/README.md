@@ -1,6 +1,6 @@
 # deskbot-server
 
-ESP32 桌面机器人后端：设备上传语音（可选摄像头），服务端完成 **VAD → ASR → LLM → TTS**，经 **pb** 协议下发 PCM、屏幕动画与舵机指令。
+ESP32 桌面机器人后端：设备上传语音（可选摄像头），外部 Flecket / MOSS Live 服务完成 **VAD、ASR、LLM、TTS**，主服务负责媒体桥接、设备与工具执行，经 **pb** 协议下发 PCM、屏幕动画与舵机指令。
 
 本目录位于 monorepo [`brufik_in_one/service/`](../)。固件见 [`../hardware/`](../hardware/)。
 
@@ -20,15 +20,14 @@ sudo apt install -y python3.11 python3.11-venv python3.11-dev ffmpeg curl git
 # 2. 准备配置（云端模型按需配置密钥）
 cd service   # monorepo 内；独立 clone 时进入对应目录
 cp .env.example .env
-# 默认可使用独立本地模型服务；选择云端模型时，按 provider 配置相应密钥。
-# 可选：ARK_API_KEY 与 ARK_MODEL（火山方舟，仅当设备在「机器人配置 → 大脑 LLM」中选 ark 时需要）
+# 配置 FLECKET_API_KEY（或 MOSS_API_KEY），在「开发者选项 → 模型配置」设置外部 Agent。
 
-# 3. 一键启动（自动建 venv、下载 VAD 模型、起主服务 + Web 控制台）
+# 3. 一键启动（自动建 venv、起主服务 + Web 控制台）
 chmod +x start.sh
 ./start.sh
 ```
 
-主服务本身只下载 Silero VAD 模型（约 2.3MB，语音切句用）；**ASR / TTS / 声纹 / 本地 LLM 模型均由各独立外部服务安装时自备**（独立 venv + 服务目录内模型，不再进主服务）——启动后在控制台菜单「外部服务」（高级 → 外部服务）安装并启动所需服务即可，详见 [docs/external_services.md](docs/external_services.md)。
+主服务不下载或加载语音模型，不再装配本地 ASR → LLM → TTS。所有设备直接连接外部 Flecket 或 MOSS Live 会话；上游服务的部署与模型管理由各自服务负责。
 
 **第二次及以后**若 `.venv` 已完整，直接 `./start.sh` 会自动跳过 pip 安装；也可显式：
 
@@ -94,7 +93,7 @@ WAV 须 **16 kHz / mono / s16le**。麦克风实时测试见 [tools/README.md](t
 | 用量看板 | 按 Key / 设备查看 ASR、人脸、LLM、TTS 字节统计 |
 | 调试台 | 设备在线、LLM 试聊、豆包 TTS、流水线等 |
 
-语音对话中，LLM 可通过工具创建定时提醒（`schedule_task`）、读写设备临时文件、联网搜索等，详见 [docs/SERVER.md](docs/SERVER.md)。
+Flecket 实时 Agent 已接入动作与表情、查询时间、设备记忆、定时提醒、ROM 音量、音乐播放和图片展示。声音与人设保留上游配置，工具按当前设备能力动态合并。媒体可在「媒体库」上传，详见 [docs/SERVER.md](docs/SERVER.md)。
 
 ---
 
@@ -103,17 +102,11 @@ WAV 须 **16 kHz / mono / s16le**。麦克风实时测试见 [tools/README.md](t
 单条 WebSocket：`/asr_chat?device_id=<id>`。上行、下行均采用 **「JSON + 紧随一条 binary」**，长度由 **`next_bin_len`** 声明，**不用 base64**。
 
 ```
-┌──────── ESP32 ────────┐                    ┌──── deskbot-server ────┐
-│ 麦克风 Opus/PCM       │  audio + binary    │ VAD → 外部 funasr 服务（HTTP）→ 文本     │
-│ 可选 JPEG             │  camera_frame      │ → 方舟 LLM + tools │
-│ flush / pb_ack        │ ─────────────────► │ → 豆包 TTS + 音素口型   │
-│                       │                    │ → 组 pb + PCM           │
-│ 播放 PCM + 画屏       │  pb_* + binary     │                         │
-│ 舵机 / 音量 / 帧率    │ ◄───────────────── │                         │
-└───────────────────────┘                    └─────────────────────────┘
+ESP32 麦克风 / 摄像头 → deskbot-server 媒体桥接 → 外部 Flecket / MOSS Live
+ESP32 播放 / 屏幕 / 舵机 ← PB / Opus 下行 ← 上游实时语音结果
 ```
 
-外部 Agent 模式由上游完成 ASR、LLM 和 TTS。兼容的本地模型组合仍可使用外部 MOSS-TTS-Nano 或豆包端点；端点由各自服务运维，后台不再负责安装和启停。
+语音识别、对话生成与语音合成统一由外部实时服务完成；主服务不安装、启停或回退到本地模型组合。
 
 ### 上行（设备 → 服务端）
 
@@ -182,15 +175,16 @@ npm ci
 CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npm run test:browser
 ```
 
-`GET /health` 统一返回 `{"status":"ok"}`。所有 HTTP 响应带 `X-Request-ID`。多实例部署时，只在唯一调度实例启用提醒调度，其余设置 `DESKBOT_SCHEDULER_ENABLED=0`。正常停止会等待在途提醒结束。
+`GET /health` 统一返回 `{"status":"ok"}`。所有 HTTP 响应带 `X-Request-ID`。多实例部署时，外部实时服务负责对话生成；新的提醒调度器只向外部 Agent 发起播报，不装配本地语音模型。
 
 ### 外部 Agent 实时语音
 
 「机器人设置 → 对话方式」选择 **外部 Agent（flecket / Realtime）**，
 从「已保存的 Agent」选择预设，或填写其他兼容服务地址及 API Key，
 点击「保存对话方式」，设备自动重连。人设、音色留空时继承上游 Agent 配置，
-上游工具定义也会保留；已接入该 Agent 的 `get_current_time` 客户端工具，
-其他未接入工具返回明确错误，不执行任意工具。
+上游工具定义也会保留；连接时合并当前设备的工具清单和使用规则。
+`robot_perform` 使用设备的动作／表情枚举，服务端工具与 ROM 工具均绑定当前设备；
+未知工具返回明确错误。
 `config.yaml` 的 `conversation.flecket` 配置服务默认地址和 Agent 清单。
 已加入相邻 flecket 项目的三个 Agent，默认「豆包llm_tts」
 （`agent_265823d9ffd34dd7`）。当前保存的地址仍为 `127.0.0.1:9110`；
@@ -213,7 +207,21 @@ VAD、ASR、LLM、TTS，并返回 48kHz PCM16，服务端连续重采样为 16kH
 `conversation.item.truncate`。`response.done` 只表示生成结束，
 播放完成依照设备回执报告 `flecket.playback`。可选摄像头仅在新语音开始时
 发送最近一帧；图片能力取决于 flecket 上游模型。该接入与 MOSS Live 一样
-提供直接语音会话，不注册本地机器人业务工具；已接入上游 Agent 的查询时间工具。
+提供直接语音会话。Flecket 模式另提供机器人业务工具；MOSS Live 保留直接语音桥接。
 
-本地模型组合的系统默认 LLM 仍使用原有硅基流动配置，flecket 不作为 LLM 候选。
+本地模型组合已从启动、设备连接和设置入口移除。旧设备保存的 `local` 模式在下次启动时迁移为 `flecket`，既有外部服务地址、密钥及旧模型参数保留。缺少外部服务配置时会明确连接失败，不回退本地模型。
+旧本地对话调度不再启动。提醒由新的外部 Agent 调度器处理，默认每 5 秒轮询；设备忙碌、离线或用户打断时延后重试，设备确认播完才记为完成。剧情／社交主动对话保持停用。
+`/api/device_tts` 和 `/api/scene_playbook/run` 返回 410，原独立 ASR / LLM / TTS 配置接口已移除。
 协议及播放回归使用内存传输替身；真实服务与设备联调需运行环境网络权限。
+
+### 媒体与 ROM 工具
+
+「媒体库」支持按设备上传图片、音乐，预览、删除、播放／停止和音量控制。图片会等比适配 284×240 屏幕；音乐由 ffmpeg 预处理为单声道 16kHz，再用现有 Opus/PB 链路流式播放。每个上传最多 20 MB，音乐保留前 3 分钟，每台设备最多 100 个资源。当前提供用户上传的资料库，不提供在线曲库检索。
+
+ROM 新增 `rom_tools_v1` 和 `image_rgb565_v1` 能力。音量工具等待实际扬声器设置回执，图片等待显示任务确认已绘制；旧 ROM 不注册这些工具，需刷入新版固件。普通音乐播放沿用 `pb_stream_v1`。默认播报回声保护同样适用于音乐；未开启播放时插话时，可在媒体库手动停止。
+
+### 人脸与声纹感知服务
+
+开发者菜单「感知服务」（`/perception-services`）仅管理 `insightface-engine`（9103）与 `wespeaker-resnet34`（9104），提供安装、启动、停止、重启和自动启动。进程、模型和依赖仍在各自 `externals/` 独立环境中；不恢复本地 ASR/LLM/TTS 编排，也不提供通用命令执行入口。服务状态会校验模型就绪字段，而不仅是 HTTP 端口。
+
+摄像头预览与限频人脸分析并行，识别结果写入原有人物快照；跟随仅在当前设备明确开启时发送低优先级舵机指令。声纹从实时上传 PCM 中采样短语音片段，安静约 600ms 后识别，连续说话最多取 8 秒；每设备最多一次在途识别，不保存原始录音。机器人播报／音乐期间和尾音窗口暂停采样，避免把扬声器当作用户。语音片段筛选不是本地 ASR 或对话流程，特征推理仍调用独立声纹服务。

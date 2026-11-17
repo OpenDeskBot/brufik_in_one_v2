@@ -49,9 +49,14 @@ def _migrate_devices_schema(engine) -> None:
         if "asr_provider" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN asr_provider VARCHAR(32) NOT NULL DEFAULT 'funasr'"))
         if "conversation_provider" not in cols:
-            conn.execute(text("ALTER TABLE devices ADD COLUMN conversation_provider VARCHAR(32) NOT NULL DEFAULT 'local'"))
+            conn.execute(text("ALTER TABLE devices ADD COLUMN conversation_provider VARCHAR(32) NOT NULL DEFAULT 'flecket'"))
         if "conversation_param" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN conversation_param TEXT"))
+        # Retire the in-process ASR/LLM/TTS route without touching saved secrets.
+        conn.execute(text(
+            "UPDATE devices SET conversation_provider='flecket' "
+            "WHERE conversation_provider IS NULL OR conversation_provider NOT IN ('flecket','moss-live')"
+        ))
         if "asr_param" not in cols:
             conn.execute(text("ALTER TABLE devices ADD COLUMN asr_param TEXT"))
         if "tts_provider" not in cols:

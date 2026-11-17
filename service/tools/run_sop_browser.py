@@ -64,6 +64,8 @@ def main():
                     return result.returncode
                 subprocess.run([sys.executable, "-m", "tests.ux_browser_seed"], cwd=root, env=env, check=True)
                 subprocess.run(["node", str(root / "tools/check_interactions.cjs")], cwd=root, env=env, timeout=90, check=True)
+                subprocess.run(["node", str(root / "tools/check_model_settings.cjs")], cwd=root, env=env, timeout=90, check=True)
+                subprocess.run(["node", str(root / "tools/check_agent_media.cjs")], cwd=root, env=env, timeout=90, check=True)
                 server.terminate()
                 server.wait(timeout=10)
                 server = subprocess.Popen(

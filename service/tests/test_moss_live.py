@@ -476,7 +476,7 @@ def test_moss_route_uses_packed_frames_without_local_pipeline(monkeypatch, delay
             client.emit("response.audio.done", {"run_id": "r", "turn_id": "t"})
             await until(lambda: any(x["action"] == "playback.completed" for x in client.sent))
             assert (rom.binary_downlinks > 0) == binary
-            assert hub._pipeline is None  # No local ASR/LLM/TTS dependency.
+            assert not hasattr(hub, "_pipeline")  # No local ASR/LLM/TTS dependency.
             assert any(isinstance(x, bytes) for x in rom.sent)
         finally:
             await rom.close()

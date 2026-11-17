@@ -142,10 +142,12 @@ class _ServiceHandle:
 class ExternalServiceManager:
     """外部服务管理器（单例，由 bootstrap 装配并随主服务生命周期启停）。"""
 
-    def __init__(self, externals_dir: Path | None = None, data_dir: Path | None = None) -> None:
+    def __init__(self, externals_dir: Path | None = None, data_dir: Path | None = None,
+                 *, allowed_names: frozenset[str] | None = None) -> None:
         self.externals_dir = Path(externals_dir or EXTERNALS_DIR)
         self.data_dir = Path(data_dir or DATA_DIR)
         self.state_file = self.data_dir / "state.json"
+        self.allowed_names = allowed_names
         self._handles: dict[str, _ServiceHandle] = {}
         self._state: dict[str, dict] = {}  # {name: {installed_version, auto_start}}
         self._watchdog_task: asyncio.Task | None = None
@@ -157,6 +159,7 @@ class ExternalServiceManager:
         """（重新）扫描 externals 目录，注册 manifest。运行期重扫用于热加服务。"""
         self._handles = {
             m.name: _ServiceHandle(manifest=m) for m in discover_manifests(self.externals_dir)
+            if self.allowed_names is None or m.name in self.allowed_names
         }
         for name, handle in self._handles.items():
             persisted = self._state.get(name) or {}
@@ -228,7 +231,7 @@ class ExternalServiceManager:
             if handle.manifest.healthcheck is None:
                 healthy = True
             elif handle.state in (ServiceState.RUNNING, ServiceState.STARTING, ServiceState.UNHEALTHY):
-                healthy = handle.state != ServiceState.UNHEALTHY
+                healthy = True if handle.state == ServiceState.RUNNING else (False if handle.state == ServiceState.UNHEALTHY else None)
         try:
             service_path = handle.manifest.source_dir.relative_to(SERVICE_ROOT).as_posix()
         except ValueError:
@@ -798,6 +801,20 @@ class ExternalServiceManager:
         except (OSError, ValueError):
             pid = 0
         if pid and pid_alive(pid):
+            # A stale pid file may refer to an unrelated, reused process.
+            # Only reap a Linux process whose cwd and argv match this service.
+            try:
+                expected_cwd = handle.manifest.resolve_workdir(SERVICE_ROOT)
+                actual_cwd = Path(f"/proc/{pid}/cwd").resolve(strict=True)
+                argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+                expected_args = [part.encode() for part in handle.manifest.command[1:]]
+                owned = actual_cwd == expected_cwd and argv[1:1+len(expected_args)] == expected_args
+            except OSError:
+                owned = False
+            if not owned:
+                logger.warning("[external] %s 忽略无法验证归属的旧 pid=%s", handle.manifest.name, pid)
+                pid_path.unlink(missing_ok=True)
+                return
             logger.warning("[external] %s 回收遗留进程 pid=%s", handle.manifest.name, pid)
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGTERM)
@@ -975,3 +992,10 @@ class ExternalServiceManager:
         with urllib.request.urlopen(url, timeout=timeout_s) as resp:
             if resp.status >= 400:
                 raise RuntimeError(f"HTTP {resp.status}")
+            import json
+            try:
+                body = json.loads(resp.read(65536))
+            except (ValueError, UnicodeError):
+                return
+            if isinstance(body, dict) and any(body.get(key) is False for key in ("model_ready", "embedding_ready")):
+                raise RuntimeError("识别模型尚未就绪")
