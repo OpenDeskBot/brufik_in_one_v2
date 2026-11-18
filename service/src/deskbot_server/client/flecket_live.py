@@ -483,9 +483,9 @@ class FlecketLiveClient:
                 output = {"ok": False, "error": "工具执行超时"}
             except Exception:
                 output = {"ok": False, "error": "工具执行失败"}
-            logger.info("[flecket tool] response=%s tool=%s elapsed_ms=%.1f ok=%s",
+            logger.info("[flecket tool] response=%s tool=%s elapsed_ms=%.1f ok=%s status=%s",
                         response.get("id", ""), call.get("name"), (time.monotonic()-tool_started)*1000,
-                        output.get("ok") is True)
+                        output.get("ok") is True, output.get("status", ""))
             read_only_batch = read_only_batch and read_only and output.get("ok") is True
             try:
                 await self._send({"type": "conversation.item.create", "item": {
