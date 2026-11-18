@@ -234,6 +234,28 @@ def test_new_turn_cancels_pending_context_and_rejects_late_old_response():
     asyncio.run(run())
 
 
+def test_new_speech_retires_thinking_response_before_its_first_audio():
+    async def run():
+        value = client()
+        value._active_responses.add("thinking")
+        old = value._response("thinking")
+        assert old.audio_bytes == 0
+        value.ws.emit("input_audio_buffer.speech_started", item_id="new-input")
+        event = await value.receive()
+        assert event.action == "response.interrupted" and event.data["run_id"] == "thinking"
+        assert old.interrupted
+        assert (await value.receive()).action == "input.speech.started"
+        audio(value.ws, rid="thinking")  # Late old audio must not mute/play over new speech.
+        value.ws.emit("response.done", response={"id": "thinking", "status": "cancelled"})
+        value.ws.emit("conversation.item.input_audio_transcription.completed", item_id="new-input", transcript="新的问题")
+        assert (await value.receive()).action == "input.transcript.done"
+        assert "thinking" not in value._active_responses
+        assert not any(e["type"] == "conversation.item.truncate" for e in value.ws.sent)
+        await value.close()
+
+    asyncio.run(run())
+
+
 def test_failed_perception_still_responds_without_identity():
     async def run():
         value = client()

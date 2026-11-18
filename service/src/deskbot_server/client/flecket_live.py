@@ -158,7 +158,10 @@ class FlecketLiveClient:
                             "turn_detection": {
                                 "type": "server_vad",
                                 "create_response": self.system_event_provider is None,
-                                "interrupt_response": self.config.allow_barge_in,
+                                # Playback barge-in is gated in send_audio().
+                                # While still thinking, new speech must cancel
+                                # obsolete generation instead of waiting for it.
+                                "interrupt_response": True,
                             },
                         },
                         # The shared bridge continuously resamples 48k PCM to 16k Opus.
@@ -560,11 +563,12 @@ class FlecketLiveClient:
                 self._last_user_activity = time.monotonic()
                 # Stop even already-generated audio still waiting for device playback.
                 for rid, response in list(self.responses.items()):
-                    if response.audio_bytes and not response.interrupted:
+                    if (response.audio_bytes or rid in self._active_responses) and not response.interrupted:
                         response.interrupted = True
                         # Immediately tell the model only the confirmed played context;
                         # refine it after the device acknowledges its cancellation.
-                        await self._truncate(response)
+                        if response.audio_bytes:
+                            await self._truncate(response)
                         self.pending.append(RealtimeEvent("response.interrupted", self._context(rid)))
                 self.pending.append(RealtimeEvent("input.speech.started", {"turn_id": self._turn_id}))
                 if self.latest_camera is not None:

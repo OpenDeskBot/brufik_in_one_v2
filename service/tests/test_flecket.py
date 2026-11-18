@@ -91,7 +91,7 @@ def test_handshake_audio_format_and_upload(monkeypatch):
         assert settings["audio"]["input"]["format"]["rate"] == 16000
         assert settings["audio"]["output"]["format"]["rate"] == 48000
         assert settings["audio"]["output"]["voice"] == "Tingting"
-        assert settings["audio"]["input"]["turn_detection"]["interrupt_response"] is False
+        assert settings["audio"]["input"]["turn_detection"]["interrupt_response"] is True
         assert "instructions" not in settings and "tools" not in settings
         await value.send_audio(b"\x01\x00" * 320)
         assert base64.b64decode(ws.sent[-1]["audio"]) == b"\x01\x00" * 320
