@@ -224,6 +224,34 @@ def test_split_correction_captures_all_unanswered_fragments_for_forgetting():
     asyncio.run(run())
 
 
+def test_quiet_text_answer_is_recorded_with_sources_and_forgotten_without_playback():
+    p = person()
+    entry = memory.add_memory("喜欢摄影", device_id="robot", person_id=p["id"])
+    async def run():
+        session = MemorySession("robot")
+        await session.start()
+        await session.context("quiet-turn", {"speaker": {"state": "found", "name": "小明"}})
+        value = client()
+        value.ws.emit("response.created", response={"id": "quiet-response", "metadata": {
+            "deskbot_turn": "quiet-turn", "input_generation": 0}})
+        value.ws.emit("response.output_text.delta", response_id="quiet-response", item_id="quiet-item", delta="你喜欢")
+        value.ws.emit("response.output_text.done", response_id="quiet-response", item_id="quiet-item", text="你喜欢摄影")
+        delta = await value.receive()
+        answer = await value.receive()
+        assert delta.action == "output.transcript.delta" and delta.data["text"] == "你喜欢"
+        assert answer.action == "output.transcript.done" and answer.data["source_turn_id"] == "quiet-turn"
+        session.offer(answer.action, answer.data)
+        await session.flush()
+        recorded = memory.search_chat("robot", "你喜欢摄影")["events"]
+        assert len(recorded) == 1 and recorded[0]["status"] == "generated_text_only"
+        assert not memory.search_chat("robot", "播放")["events"]
+        memory.forget_memory("robot", entry_ids=[entry["id"]])
+        assert memory.search_chat("robot", "摄影")["total"] == 0
+        await session.close()
+        await value.close()
+    asyncio.run(run())
+
+
 def test_consolidation_is_idempotent_and_ignores_hypotheticals():
     p = person()
     event = utterance(p)

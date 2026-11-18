@@ -51,15 +51,21 @@ class Client(FlecketLiveClient):
         self.inputs, self.answers, self.calls, self.contexts = [], [], [], []
         self.call_names = {}
         self.completed_playbacks = 0
+        self.completed_text_responses = 0
         self.events = Counter()
 
     async def _receive(self):
         event = await super()._receive()
         self.events[event.get('type', 'unknown')] += 1
         if event.get('type') == 'response.done':
-            for item in event['response'].get('output', []):
+            output = event['response'].get('output', [])
+            for item in output:
                 if item.get('type') == 'function_call':
                     self.call_names[item['call_id']] = item['name']
+            if (event['response'].get('status') == 'completed'
+                    and not any(item.get('type') == 'function_call' for item in output)
+                    and any(part.get('type') == 'output_text' for item in output for part in item.get('content', []))):
+                self.completed_text_responses += 1
         return event
 
     async def _send(self, event):
@@ -149,6 +155,7 @@ class Harness:
         before_input, before_answer = len(self.client.inputs), len(self.client.answers)
         before_call, before_context = len(self.client.calls), len(self.client.contexts)
         before_playback = self.client.completed_playbacks
+        before_text = self.client.completed_text_responses
         with wave.open(str(audio / (key + '.wav'))) as source:
             assert (source.getnchannels(), source.getframerate(), source.getsampwidth()) == (1, 16000, 2)
             pcm = source.readframes(source.getnframes())
@@ -163,7 +170,8 @@ class Harness:
             while True:
                 calls = self.client.calls[before_call:]
                 reset = any(c['output'].get('reset_session') for c in calls)
-                if reset or self.client.completed_playbacks > before_playback:
+                if (reset or self.client.completed_playbacks > before_playback
+                        or (self.client.completed_text_responses > before_text and self.client.idle())):
                     break
                 if self.rom.closed:
                     raise RuntimeError('upstream closed before verified response')
@@ -174,6 +182,7 @@ class Harness:
                   'answers': self.client.answers[before_answer:], 'tools': self.client.calls[before_call:],
                   'context': self.client.contexts[before_context:], 'voice_state': (get_voice_snapshot(self.device) or {}).get('state'),
                   'playback_completed': self.client.completed_playbacks > before_playback,
+                  'text_only_completed': self.client.completed_text_responses > before_text,
                   'session_reset': reset, 'elapsed_s': round(time.monotonic()-start, 2)}
         print(json.dumps({'stage': key, 'input': result['input'], 'tools': [c['name'] for c in result['tools']],
                           'voice_state': result['voice_state'], 'answers': result['answers'], 'session_reset': reset}, ensure_ascii=False), flush=True)

@@ -40,3 +40,5 @@ jobs:
           tests/test_session_context.py tests/test_session_store.py tests/test_memory_store.py
           tests/test_asr_protocol.py tests/test_asr_external.py tests/test_convo_audio.py
           tests/test_ux_requests.py
+          tests/test_file_memory.py tests/test_device_ownership.py
+          tests/test_flecket.py tests/test_agent_tools_runtime.py tests/test_agent_capabilities.py

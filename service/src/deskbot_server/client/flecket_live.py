@@ -661,11 +661,14 @@ class FlecketLiveClient:
                     self._turn_committed.set()
             elif kind == "deskbot.announcement.rejected":
                 return RealtimeEvent("announcement.rejected", {"token": event["token"]})
-            elif kind in {"response.output_audio_transcript.delta", "response.output_audio_transcript.done"}:
+            elif kind in {"response.output_audio_transcript.delta", "response.output_audio_transcript.done",
+                          "response.output_text.delta", "response.output_text.done"}:
+                text_only = kind.startswith("response.output_text.")
                 return RealtimeEvent(
                     "output.transcript." + kind.rsplit(".", 1)[1],
                     {**self._context(response_id), "source_turn_id": self._response_turns.get(response_id),
-                     "item_id": event.get("item_id"), "text": event.get("delta", event.get("transcript", ""))},
+                     "item_id": event.get("item_id"), "text": event.get("delta", event.get("text", event.get("transcript", ""))),
+                     **({"status": "generated_text_only"} if text_only else {})},
                 )
 
     async def close(self):
