@@ -190,7 +190,7 @@ cd hardware
 ### 固件要点（`hardware/firmware/`）
 
 - 主控 **ESP32-S3**（当前固件适配自研 Deskbot v2 板，由 Seeed XIAO ESP32S3 Sense 方案移植）
-- 外设：ST7789P 240×284 SPI 屏 · 双轴舵机（X 左右 GPIO16 / Y 上下 GPIO15）· PDM 麦克风 · NS4168 I2S 功放 · OV2640/OV3660 120° 广角摄像头（esp_camera 自动识别）· RGB 状态灯
+- 外设：ST7789P 240×284 SPI 屏 · 双轴舵机（X 左右 GPIO15 / Y 上下 GPIO16）· PDM 麦克风 · NS4168 I2S 功放 · OV2640/OV3660 120° 广角摄像头（esp_camera 自动识别）· RGB 状态灯
 - **ESP-SR AFE**（AEC 回声消除 / NS 降噪 / AGC / VAD）→ 全双工音频，可打断
 - 自定义 bootloader 钩子，避免上电/烧录时舵机误触发抽动
 - 工具链：pioarduino 55.03.39 · Arduino-ESP32 3.3.9 + ESP-IDF 5.5.4 · Python ≥3.10

@@ -1,0 +1,29 @@
+{
+  "date": "2026-11-17",
+  "device_id": "brfk_68ee8f59d9704707",
+  "observed_before_fix": {
+    "protocol_x": "up_down",
+    "protocol_y": "left_right",
+    "confirmed_by_user": true
+  },
+  "corrected_defaults": {
+    "logical_x": "left_right",
+    "x_gpio": 15,
+    "logical_y": "up_down",
+    "y_gpio": 16
+  },
+  "scope": "ROM pin mapping; server logical coordinates unchanged",
+  "build": "passed",
+  "application_sha256": "81e2e795feda1933f434cb41f4d9af3cb8be44f2e5353a3dea2bb594ffcc7ce5",
+  "device_flashed": false,
+  "reason": "User requested updating firmware later",
+  "physical_retest_after_fix": "pending",
+  "follow_speech_conflict_verification": "pending after correct firmware is flashed",
+  "usb_device_test_preferences": {
+    "face_follow": "disabled",
+    "live_idle": "disabled",
+    "original_face_follow": "",
+    "original_live_idle": true
+  },
+  "other_flecket_device_preferences_restored": true
+}

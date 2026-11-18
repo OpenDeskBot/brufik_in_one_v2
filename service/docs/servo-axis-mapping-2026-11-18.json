@@ -1,0 +1,140 @@
+{
+  "date": "2026-11-18",
+  "device_id": "brfk_68ee8f59d9704707",
+  "chip_mac": "68:ee:8f:59:d9:70",
+  "serial_port": "/dev/cu.usbmodem21101",
+  "flashed_at": "2026-11-18T09:31:08.522057+08:00",
+  "application_sha256": "81e2e795feda1933f434cb41f4d9af3cb8be44f2e5353a3dea2bb594ffcc7ce5",
+  "application_offset": "0x10000",
+  "application_write_hash_verified": true,
+  "backup": "hardware/.pio/axis-mapping-20261118/before-flash-8mb.bin",
+  "backup_bytes": 8388608,
+  "backup_sha256": "24ab0ade9e7f96e9ea45b76eeb59a0853a9be77f7dbc668de5c2af05b503ac33",
+  "preserved_partitions": [
+    "nvs",
+    "otadata",
+    "ffat"
+  ],
+  "axis_defaults": {
+    "x": {
+      "direction": "left_right",
+      "gpio": 15
+    },
+    "y": {
+      "direction": "up_down",
+      "gpio": 16
+    }
+  },
+  "resource_ready": true,
+  "resource_version": "33bdda4263e30ec6",
+  "cloud_reconnected": true,
+  "physical_axis_retest": "passed; X left/right and Y up/down confirmed by user",
+  "face_follow_and_speech_conflict": "passed; confirmed by user and correlated with playback/follow logs",
+  "x_axis_test": {
+    "protocol_completed": true,
+    "acknowledged_moves": 8,
+    "cycles": 3,
+    "physical_direction": "pending user observation",
+    "remote_report": "/tmp/deskbot-axis-confirm-20261118-x.json"
+  },
+  "x_axis_repeat_test": {
+    "protocol_completed": true,
+    "acknowledged_moves": 14,
+    "cycles": 6,
+    "physical_direction": "left_right",
+    "remote_report": "/tmp/deskbot-axis-confirm-20261118-repeat-x.json",
+    "confirmed_by_user": true
+  },
+  "y_axis_test": {
+    "protocol_completed": true,
+    "acknowledged_moves": 14,
+    "cycles": 6,
+    "physical_direction": "up_down",
+    "confirmed_by_user": true
+  },
+  "device_calibration": {
+    "before": {
+      "xReverse": 0,
+      "yReverse": 0
+    },
+    "after": {
+      "xReverse": 1,
+      "yReverse": 1
+    },
+    "scope": "only brfk_68ee8f59d9704707",
+    "confirmed_by_user": "both follow directions correct"
+  },
+  "conversation_provider": "flecket",
+  "provider_choice": "user explicitly requested keeping Flecket",
+  "face_follow_corrected": {
+    "camera_frames": 175,
+    "face_frames": 41,
+    "follow_dispatches": 39,
+    "unique_polled_acks": 27,
+    "physical_directions_confirmed": true
+  },
+  "speech_session_fix": {
+    "symptom": "voice activity closed sessions before audio output",
+    "cause": "rom_command passed device_id string instead of device entry to _enqueue_dl",
+    "regression_reproduced": true,
+    "fixed": true,
+    "related_tests_passed": 111,
+    "cloud_backup": "data/backups/rom-command-fix-20261118T015842Z",
+    "health": "ok",
+    "commit": "02d363e"
+  },
+  "flecket_preflight": {
+    "plain_tts": {
+      "status": "completed",
+      "audio_chunks": 31,
+      "audio_bytes": 112836
+    },
+    "tool_and_tts": {
+      "gesture": "nod_head",
+      "timing": "with_speech",
+      "response_statuses": [
+        "completed",
+        "completed"
+      ],
+      "audio_chunks": 52,
+      "audio_bytes": 189952,
+      "hardware_motion_executed": false
+    }
+  },
+  "final_test": {
+    "camera_frames": 260,
+    "face_frames": 88,
+    "follow_dispatches": 78,
+    "unique_polled_acks": 62,
+    "transcript_events": 11,
+    "tool_calls": [
+      "2026-11-18 10:01:50.911 INFO [deskbot-server] [robot_perform] device_id=brfk_68ee8f59d9704707 call_id=call_py2wetg67k0qudj4htzv39dc response_id=resp_69e3623cc19946389629e2d5 gesture=nod_head expression=listening timing=with_speech status=scheduled"
+    ],
+    "playback_intervals": [
+      {
+        "req": "1864094f8fd34d89aac04eb11aeb3de0",
+        "servo_audio_transmissions": 1,
+        "started_at": 1794967312.148864,
+        "completed_at": 1794967314.657297,
+        "follow_during": 0,
+        "follow_after": 60,
+        "completed_log": "2026-11-18 10:01:54.657 INFO [deskbot-server] [pb stream] completed device_id=brfk_68ee8f59d9704707 req=1864094f8fd34d89aac04eb11aeb3de0 epoch=4 duration_ms=2400 wall_ms=2509"
+      }
+    ],
+    "session_failures_since_final_test": []
+  },
+  "physical_speech_result": {
+    "speech_and_nodding": "normal",
+    "head_jitter_or_follow_preemption_observed": false,
+    "follow_resumed_after_speech": true,
+    "confirmed_by_user": true
+  },
+  "final_preferences": {
+    "provider": "flecket",
+    "face_follow": "follow",
+    "idle_during_test": false,
+    "original_idle_to_restore": true,
+    "idle_restored": true
+  },
+  "system_event_deployment": "b1ca121 remains code-only; this rollout applies the ROM command fix, firmware and device calibration"
+}

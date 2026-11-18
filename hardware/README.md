@@ -22,6 +22,11 @@
 
 Audio uses Arduino **`ESP_I2S`** (PDM RX mic + STD TX amp). Camera uplink prefers hardware JPEG, else RGB565 + `frame2jpg` (AWB warmup frames after init). `device_id` comes from `esp_read_mac` (`deskbot_<mac>`).
 
+Servo axes: **X/pan (left/right) → GPIO15**, **Y/tilt (up/down) → GPIO16**.
+This mapping was confirmed one axis at a time on the USB robot after flashing on 2026-11-18.
+Older firmware used the opposite pin assignment; correcting source requires flashing
+the rebuilt ROM before the device changes. Keep the server's logical x/y unchanged.
+
 ---
 
 ## 1. Out of the box

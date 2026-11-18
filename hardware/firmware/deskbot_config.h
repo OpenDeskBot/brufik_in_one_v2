@@ -67,13 +67,14 @@ static inline bool deskbot_ws_configured(void) {
 #define DESKBOT_DRAW_W DESKBOT_PB_COORD_W
 #define DESKBOT_DRAW_H DESKBOT_PB_COORD_H
 
-/* 舵机 PWM（v2 板：X → GPIO16，Y → GPIO15；均已避开 USB 19/20 与 strapping）
- * 左右(X) → GPIO16 小舵机；上下(Y) → GPIO15 大舵机 */
+/* 舵机 PWM（v2 板，2026-11-17 USB 真机逐轴复核）：
+ * 左右(X/pan) → GPIO15；上下(Y/tilt) → GPIO16。
+ * 轴语义在 ROM 引脚层统一，服务端动作、跟随和待机资源无需交换 x/y。 */
 #ifndef DESKBOT_ROM_X_PIN
-#define DESKBOT_ROM_X_PIN 16
+#define DESKBOT_ROM_X_PIN 15
 #endif
 #ifndef DESKBOT_ROM_Y_PIN
-#define DESKBOT_ROM_Y_PIN 15
+#define DESKBOT_ROM_Y_PIN 16
 #endif
 
 #ifndef DESKBOT_AUDIO_PLAY_VOLUME
