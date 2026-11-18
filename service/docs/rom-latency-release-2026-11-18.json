@@ -1,6 +1,6 @@
 {
   "date": "2026-11-18",
-  "source_commits": ["d43ce6512785e4ca71aacabc009b262c505ac077", "0e04facd3b2fd7a5077f4583a9173affec65037c", "4374776fb0e5d694d617d1172c99968c72d76550"],
+  "source_commits": ["d43ce6512785e4ca71aacabc009b262c505ac077", "0e04facd3b2fd7a5077f4583a9173affec65037c", "4374776fb0e5d694d617d1172c99968c72d76550", "b43f5a2c90b292058cdd75491428df504077e33e"],
   "deployment": {
     "status": "deployed",
     "unit": "deskbot-server.service",
@@ -9,7 +9,7 @@
     "face_pack": "f28d677b234bc5b6",
     "method": "Manifest-verified incremental files, isolated candidate preflight, original-file and database backups, restart with automatic file rollback on failure",
     "config_preserved": true,
-    "latest_backup": "/root/work/brufik_in_one_v2/service/data/backups/rom-latency-4374776-20261118T130344Z",
+    "latest_backup": "/root/work/brufik_in_one_v2/service/data/backups/rom-latency-b43f5a2-20261118T131219Z",
     "real_device_reconnected": true,
     "camera_channel_reconnected": true,
     "voiceprint_health": "model_ready"
@@ -32,7 +32,9 @@
     "panic_in_captured_interval": false
   },
   "latency": {
+    "user_reported_phase": "User has finished speaking but the robot takes too long to begin answering",
     "findings": [
+      "Production context logs isolated 3549ms and 5128.7ms in the wait for previous active generation. With playback barge-in disabled, the upstream had also been told not to cancel obsolete generation, so new turns waited for old model/TTS work. The handshake now always cancels obsolete generation on valid new speech; microphone silence gating still independently preserves the configured playback barge-in policy. Pending old responses are retired even before their first audio arrives.",
       "Cancelled older turns could hold the serialized memory worker for its 1.2-second identity-observation timeout, delaying later transcripts and memory tools. New speech now wakes that wait and persists the older turn without borrowing the new speaker identity.",
       "Perception waited up to 800ms even when a short utterance had not started any voice inference. Such turns now take an immediate pending snapshot.",
       "Production traces showed history search followed by history reads and repeated model rounds, taking about four seconds to first ROM progress. Search already returns up to 1000 characters of original text. Tool instructions now explicitly avoid rereading complete results and avoid redundant profile/perception queries.",
@@ -58,6 +60,9 @@
   "checks": {
     "service_release_regression": "182 passed",
     "final_voice_memory_media_regression": "157 passed",
+    "generation_cancel_and_playback_gate_regression": "154 passed; includes dropping late audio from an obsolete thinking response, preserving commit ordering and playback silence gating",
+    "actual_upstream_handshake": "Generation interrupt confirmed true in session.updated; the saved playback barge-in setting remains false; no audio sent by the handshake probe",
+    "latest_client_source_sha256": "363489e2649097dcd5c48649cb14ca63f5668849b650809aa1b15d0501c2fbc4",
     "hardware_tests": "28 passed",
     "firmware_build": "SUCCESS",
     "ruff_changed_runtime": "passed",
@@ -72,7 +77,11 @@
     "full_suite_limits": "Initial run lacked local socket-listening permission. An unrestricted retry confirmed existing failures for obsolete page assertions and legacy auth import paths; broad legacy-test cleanup is outside this release."
   },
   "publication": {
-    "status": "local_commits_ready_awaiting_destination_confirmation",
-    "reason": "Automatic approval review blocked GitHub origin/main push until the specific external repository destination is confirmed; GitHub and Xiaomi remote choices were presented to the user"
+    "status": "code_pushed_to_github",
+    "repository": "OpenDeskBot/brufik_in_one_v2",
+    "branch": "main",
+    "published_code_commit": "b43f5a2c90b292058cdd75491428df504077e33e",
+    "xiaomi_pushed": false,
+    "authorization": "User explicitly selected GitHub only"
   }
 }
