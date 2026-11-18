@@ -238,6 +238,7 @@ async def verify(args):
         result['stages'].append(remembered)
         entries = memory.list_memory_for_device(device)
         assert any('柠檬茶' in e['text'] for e in entries), 'preference was not saved'
+        original_preference_ids = {e['id'] for e in entries if '柠檬茶' in e['text']}
         result['daily_files'] = [p.name for p in memory_dir(device).glob('chat_*.txt')]
         result['person_files'] = [p.name for p in memory_dir(device).glob('person_*.txt')]
         assert result['daily_files'] and result['person_files'], 'expected memory files missing'
@@ -272,7 +273,7 @@ async def verify(args):
         result['stages'].append(corrected)
         active = memory.list_memory_for_device(device)
         assert any('桂花茶' in e['text'] for e in active), 'new preference missing'
-        assert not any('柠檬茶' in e['text'] and '不喜欢' not in e['text'] for e in active), 'old positive preference still active'
+        assert original_preference_ids.isdisjoint(e['id'] for e in active), 'old positive preference still active'
         await harness.connect()
         updated = await harness.say('load', args.audio)
         result['stages'].append({**updated, 'stage': 'load_after_correction'})
