@@ -143,7 +143,9 @@ def test_rom_volume_requires_real_matching_receipt_and_persists(api_client, monk
         hub._devices["device-owner"] = _DeviceEntry(device_id="device-owner", ws=object(), generation=5, capabilities={"rom_tools_v1"})
         sent = []
 
-        async def send(did, wire, **kwargs):
+        async def send(entry, wire, **kwargs):
+            assert entry is hub._devices["device-owner"]
+            did = entry.device_id
             command = json.loads(wire)
             sent.append(command)
             hub.accept_rom_result(did, {"id": "wrong", "ok": True, "status": "completed", "volume": 99})

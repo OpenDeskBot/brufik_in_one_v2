@@ -5,11 +5,39 @@ import pytest
 
 from deskbot_server.model.pb_seq import PbType
 from deskbot_server.service import media_library
+from deskbot_server.service.application.asr_chat_uplink import parse_packed_frame
 from tests.test_agent_capabilities import audio_bytes, image_bytes
 from tests.test_flecket import audio
 from tests.test_moss_live import cleanup, until
 from tests.test_robot_performance import acknowledge, live_bridge
 from tests.test_robot_performance import catalog as catalog
+
+
+def test_speech_on_rom_with_device_tools_stops_media_without_reconnecting(catalog, monkeypatch):
+    async def run():
+        value, hub, entry, bridge, _, worker = await live_bridge(monkeypatch)
+        entry.capabilities.add("rom_tools_v1")
+        commands = []
+
+        async def send(raw):
+            frame = parse_packed_frame(raw)
+            assert frame is not None and frame.doc["type"] == "rom_command"
+            command = frame.doc
+            commands.append(command)
+            hub.accept_rom_result("robot", {"id": command["id"], "ok": True, "status": "completed"})
+
+        monkeypatch.setattr(entry.ws, "send", send, raising=False)
+        try:
+            for count in (1, 2):
+                value.ws.emit("input_audio_buffer.speech_started")
+                await until(lambda expected=count: len(commands) == expected or bridge.failed)
+                assert not bridge.failed and not bridge.closed and not entry.ws.closed
+                assert len(commands) == count and commands[-1]["op"] == "stop_image"
+            assert not entry.rom_waiters
+        finally:
+            await cleanup(bridge, worker)
+            await hub._retire_workers(entry)
+    asyncio.run(run())
 
 
 def test_external_reminder_waits_for_actual_device_completion(catalog, monkeypatch):

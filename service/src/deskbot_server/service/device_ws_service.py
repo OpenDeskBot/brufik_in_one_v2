@@ -439,7 +439,7 @@ class DeviceWsService(metaclass=SingletonMeta):
         entry.rom_waiters[command_id] = future
         packet = {"type": "rom_command", "id": command_id, "op": op, "arguments": arguments, "next_bin_len": len(media)}
         try:
-            if not await self._enqueue_dl(device_id, json.dumps(packet), binaries=[media] if media else [], generation=entry.generation):
+            if not await self._enqueue_dl(entry, json.dumps(packet), binaries=[media] if media else [], generation=entry.generation):
                 return {"ok": False, "error": "设备指令发送失败"}
             async with asyncio.timeout(timeout):
                 result = await future
