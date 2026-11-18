@@ -279,3 +279,5 @@ ROM 收尾可发送 `audio.flush=1`，包括空媒体包；当前持久对话桥
 [媒体格式历史验收](media-wire-validation-2026-11-11.json)、[播放及取消历史记录](device-playback-verification-2026-11-10.json)、[旧 HTTP 启动验收](device-bootstrap-http-2026-11-11.json)均属于各自时间点的固件，不证明 schema 2 已完成真机验证。USB 测试复用 PB 基础封装，见 [USB_AUDIO_TEST.md](../../hardware/USB_AUDIO_TEST.md)。
 
 本次 schema 2 的编译、172 项相关测试及本机 HTTP 启停验证见 [2026-11-18 实施记录](device-discovery-2026-11-18.json)；尚未烧录真机或部署云端。
+
+后续已于同日完成云端部署及 USB 烧录，真机确认下载并启用新版资源、媒体和相机连接；验证范围及延迟修复见 [发布记录](rom-latency-release-2026-11-18.json)。
