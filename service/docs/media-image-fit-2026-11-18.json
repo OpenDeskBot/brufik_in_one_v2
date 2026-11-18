@@ -1,0 +1,16 @@
+{
+  "task": "图片等比放大或缩小到机器人屏幕边界，保留完整画面",
+  "scope": "media_library.upload 的图片预处理；HTTP 接口及 ROM 协议不变",
+  "sop": "http-service-engineering v0.1.0 / HTTP 云服务 SOP v0.4-draft",
+  "screen": [284, 240],
+  "behavior": "居中等比适配，允许放大小图；不裁切、不拉伸，剩余区域及透明部分用黑色背景",
+  "verification": {
+    "command": "cd service && .venv/bin/python -m pytest tests/test_agent_capabilities.py tests/test_proactive_and_media.py -q",
+    "result": "17 passed",
+    "pixel_checks": "隔离临时媒体目录，验证横图、竖图、小图、大图、屏幕同尺寸图片的内容触及至少一条屏幕边界，比例仅有整数像素误差；RGB565 内容范围与 PNG 一致",
+    "sample": "雷军原图 202×189 → 内容 257×240，居中放入 284×240 画布，左右留边 13 / 14 像素"
+  },
+  "rollout": "代码尚未部署到线上。更新服务后，新上传应用此规则；已有资源需从原图重新上传。无需刷写 ROM。",
+  "live_sample": "已通过媒体库页面上传预处理后的‘雷军 Are You OK 手势（大屏版）’，页面确认上传成功，供现有线上服务直接测试；原图保留。截图 artifacts/media-samples/media-library-fit.jpg。",
+  "limits": "没有对真实 LCD 进行目视验收；不处理既有图片已经烘焙进文件的黑边"
+}

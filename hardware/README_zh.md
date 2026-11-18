@@ -26,8 +26,8 @@
 
 ## 一、开箱即用
 
-1. 编辑 [`firmware/deskbot_config.h`](firmware/deskbot_config.h)：把 `WIFI_DEFAULT_*` 改成你家路由，或把热点改成与宏一致；并设置 `DESKBOT_WS_HOST` / `DESKBOT_WS_PORT`。
-2. 上电后连 WiFi，并连接 `ws://…/asr_chat?device_id=…`（**设备链路仅需 device_id，无 API Key / PIN**）。
+1. 编辑 [`firmware/deskbot_config.h`](firmware/deskbot_config.h)：把 `WIFI_DEFAULT_*` 改成你家路由，或把热点改成与宏一致；并设置 `DESKBOT_BOOTSTRAP_URL` 为完整 HTTP/HTTPS 启动接口，例如 `http://你的服务器:9000/api/device/bootstrap`。也可以在配网页填写该地址。
+2. 上电后连 WiFi，直接请求该启动接口，再连接接口返回的主 WebSocket 和相机地址、下载返回的表情资源。地址可以分属不同主机或端口；旧 WS/WSS 配置需重新填写。当前设备接入仍只检查 device_id，尚未实现设备凭证认证。
 3. 改家里 WiFi：上电后连接开放热点，SSID 为 **`device_id`**（如 `deskbot_e83dc1faea30`），浏览器打开屏幕地址（通常 **`http://192.168.4.1/`**）按 onboarding 保存。
 
 ---

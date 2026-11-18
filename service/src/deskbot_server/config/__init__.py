@@ -112,6 +112,9 @@ def validate_config(cfg):
                 or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", agent["model"])):
             raise ValueError("Agent requires a name and valid model ID")
     server = cfg.get("server", {})
+    from deskbot_server.model.device_discovery import DeviceDiscovery
+
+    DeviceDiscovery.from_server(server)
     port = server.get("port", 9000)
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("server.port must be an integer from 1 to 65535")

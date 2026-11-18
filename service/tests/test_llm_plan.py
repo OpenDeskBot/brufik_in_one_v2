@@ -8,7 +8,6 @@ from deskbot_server.pb.llm_plan import (
     expand_llm_moves,
     interleave_tts_segs_with_llm_plan,
     map_anim_frames_to_tts_segs,
-    merge_llm_plan_anim_rows,
     preset_default_ms,
 )
 from deskbot_server.service.application.chat_flow import (
@@ -220,71 +219,8 @@ def test_map_anim_frames_covers_all_tts_segs_not_index_only():
     assert parallel[2]["extra"][0]["x"] == 9
 
 
-def test_merge_llm_plan_anim_rows_keeps_emotion_mouth_on_silence():
-    """纯表情 pb 包（静音承载时长）应保留情绪口型，不被默认嘴型覆盖。"""
-    segs = [{"phoneme": "", "ms": 2000, "pcm": b"\x00" * 96000}]
-    phoneme_rows = [
-        {
-            "idx": 0,
-            "chunk_ms": 2000,
-            "anim": [
-                {
-                    "elements": {
-                        "mouth": [{"shape": "round_rect", "x": 148, "y": 153, "w": 56, "h": 18}],
-                        "eye_l": [],
-                        "eye_r": [],
-                        "nose": [],
-                        "extra": [],
-                    },
-                    "ms": 2000,
-                }
-            ],
-        }
-    ]
-    plan_el = {
-        "mouth": [{"shape": "round_rect", "x": 163, "y": 147, "w": 28, "h": 32}],
-        "eye_l": [{"shape": "ellipse_fill", "x": 105, "y": 96, "rw": 15, "rh": 15}],
-        "eye_r": [],
-        "nose": [],
-        "extra": [],
-    }
-    merged = merge_llm_plan_anim_rows(segs, phoneme_rows, [plan_el])
-    mouth = merged[0]["anim"][0]["elements"]["mouth"]
-    assert mouth == plan_el["mouth"]
 
 
-def test_merge_llm_plan_anim_rows_keeps_phoneme_mouth():
-    segs = [{"phoneme": "a", "ms": 100, "pcm": b"\x00" * 4800}]
-    phoneme_rows = [
-        {
-            "idx": 0,
-            "chunk_ms": 100,
-            "anim": [
-                {
-                    "elements": {
-                        "mouth": [{"shape": "rect", "x": 1, "y": 2, "w": 3, "h": 4}],
-                        "eye_l": [],
-                        "eye_r": [],
-                        "nose": [],
-                        "extra": [],
-                    },
-                    "ms": 100,
-                    "phoneme": "a",
-                }
-            ],
-        }
-    ]
-    plan_el = {
-        "mouth": [{"shape": "line", "x1": 0, "y1": 0, "x2": 1, "y2": 1}],
-        "eye_l": [{"shape": "circle", "x": 1, "y": 2, "r": 3}],
-        "eye_r": [],
-        "nose": [],
-        "extra": [],
-    }
-    merged = merge_llm_plan_anim_rows(segs, phoneme_rows, [plan_el])
-    mouth = merged[0]["anim"][0]["elements"]["mouth"]
-    assert mouth == phoneme_rows[0]["anim"][0]["elements"]["mouth"]
-    assert merged[0]["anim"][0]["elements"]["eye_l"] == plan_el["eye_l"]
 
 
 def test_build_llm_user_message():

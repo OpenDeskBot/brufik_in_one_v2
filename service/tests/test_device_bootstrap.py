@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from copy import deepcopy
 
 import pytest
 from fastapi import FastAPI
@@ -12,7 +13,7 @@ from deskbot_server.controller import device_bootstrap_controller
 from deskbot_server.controller.decorators.http import RequestMiddleware
 from deskbot_server.controller.registry import register_routers
 from deskbot_server.dao.face_asset_catalog import find_face_asset
-from deskbot_server.model.face_package import compile_document, encode_package
+from deskbot_server.model.face_package import compile_document, compile_editor_document, encode_package
 from deskbot_server.service.device_data_paths import global_config_dir
 
 
@@ -30,6 +31,7 @@ def test_bootstrap_public_assets_no_credentials_and_conditional_get(client):
     assert response.status_code == 200
     assert response.headers["x-request-id"]
     data = response.json()["data"]
+    assert data["schema"] == 2
     assert data["realtime"] == {"protocol": "deskbot.pb.v2", "url": "/asr_chat"}
     assert data["camera"]["url"] != data["realtime"]["url"]
     assert not any(k in response.text.lower() for k in ("api_key", "password", "secret"))
@@ -47,6 +49,44 @@ def test_bootstrap_public_assets_no_credentials_and_conditional_get(client):
     assert conditional.status_code == 304 and not conditional.content
     assert client.get("/api/device/face-pack/not-a-version").status_code == 404
     assert client.get("/api/device/bootstrap", params={"device_id": "../other"}).status_code == 400
+
+
+def test_discovery_advertises_configured_hosts_paths_and_live_changes(client, monkeypatch):
+    server = {"ws_path": "/audio-alias", "device_bootstrap": {
+        "realtime_url": "wss://voice.example:9443/media/audio?zone=cn",
+        "camera_url": "wss://camera.example:9444/uplink/jpeg",
+        "camera_enabled": False,
+        "face_pack_base_url": "https://cdn.example:9445/robot/faces/",
+    }}
+    monkeypatch.setattr("deskbot_server.service.device_bootstrap_service.get_config", lambda: {"server": server})
+    data = client.get("/api/device/bootstrap?device_id=rom-test", headers={"Host": "untrusted.example", "X-Forwarded-Host": "wrong.example"}).json()["data"]
+    assert data["realtime"]["url"] == server["device_bootstrap"]["realtime_url"]
+    assert data["camera"] == {"enabled": False, "url": server["device_bootstrap"]["camera_url"]}
+    assert data["face_pack"]["url"] == "https://cdn.example:9445/robot/faces/" + data["face_pack"]["version"]
+    server["device_bootstrap"]["realtime_url"] = "wss://replacement.example/new/audio"
+    assert client.get("/api/device/bootstrap?device_id=rom-test").json()["data"]["realtime"]["url"] == "wss://replacement.example/new/audio"
+    server.pop("device_bootstrap")
+    assert client.get("/api/device/bootstrap?device_id=rom-test").json()["data"]["realtime"]["url"] == "/audio-alias"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("realtime_url", "https://host/audio"),
+    ("realtime_url", "wss://host:0/audio"),
+    ("realtime_url", "wss://host:65536/audio"),
+    ("realtime_url", "wss://user:pass@host/audio"),
+    ("camera_url", "//other.example/upload"),
+    ("camera_url", "/upload\r\nHeader:x"),
+    ("camera_url", "/upload?device_id=someone"),
+    ("camera_url", "/upload?%64evice_id=someone"),
+    ("face_pack_base_url", "ws://host/faces"),
+    ("face_pack_base_url", "/faces?x=1"),
+    ("camera_enabled", "false"),
+])
+def test_invalid_advertised_endpoints_fail_configuration_validation(field, value):
+    from deskbot_server.config import validate_config
+
+    with pytest.raises(ValueError):
+        validate_config({"server": {"device_bootstrap": {field: value}}})
 
 
 def test_live_edit_changes_version_and_pb_catalog_but_old_package_is_immutable(client):
@@ -86,6 +126,68 @@ def test_legacy_voice_templates_do_not_change_exported_package_or_version():
     migrated = compile_document(doc)
     assert migrated["lipsync"]["classifier"] == "rms-v1"
     assert encode_package(migrated) == encode_package(expected)
+
+
+def test_editor_hidden_layers_and_axis_lines_export_identically_over_http_and_build(client, tmp_path):
+    import runpy
+    from pathlib import Path
+
+    source = global_config_dir() / "deskbot-face.json"
+    doc = json.loads(source.read_text())
+    first, second = doc["emotions"][0]["frames"][:2]
+    first["elements"]["nose"] = []
+    first["elements"]["extra"] = []
+    second["elements"]["extra"] = [
+        {"shape": "hline", "x": 10, "y": 20, "w": 12, "c": 2047},
+        {"shape": "vline", "x": 30, "y": 40, "h": 8, "c": 65535},
+    ]
+    source.write_text(json.dumps(doc, ensure_ascii=False))
+    before = source.read_bytes()
+
+    expected_source = deepcopy(doc)
+    first, second = expected_source["emotions"][0]["frames"][:2]
+    placeholder = [{"shape": "circle", "x": 0, "y": 0, "r": 0, "c": 0}]
+    first["elements"]["nose"] = deepcopy(placeholder)
+    first["elements"]["extra"] = deepcopy(placeholder)
+    second["elements"]["extra"][0].update(shape="rect", h=1)
+    second["elements"]["extra"][1].update(shape="rect", w=1)
+    expected = compile_document(expected_source)
+
+    response = client.get("/api/device/bootstrap?device_id=editor-rom")
+    assert response.status_code == 200, response.text
+    manifest = response.json()["data"]["face_pack"]
+    package = client.get(manifest["url"])
+    assert package.content == encode_package(expected)
+    assert find_face_asset(doc["emotions"][0]["alias"][0])[1] == expected["version"]
+
+    generator = runpy.run_path(str(Path(__file__).resolve().parents[2] / "hardware/tools/face_assets.py"))
+    build = generator["generate"](source=source, output=tmp_path / "generated")
+    assert build == expected
+    assert (tmp_path / "generated/face_package.json").read_bytes() == package.content
+    assert source.read_bytes() == before  # Keep aliases, visible geometry and editable data intact.
+
+
+def test_already_portable_source_keeps_its_package_version():
+    doc = json.loads((global_config_dir() / "deskbot-face.json").read_text())
+    before = deepcopy(doc)
+    assert compile_editor_document(doc) == compile_document(doc)
+    assert doc == before
+
+
+@pytest.mark.parametrize("invalid", ["mouth", "eye_l", "unknown_shape", "out_of_bounds"])
+def test_editor_lowering_keeps_invalid_required_geometry_rejected(client, invalid):
+    source = global_config_dir() / "deskbot-face.json"
+    doc = json.loads(source.read_text())
+    elements = doc["emotions"][0]["frames"][0]["elements"]
+    elements["nose"] = []
+    if invalid in {"mouth", "eye_l"}:
+        elements[invalid] = []
+    elif invalid == "unknown_shape":
+        elements["extra"] = [{"shape": "untrusted-shape"}]
+    else:
+        elements["extra"] = [{"shape": "hline", "x": 1025, "w": 10}]
+    source.write_text(json.dumps(doc))
+    assert client.get("/api/device/bootstrap?device_id=invalid-editor").status_code == 400
 
 
 def test_explicit_audio_only_does_not_transmit_animation_or_phonemes():

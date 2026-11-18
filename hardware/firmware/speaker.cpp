@@ -5,8 +5,11 @@
 #include "utils/opus_codec.h"
 #include "utils/utils.h"
 #include "logger.h"
+#include "ws_transport.h"
 
-#include <ESP_I2S.h>
+#include "driver/i2s_std.h"
+#include "esp_attr.h"
+#include "esp_timer.h"
 #include <atomic>
 #include <stdlib.h>
 #include <string.h>
@@ -17,43 +20,152 @@
 
 namespace {
 
-constexpr int kDmaBufCount = 8;
-constexpr int kDmaBufLen = 1024;
+constexpr int kDmaBufCount = 3;
+constexpr int kDmaBufLen = audio_lipsync::kBlockFrames;
 /** opus_decode 栈开销与 mic 端 encode 同量级；8KB 会触发 stack canary。 */
 constexpr uint32_t kSpeakerTaskStack = 28 * 1024;
-/** 正常收尾：等待约 N 个 DMA frame 播完，再 zero_dma（不再写静音，避免写完立刻被清掉）。 */
-constexpr size_t kIdleDrainDmaBufs = 2;
-/** play 分块写，便于中途响应 need_cancel。 */
-constexpr size_t kPlayBlockSamples = 1024;
 
 static std::atomic<bool> s_is_speaking{false};
 static std::atomic<float> s_volume{DESKBOT_AUDIO_PLAY_VOLUME};
 /** 流式会话：仅 task_loop_speaker 写；pb 经 speaker_stream_pcm_active() 跨任务读 → 保持 atomic。 */
-static std::atomic<bool> s_stream_active{false};
+// The IRAM DMA callback reads this while Flash/PSRAM caches can be disabled.
+// GCC emits an out-of-line Flash helper for atomic<bool>::load under -Os;
+// aligned 32-bit atomic loads compile to cache-independent instructions.
+static std::atomic<uint32_t> s_stream_active{0};
 /** 跨任务请求取消当前 i2s 写出（abort 置位，见到 cancel 后清位）。 */
 static std::atomic<bool> s_need_cancel{false};
+static std::atomic<bool> s_cancel_in_progress{false};
 /** pb_runtime 查询：当前任务是否已执行完毕（入队时 false，见到 kEndOfTask 后 true）。 */
 static std::atomic<bool> s_task_done{true};
+static std::atomic<uint32_t> s_buffered_ms{0};
+static std::atomic<uint32_t> s_timeline_epoch{0};
+static std::atomic<uint32_t> s_timeline_ms{0};
+static std::atomic<uint32_t> s_output_empty_periods{0};
+static const pb_audio* s_current_audio = nullptr;
+// Metadata copies survive ownership release, including an initial packet shorter
+// than one DMA period. No PCM pointers are retained for asynchronous reporting.
+static pb_audio s_first_audio_meta, s_last_audio_meta;
+static uint32_t s_started_epoch = 0;
+static uint32_t s_cancel_count = 0;
+
+static uint32_t s_report_epoch=0, s_report_played=0;
+static void report_audio(const char* kind, const pb_audio* audio, bool force=false) {
+  const uint32_t played=s_timeline_ms.load();
+  if (!force && ws_transport_compact_supported() && strcmp(kind,"pb_progress")==0 &&
+      audio->epoch==s_report_epoch && played>=s_report_played &&
+      played-s_report_played<200 && !speaker_task_done()) return;
+  s_report_epoch=audio->epoch; s_report_played=played;
+  JsonDocument doc;
+  doc["type"] = "pb_ack"; doc["ack_type"] = kind;
+  doc["req"] = audio->req; doc["idx"] = audio->idx; doc["epoch"] = audio->epoch;
+  doc["device_ms"] = millis(); doc["played_ms"] = s_timeline_ms.load();
+  doc["queue_wait_ms"] = millis() - audio->received_ms;
+  doc["lipsync_mode"] = "rms";
+  doc["output_empty_periods"] = s_output_empty_periods.load();
+  (void)ws_transport_enqueue_ack(doc);
+  log_warn("[PB_AUDIO] %s req=%s epoch=%u idx=%d played_ms=%u queue_wait_ms=%u", kind,
+           audio->req, (unsigned)audio->epoch, audio->idx, (unsigned)s_timeline_ms.load(),
+           (unsigned)(millis()-audio->received_ms));
+}
 static uint32_t s_i2s_rate = SAMPLE_RATE;
 /** 当前逻辑声道数；物理线格式固定 stereo-both（NS4168），mono 源由 play() 插值。 */
 static uint8_t s_i2s_channels = 1;
 static QueueHandle_t s_queue = nullptr;
 static TaskHandle_t s_task = nullptr;
 
-/* 与 mic 同用新 I2S 驱动（不可与 legacy driver/i2s.h 混用）。 */
-I2SClass s_i2s(I2S_NUM_1);
+// Fixed, owned PCM blocks. The ISR only moves prepared blocks and metadata;
+// RMS and all floating point work run in the speaker task before playback.
+using OutputBlock = audio_lipsync::PcmBlock;
+static std::atomic<uint32_t> s_content_gap_periods{0},s_content_gap_events{0};
+static uint32_t s_pending_gap=0,s_seen_content=0;
+struct DmaSlot { void* buffer = nullptr; audio_lipsync::Frame lip; };
+static DmaSlot s_dma_slots[kDmaBufCount];
+static i2s_chan_handle_t s_tx = nullptr;
+static QueueHandle_t s_output_queue = nullptr, s_mouth_queue = nullptr;
+static std::atomic<uint32_t> s_output_generation{1}, s_output_pending{0};
+static uint64_t s_source_samples = 0;
+static uint32_t s_content_epoch = 0, s_content_origin_ms = 0;
+static OutputBlock s_partial;
+
+
+static bool IRAM_ATTR on_output_sent(i2s_chan_handle_t, i2s_event_data_t* event, void*) {
+  BaseType_t wake = pdFALSE;
+  DmaSlot* slot = nullptr;
+  for (auto& candidate : s_dma_slots) {
+    if (!candidate.buffer || candidate.buffer == event->dma_buf) {
+      candidate.buffer = event->dma_buf;
+      slot = &candidate;
+      break;
+    }
+  }
+  if (!slot) return false;
+  auto completed = slot->lip;
+  completed.output_us = esp_timer_get_time();
+  if (completed.active) s_output_pending.fetch_sub(1, std::memory_order_relaxed);
+  if (completed.generation == s_output_generation.load(std::memory_order_relaxed)) {
+    if(completed.active) {
+      if(s_seen_content && s_pending_gap){s_content_gap_periods.fetch_add(s_pending_gap);s_content_gap_events.fetch_add(1);}
+      s_seen_content=1;s_pending_gap=0;
+    }
+    if (completed.epoch) {
+      s_timeline_ms.store(completed.end_ms, std::memory_order_relaxed);
+      s_timeline_epoch.store(completed.epoch, std::memory_order_release);
+    }
+    xQueueOverwriteFromISR(s_mouth_queue, &completed, &wake);
+  } else {
+    if(s_seen_content)++s_pending_gap;
+    // Underrun: output is zero, never replay the last nonzero mouth pose.
+    audio_lipsync::Frame silence;
+    silence.output_us = completed.output_us;
+    silence.generation = s_output_generation.load(std::memory_order_relaxed);
+    silence.active = s_stream_active.load(std::memory_order_relaxed);
+    silence.underrun = true;
+    xQueueOverwriteFromISR(s_mouth_queue, &silence, &wake);
+  }
+  // auto_clear_before_cb has already zeroed this DMA buffer. Copy by value,
+  // so the producer can immediately release/reuse decoded PCM.
+  OutputBlock next;
+  if (xQueueReceiveFromISR(s_output_queue, &next, &wake) == pdTRUE) {
+    memcpy(event->dma_buf, next.pcm, event->size);
+    slot->lip = next.lip;
+  } else {
+    slot->lip = audio_lipsync::Frame{};
+    if (s_stream_active.load(std::memory_order_relaxed))
+      s_output_empty_periods.fetch_add(1, std::memory_order_relaxed);
+  }
+  return wake == pdTRUE;
+}
+
+// Called only by the playback owner, with TX disabled (no concurrent ISR).
+static void reset_output() {
+  s_output_generation.fetch_add(1, std::memory_order_release);
+  xQueueReset(s_output_queue);
+  xQueueReset(s_mouth_queue);
+  for (auto& slot : s_dma_slots) {
+    if (slot.buffer) memset(slot.buffer, 0, 2 * kDmaBufLen * sizeof(int16_t));
+    slot.lip = audio_lipsync::Frame{};
+  }
+  s_output_pending.store(0);
+  s_source_samples = 0;
+  s_pending_gap=s_seen_content=0;
+  s_content_epoch = s_content_origin_ms = 0;
+  s_partial = OutputBlock{};
+  s_timeline_epoch.store(0);
+}
 
 static void speaker_set_clk(uint32_t rate, uint8_t channels) {
   const uint32_t r = rate ? rate : SAMPLE_RATE;
-  /* NS4168 只采样 I2S 双槽中的一个：物理线格式固定 stereo-both（左右槽同采样），
-   * 与新固件 audio_player.cpp（I2S_STD_SLOT_BOTH）一致；mono 源由 play() 插值。 */
-  s_i2s_channels = (channels == 2) ? 2 : 1;
-  if (!s_i2s.configureTX(r, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO)) {
-    log_warn("[SPEAKER] configureTX failed rate=%u ch=%u", (unsigned)r, (unsigned)channels);
-  }
+  i2s_channel_disable(s_tx);
+  reset_output();
+  s_first_audio_meta = pb_audio{};
+  s_last_audio_meta = pb_audio{};
+  i2s_std_clk_config_t clock = I2S_STD_CLK_DEFAULT_CONFIG(r);
+  if (i2s_channel_reconfig_std_clock(s_tx, &clock) != ESP_OK)
+    log_error("[SPEAKER] clock configuration failed rate=%u", (unsigned)r);
+  s_i2s_channels = channels == 2 ? 2 : 1;
   s_i2s_rate = r;
+  i2s_channel_enable(s_tx);
 }
-
 
 enum class HeapFree : uint8_t { kMalloc = 0, kHeapCaps = 1 };
 
@@ -105,6 +217,7 @@ static void free_job(Job& j) {
     free_ptr(j.pcm.ptr, j.free_mode);
     j.pcm.ptr = nullptr;
   } else if (j.type == JobType::kPbAudio) {
+    if (j.pb_audio_ptr && j.pb_audio_ptr->epoch) s_buffered_ms.fetch_sub(j.pb_audio_ptr->duration_ms);
     pb_audio_free(j.pb_audio_ptr);
     j.pb_audio_ptr = nullptr;
   }
@@ -129,7 +242,14 @@ static bool enqueue(Job& j) {
 static void stop_output(bool graceful, uint8_t channels, bool force);
 
 static void finish_cancel() {
+  ++s_cancel_count;
+  // Preserve the final DMA progress before cancellation clears the timeline.
+  if (ws_transport_compact_supported() && s_last_audio_meta.epoch &&
+      s_timeline_epoch.load()==s_last_audio_meta.epoch)
+    report_audio("pb_progress",&s_last_audio_meta,true);
   stop_output(/*graceful=*/false, 1, /*force=*/true);
+  s_started_epoch = 0; s_timeline_epoch.store(0);
+  s_cancel_in_progress.store(false, std::memory_order_release);
   log_info("[SPEAKER] cancel");
 }
 
@@ -154,6 +274,28 @@ static bool poll_cancel() {
   return true;
 }
 
+// Assemble continuously across PB/stream chunks. Never pad a network boundary.
+static bool flush_partial() {
+  if (!s_partial.frames) return true;
+  const auto timing = s_partial.lip;
+  s_partial.lip = audio_lipsync::process_audio(s_partial.pcm, s_partial.frames, 2,
+      DESKBOT_LIPSYNC_SILENCE_DB, DESKBOT_LIPSYNC_FULL_DB);
+  s_partial.lip.generation = timing.generation;
+  s_partial.lip.epoch = timing.epoch;
+  s_partial.lip.end_ms = timing.end_ms;
+  s_partial.lip.first_sample = timing.first_sample;
+  s_output_pending.fetch_add(1);
+  while (xQueueSend(s_output_queue, &s_partial, pdMS_TO_TICKS(5)) != pdTRUE) {
+    if (s_need_cancel.load()) {
+      s_output_pending.fetch_sub(1);
+      (void)poll_cancel();
+      return false;
+    }
+  }
+  s_partial = OutputBlock{};
+  return true;
+}
+
 /**
  * 写 I2S：按 s_volume 缩放（可就地改 PCM）。
  * 分块写出以便响应 need_cancel。返回 false 表示中途被取消。
@@ -165,6 +307,7 @@ static bool play(int16_t* data, size_t length) {
   if (poll_cancel()) {
     return false;
   }
+  if (MAX98357_SD >= 0) digitalWrite(MAX98357_SD, HIGH);
   const float vol = s_volume.load(std::memory_order_relaxed);
 
   /* 全双工（AEC）：播放不再挡麦，仅标记"正在播音"。 */
@@ -178,65 +321,58 @@ static bool play(int16_t* data, size_t length) {
     }
   }
 
-  /* NS4168 物理线格式 stereo-both：mono 输入插值到左右两个 slot，
-   * 否则功放采样的槽位拿到静音（新固件 audio_player.cpp 同款做法）。 */
-  int16_t stereo_scratch[2 * kPlayBlockSamples];
-  const bool mono = (s_i2s_channels == 1);
+  // Exactly one physical DMA period per job. Stereo input is downmixed before
+  // analysis and duplicated to both amplifier slots; source frames count once.
+  const size_t channels = s_i2s_channels;
+  if (length % channels) return false;
   for (size_t off = 0; off < length;) {
-    if (poll_cancel()) {
-      return false;
+    if (poll_cancel()) return false;
+    if (!s_partial.frames) {
+      s_partial.lip.generation = s_output_generation.load();
+      s_partial.lip.first_sample = s_source_samples;
     }
-    size_t n = length - off;
-    if (n > kPlayBlockSamples) {
-      n = kPlayBlockSamples;
+    const size_t start = s_partial.frames;
+    const size_t frames = s_partial.append(data+off, (length-off)/channels, channels);
+    int16_t reference[kDmaBufLen];
+    for (size_t i=0; i<frames; ++i) reference[i]=s_partial.pcm[2*(start+i)];
+    s_source_samples += frames;
+    off += frames * channels;
+    if (s_current_audio) {
+      s_partial.lip.epoch = s_current_audio->epoch;
+      s_partial.lip.end_ms = s_content_origin_ms +
+          (s_source_samples * 1000ULL / s_i2s_rate);
     }
-    if (mono) {
-      for (size_t i = 0; i < n; ++i) {
-        stereo_scratch[2 * i] = data[off + i];
-        stereo_scratch[2 * i + 1] = data[off + i];
-      }
-      /* AEC 参考：实际写入喇叭的 PCM（stereo-both 的源信号）。 */
-      if (audio_frontend_ready()) {
-        audio_frontend_submit_playback_reference(data + off, n, s_i2s_rate, 1);
-      }
-      const size_t want = n * 2 * sizeof(int16_t);
-      const size_t bw =
-          s_i2s.write(reinterpret_cast<const uint8_t*>(stereo_scratch), want);
-      if (bw != want) {
-        /* 参考样本未真正到喇叭：作废参考时间线，防 AEC 向错信号收敛。 */
-        audio_frontend_abort_playback_reference();
-        log_warn("[SPEAKER] i2s_write short bw=%u want=%u", (unsigned)bw, (unsigned)want);
-        return false;
-      }
-    } else {
-      if (audio_frontend_ready()) {
-        audio_frontend_submit_playback_reference(data + off, n, s_i2s_rate, 2);
-      }
-      const size_t want = n * sizeof(int16_t);
-      const size_t bw =
-          s_i2s.write(reinterpret_cast<const uint8_t*>(data + off), want);
-      if (bw != want) {
-        audio_frontend_abort_playback_reference();
-        log_warn("[SPEAKER] i2s_write short bw=%u want=%u", (unsigned)bw, (unsigned)want);
-        return false;
-      }
+    if (audio_frontend_ready())
+      audio_frontend_submit_playback_reference(reference, frames, s_i2s_rate, 1);
+    if (s_partial.frames == kDmaBufLen && !flush_partial()) return false;
+    if (s_current_audio && s_current_audio->epoch &&
+        s_timeline_epoch.load() == s_current_audio->epoch &&
+        s_started_epoch != s_current_audio->epoch) {
+      s_started_epoch = s_current_audio->epoch;
+      report_audio("pb_started", &s_first_audio_meta);
     }
-    off += n;
   }
   return true;
 }
 
 /**
- * drain：等 DMA 里残留 PCM 大致播完；然后恢复 16k mono 并 zero_dma。
+ * Drain every owned DMA block, then reset output to 16k mono and clear old samples.
  * channels 仅保留接口兼容（delay 按 frame 计，与声道无关）。
  */
 static void i2s_idle(bool drain, uint8_t /*channels*/) {
   if (drain) {
-    const uint32_t rate = s_i2s_rate ? s_i2s_rate : SAMPLE_RATE;
-    const uint32_t ms =
-        (kIdleDrainDmaBufs * static_cast<uint32_t>(kDmaBufLen) * 1000u + rate - 1u) / rate;
-    if (ms > 0) {
-      vTaskDelay(pdMS_TO_TICKS(ms));
+    (void)flush_partial();
+    while (s_output_pending.load(std::memory_order_acquire)) {
+      if (s_need_cancel.load()) break;
+      vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    if (!s_need_cancel.load() && s_last_audio_meta.epoch &&
+        s_timeline_epoch.load() == s_last_audio_meta.epoch) {
+      if (s_started_epoch != s_last_audio_meta.epoch) {
+        s_started_epoch = s_last_audio_meta.epoch;
+        report_audio("pb_started", &s_first_audio_meta);
+      }
+      report_audio("pb_progress", &s_last_audio_meta, true);
     }
   }
   speaker_set_clk(SAMPLE_RATE, 1);
@@ -246,7 +382,9 @@ static void stop_output(bool graceful, uint8_t channels, bool force) {
   if (!s_stream_active.load(std::memory_order_relaxed) && !force) {
     return;
   }
+  if (!graceful && MAX98357_SD >= 0) digitalWrite(MAX98357_SD, LOW);
   i2s_idle(/*drain=*/graceful, channels);
+  if (MAX98357_SD >= 0) digitalWrite(MAX98357_SD, LOW);
   s_stream_active.store(false, std::memory_order_release);
   s_is_speaking.store(false, std::memory_order_release);
   /* AEC 参考时间线收尾：让声学尾音自然衰减。 */
@@ -324,6 +462,7 @@ static bool play_pb_audio_owned(pb_audio* audio) {
   HeapFree free_mode = HeapFree::kHeapCaps;
 
   if (strcmp(audio->fmt, "opus") == 0) {
+    if (audio->ch != 1) return false;  // Existing Opus decoder is mono.
     const uint16_t opus_frames = audio->frames > 0 ? (uint16_t)audio->frames : (uint16_t)1;
     const size_t cap = opus_codec_decode_out_cap((int)audio->sr, opus_frames);
     pcm_owned = (int16_t*)psram_malloc(cap * sizeof(int16_t));
@@ -331,12 +470,20 @@ static bool play_pb_audio_owned(pb_audio* audio) {
       return false;
     }
     free_mode = HeapFree::kMalloc;
-    samples = opus_frames > 1 ? opus_codec_decode_batch(payload, length, (int)audio->sr, opus_frames,
+    const bool batch = audio->frames > 1 || (audio->frames == 1 && length >= 2 &&
+        static_cast<size_t>((payload[0] << 8) | payload[1]) == length-2);
+    samples = batch ? opus_codec_decode_batch(payload, length, (int)audio->sr, opus_frames,
                                                         pcm_owned, cap)
                               : opus_codec_decode(payload, length, (int)audio->sr, pcm_owned, cap);
     if (samples == 0) {
       free_ptr(pcm_owned, free_mode);
       return false;
+    }
+    // Encoder pads its last 20 ms frame. Do not turn codec padding into
+    // content or let it accumulate between independently synthesized phrases.
+    if (audio->duration_ms) {
+      const size_t content = static_cast<uint64_t>(audio->sr) * audio->duration_ms / 1000;
+      if (samples > content) samples = content;
     }
   } else {
     if ((length & 1u) != 0u) {
@@ -361,7 +508,45 @@ static bool play_pb_audio_owned(pb_audio* audio) {
     audio_frontend_set_playback_active(true);
   }
 
+  if (s_i2s_rate != audio->sr || s_i2s_channels != audio->ch) {
+    free_ptr(pcm_owned, free_mode);
+    return false;
+  }
+  if (audio->epoch) {
+    const uint64_t expected = s_content_origin_ms + s_source_samples * 1000ULL / s_i2s_rate;
+    if (s_content_epoch && (s_content_epoch != audio->epoch ||
+        expected > static_cast<uint64_t>(audio->pts_ms)+1 ||
+        static_cast<uint64_t>(audio->pts_ms) > expected+1)) {
+      log_warn("[SPEAKER] PCM discontinuity epoch=%u pts=%u expected=%llu",
+               (unsigned)audio->epoch, (unsigned)audio->pts_ms, (unsigned long long)expected);
+      speaker_set_clk(audio->sr, audio->ch);
+      audio_frontend_abort_playback_reference();
+    }
+    if (!s_content_epoch) {
+      s_content_epoch = audio->epoch;
+      s_content_origin_ms = audio->pts_ms;
+    }
+  }
+  if (s_first_audio_meta.epoch != audio->epoch) {
+    s_first_audio_meta = *audio;
+    s_first_audio_meta.bin = nullptr;
+  }
+  s_last_audio_meta = *audio;
+  s_last_audio_meta.bin = nullptr;
+  s_current_audio = audio;
   const bool ok = play(pcm_owned, samples);
+  if (ok && audio->epoch) {
+    if (s_started_epoch != audio->epoch && s_output_pending.load()) {
+      while (s_timeline_epoch.load() != audio->epoch && !s_need_cancel.load())
+        vTaskDelay(pdMS_TO_TICKS(2));
+      if (!s_need_cancel.load()) {
+        s_started_epoch = audio->epoch;
+        report_audio("pb_started", &s_first_audio_meta);
+      }
+    }
+    report_audio("pb_progress", audio);
+  }
+  s_current_audio = nullptr;
   free_ptr(pcm_owned, free_mode);
   return ok;
 }
@@ -399,12 +584,15 @@ static void execute_job(Job& job) {
       }
       free_job(job);
       break;
-    case JobType::kPbAudio:
+    case JobType::kPbAudio: {
+      const uint32_t cancel_count = s_cancel_count;
       if (job.pb_audio_ptr) {
-        (void)play_pb_audio_owned(job.pb_audio_ptr);
+        if (!play_pb_audio_owned(job.pb_audio_ptr) && job.pb_audio_ptr->epoch && cancel_count == s_cancel_count)
+          report_audio("pb_error", job.pb_audio_ptr);
       }
       free_job(job);
       break;
+    }
     case JobType::kEnd:
       end_stream(/*graceful=*/true, job.channels);
       break;
@@ -449,11 +637,34 @@ void setup_speaker() {
     pinMode(MAX98357_SD, OUTPUT);
     digitalWrite(MAX98357_SD, HIGH);
   }
-  s_i2s.setPins((int8_t)MAX98357_BCLK, (int8_t)MAX98357_LRC, (int8_t)MAX98357_DIN);
-  /* 物理线格式固定 stereo-both（NS4168 只采样一个槽位）；mono 由 play() 插值。 */
-  if (!s_i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO)) {
-    log_error("[SPEAKER] ESP_I2S STD begin failed");
-    return;
+  if (!s_output_queue) s_output_queue = xQueueCreate(4, sizeof(OutputBlock));
+  if (!s_mouth_queue) s_mouth_queue = xQueueCreate(1, sizeof(audio_lipsync::Frame));
+  if (!s_output_queue || !s_mouth_queue) {
+    log_error("[SPEAKER] output queue allocation failed"); return;
+  }
+  if (!s_tx) {
+    i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+    channel.dma_desc_num = kDmaBufCount;
+    channel.dma_frame_num = kDmaBufLen;
+    channel.auto_clear_before_cb = true;
+    // Application feeds DMA in on_sent; it does not mix driver writes with
+    // direct-buffer ownership. Empty buffers always transmit zero.
+    if (i2s_new_channel(&channel, &s_tx, nullptr) != ESP_OK) return;
+    i2s_std_config_t config{};
+    config.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE);
+    config.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+    config.gpio_cfg.mclk = I2S_GPIO_UNUSED;
+    config.gpio_cfg.bclk = static_cast<gpio_num_t>(MAX98357_BCLK);
+    config.gpio_cfg.ws = static_cast<gpio_num_t>(MAX98357_LRC);
+    config.gpio_cfg.dout = static_cast<gpio_num_t>(MAX98357_DIN);
+    config.gpio_cfg.din = I2S_GPIO_UNUSED;
+    i2s_event_callbacks_t callbacks{};
+    callbacks.on_sent = on_output_sent;
+    if (i2s_channel_init_std_mode(s_tx, &config) != ESP_OK ||
+        i2s_channel_register_event_callback(s_tx, &callbacks, nullptr) != ESP_OK ||
+        i2s_channel_enable(s_tx) != ESP_OK) {
+      log_error("[SPEAKER] I2S initialization failed"); return;
+    }
   }
   s_i2s_rate = SAMPLE_RATE;
   if (!s_queue) {
@@ -470,6 +681,9 @@ void setup_speaker() {
 void task_setup_speaker() {
   if (s_task) {
     return;
+  }
+  if (!s_tx || !s_queue || !s_output_queue || !s_mouth_queue) {
+    log_error("[SPEAKER] setup_speaker must succeed before task_setup_speaker"); return;
   }
   const BaseType_t rc = utils_task_create_pinned(task_loop_speaker, "speaker", kSpeakerTaskStack,
                                                  nullptr, 7, &s_task, APP_CPU_NUM);
@@ -540,7 +754,9 @@ bool speaker_submit_pb_audio_owned(pb_audio* audio) {
   Job j{};
   j.type = JobType::kPbAudio;
   j.pb_audio_ptr = audio;
+  if (audio->epoch) s_buffered_ms.fetch_add(audio->duration_ms);
   if (!enqueue(j)) {
+    if (audio->epoch) s_buffered_ms.fetch_sub(audio->duration_ms);
     pb_audio_free(audio);
     return false;
   }
@@ -560,7 +776,9 @@ bool speaker_stream_pcm16_end(uint8_t channels) {
 void speaker_abort() {
   Job j{};
   j.type = JobType::kCancel;
+  s_cancel_in_progress.store(true, std::memory_order_release);
   s_need_cancel.store(true, std::memory_order_release);
+  s_output_generation.fetch_add(1, std::memory_order_release);
   (void)xQueueSend(s_queue, &j, portMAX_DELAY);
 }
 
@@ -599,4 +817,29 @@ bool speaker_play_url(const char* url) {
     return false;
   }
   return true;
+}
+
+uint32_t speaker_buffered_ms() { return s_buffered_ms.load(std::memory_order_acquire); }
+int32_t speaker_timeline_ms(uint32_t epoch) {
+  if (s_timeline_epoch.load(std::memory_order_acquire) != epoch) return -1;
+  return (int32_t)s_timeline_ms.load(std::memory_order_acquire);
+}
+bool speaker_cancel_pending() { return s_need_cancel.load(std::memory_order_acquire) || s_cancel_in_progress.load(std::memory_order_acquire); }
+
+// Snapshot is published only when its DMA buffer actually completed output.
+// Stop/cancel invalidates every old-generation frame, including an ISR race.
+audio_lipsync::Frame speaker_mouth_frame() {
+  audio_lipsync::Frame frame;
+  if (xQueuePeek(s_mouth_queue, &frame, 0) != pdTRUE ||
+      frame.generation != s_output_generation.load(std::memory_order_acquire) ||
+      s_cancel_in_progress.load(std::memory_order_acquire)) return {};
+  return frame;
+}
+String speaker_status_json() {
+  JsonDocument doc;doc["type"]="audio_status";doc["volume"]=speaker_get_volume();
+  doc["generation"]=s_output_generation.load();doc["playing"]=speaker_is_speaking();
+  doc["afe_ready"]=audio_frontend_ready();doc["afe_healthy"]=audio_frontend_output_healthy();
+  doc["content_gap_periods"]=s_content_gap_periods.load();doc["content_gap_events"]=s_content_gap_events.load();
+  doc["output_empty_periods"]=s_output_empty_periods.load();doc["sample_rate"]=s_i2s_rate;
+  doc["buffered_ms"]=speaker_buffered_ms();String out;serializeJson(doc,out);return out;
 }

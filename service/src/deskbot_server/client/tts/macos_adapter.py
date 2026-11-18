@@ -1,4 +1,4 @@
-"""realtime_agent-style macOS phrase synthesis, adapted to robot PCM/phonemes."""
+"""realtime_agent-style macOS phrase synthesis, adapted to robot PCM playback."""
 from __future__ import annotations
 
 import asyncio
@@ -9,10 +9,9 @@ from collections import OrderedDict
 from pathlib import Path
 from weakref import WeakKeyDictionary
 
-from deskbot_server.client.tts.doubao_phoneme_align import pcm_duration_ms, split_pcm_by_timed_phonemes
+from deskbot_server.client.tts.audio_segments import split_pcm_segments
 from deskbot_server.model.errors import ClientError
 from deskbot_server.utils.audio_resample import resample_pcm16_mono
-from deskbot_server.utils.phoneme_duration import text_to_phoneme_durations
 
 _LIMITERS: WeakKeyDictionary = WeakKeyDictionary()
 # Bound memory independently of conversation length; only short phrases enter.
@@ -39,7 +38,7 @@ class MacOsTtsAdapter:
         cached = _PCM_CACHE.get(key)
         if cached is not None:
             _PCM_CACHE.move_to_end(key)
-            return self._segments(clean, cached)
+            return self._segments(cached)
         loop = asyncio.get_running_loop()
         limiter = _LIMITERS.setdefault(loop, asyncio.Semaphore(2))
         async with asyncio.timeout(15), limiter:
@@ -72,8 +71,7 @@ class MacOsTtsAdapter:
             _PCM_CACHE.move_to_end(key)
             while len(_PCM_CACHE) > _CACHE_SIZE:
                 _PCM_CACHE.popitem(last=False)
-        return self._segments(clean, pcm)
+        return self._segments(pcm)
 
-    def _segments(self, text, pcm):
-        timed = text_to_phoneme_durations(text, pcm_duration_ms(pcm, self.sample_rate))
-        return self.sample_rate, split_pcm_by_timed_phonemes(pcm, self.sample_rate, timed)
+    def _segments(self, pcm):
+        return self.sample_rate, split_pcm_segments(pcm, self.sample_rate)

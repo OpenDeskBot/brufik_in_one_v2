@@ -1,4 +1,6 @@
 #include "task_trace.h"
+#include "utils/utils.h"
+#include <atomic>
 
 #include "logger.h"
 
@@ -71,7 +73,19 @@ CpuHit s_cpu_hits[DESKBOT_CPU_STATS_MAX_TASKS];
 size_t s_cpu_hit_count = 0;
 uint32_t s_cpu_total_samples = 0;
 uint32_t s_cpu_overflow = 0;
+uint32_t s_cpu_window_started_ms = 0;
 portMUX_TYPE s_cpu_mux = portMUX_INITIALIZER_UNLOCKED;
+TaskHandle_t s_cpu_task=nullptr;
+std::atomic<bool> s_cpu_enabled{false};
+
+static void reset_cpu_samples() {
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&s_cpu_mux);
+  s_cpu_hit_count = s_cpu_total_samples = s_cpu_overflow = 0;
+  s_cpu_window_started_ms = now;
+  memset(s_cpu_hits, 0, sizeof(s_cpu_hits));
+  portEXIT_CRITICAL(&s_cpu_mux);
+}
 
 void IRAM_ATTR cpu_tick_hook() {
   TaskHandle_t h = xTaskGetCurrentTaskHandle();
@@ -99,6 +113,8 @@ void dump_cpu_runtime_stats() {
   size_t n = 0;
   uint32_t total = 0;
   uint32_t overflow = 0;
+  const uint32_t now = millis();
+  uint32_t window_ms = 0;
 
   portENTER_CRITICAL(&s_cpu_mux);
   n = s_cpu_hit_count;
@@ -108,6 +124,8 @@ void dump_cpu_runtime_stats() {
   memcpy(snap, s_cpu_hits, n * sizeof(CpuHit));
   total = s_cpu_total_samples;
   overflow = s_cpu_overflow;
+  window_ms = now - s_cpu_window_started_ms;
+  s_cpu_window_started_ms = now;
   s_cpu_hit_count = 0;
   s_cpu_total_samples = 0;
   s_cpu_overflow = 0;
@@ -130,7 +148,7 @@ void dump_cpu_runtime_stats() {
       (portNUM_PROCESSORS > 0) ? (total / (uint32_t)portNUM_PROCESSORS) : total;
 
   log_warn("[CPU] ===== task CPU stats (tick-sample, last %ums) =====",
-           (unsigned)DESKBOT_CPU_STATS_INTERVAL_MS);
+           (unsigned)window_ms);
   log_warn("[CPU] %-16s %10s %6s", "Task", "AbsTime", "%CPU");
   for (size_t i = 0; i < n; ++i) {
     if (snap[i].handle == nullptr || snap[i].hits == 0) {
@@ -161,7 +179,7 @@ void dump_cpu_runtime_stats() {
 void task_loop_cpu_runtime_stats(void* /*arg*/) {
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(DESKBOT_CPU_STATS_INTERVAL_MS));
-    dump_cpu_runtime_stats();
+    if(s_cpu_enabled.load())dump_cpu_runtime_stats();
   }
 }
 
@@ -268,7 +286,7 @@ void log_stack_heap_tick() {
   /*
    * 预编译 Arduino-ESP32 FreeRTOS 未开启 trace facility，不能安全枚举所有系统任务。
    * 这里覆盖本固件创建的全部应用任务；未创建的任务不会打印。
-   * uxTaskGetStackHighWaterMark 返回 StackType_t 数，ESP32-S3 上每个元素为 4 字节。
+   * ESP-IDF 的 uxTaskGetStackHighWaterMark 返回字节，与上游 FreeRTOS 的字单位不同。
    */
   struct StackWatch {
     const char* name;
@@ -280,6 +298,7 @@ void log_stack_heap_tick() {
       {"speaker", 28 * 1024},
       {"ws_transport", 32 * 1024},
       {"pb_runtime", 24 * 1024},
+      {"cpu_stats", 4 * 1024},
       {"display_render", 24 * 1024},
       {"camera", 16 * 1024},
       {"camera_ws", 8 * 1024},
@@ -296,7 +315,7 @@ void log_stack_heap_tick() {
       continue;
     }
     const uint32_t min_free_bytes =
-        (uint32_t)uxTaskGetStackHighWaterMark(handle) * sizeof(StackType_t);
+        (uint32_t)uxTaskGetStackHighWaterMark(handle);
     const uint32_t peak_used_bytes =
         (min_free_bytes <= watched.allocated_bytes) ? watched.allocated_bytes - min_free_bytes : 0;
     log_warn("[STACK] %-16s alloc=%5u used_peak=%5u free_min=%5u", watched.name,
@@ -320,20 +339,36 @@ LogTaskScope::LogTaskScope(const char* task, const char* detail) { log_task_begi
 
 LogTaskScope::~LogTaskScope() { log_task_end(nullptr); }
 
-void task_setup_cpu_runtime_stats() {
+bool setup_cpu_runtime_stats() {
+  if(s_cpu_enabled.load())return true;
+  // A new observation must not include samples or task handles retained from
+  // a previous, stopped observation. The periodic task can already exist.
+  reset_cpu_samples();
   esp_err_t e0 = esp_register_freertos_tick_hook_for_cpu(cpu_tick_hook, 0);
   esp_err_t e1 = esp_register_freertos_tick_hook_for_cpu(cpu_tick_hook, 1);
   if (e0 != ESP_OK || e1 != ESP_OK) {
     log_error("[CPU] tick hook register failed e0=%d e1=%d", (int)e0, (int)e1);
-    return;
+    if(e0==ESP_OK)esp_deregister_freertos_tick_hook_for_cpu(cpu_tick_hook,0);
+    if(e1==ESP_OK)esp_deregister_freertos_tick_hook_for_cpu(cpu_tick_hook,1);
+    return false;
   }
+  s_cpu_enabled.store(true);return true;
+}
 
-  const BaseType_t ok = xTaskCreatePinnedToCore(
-      task_loop_cpu_runtime_stats, "cpu_stats", 4 * 1024, nullptr, 1, nullptr, tskNO_AFFINITY);
+void task_setup_cpu_runtime_stats() {
+  if(s_cpu_task)return;
+  const BaseType_t ok = utils_task_create_pinned(
+      task_loop_cpu_runtime_stats, "cpu_stats", 4 * 1024, nullptr, 1, &s_cpu_task, tskNO_AFFINITY);
   if (ok != pdPASS) {
     log_error("[CPU] failed to start cpu_stats task");
     return;
   }
   log_info("[CPU] cpu_stats started (tick-sample, interval=%ums)",
            (unsigned)DESKBOT_CPU_STATS_INTERVAL_MS);
+}
+void cpu_runtime_stats_stop() {
+  if(!s_cpu_enabled.exchange(false))return;
+  esp_deregister_freertos_tick_hook_for_cpu(cpu_tick_hook,0);
+  esp_deregister_freertos_tick_hook_for_cpu(cpu_tick_hook,1);
+  reset_cpu_samples();
 }

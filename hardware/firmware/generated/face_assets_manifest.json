@@ -1,0 +1,879 @@
+{
+  "schema": 2,
+  "version": "f28d677b234bc5b6",
+  "assets": [
+    {
+      "id": "idle",
+      "aliases": [
+        "standby",
+        "default"
+      ],
+      "frame_offset": 0,
+      "frame_count": 8,
+      "duration_ms": 4760,
+      "frame_ms": [
+        160,
+        1700,
+        160,
+        500,
+        160,
+        90,
+        90,
+        1900
+      ]
+    },
+    {
+      "id": "happy",
+      "aliases": [
+        "joy",
+        "glad",
+        "smile"
+      ],
+      "frame_offset": 8,
+      "frame_count": 5,
+      "duration_ms": 1400,
+      "frame_ms": [
+        140,
+        150,
+        160,
+        650,
+        300
+      ]
+    },
+    {
+      "id": "shy",
+      "aliases": [
+        "embarrass"
+      ],
+      "frame_offset": 13,
+      "frame_count": 5,
+      "duration_ms": 1650,
+      "frame_ms": [
+        220,
+        550,
+        160,
+        400,
+        320
+      ]
+    },
+    {
+      "id": "angry",
+      "aliases": [
+        "mad",
+        "furious"
+      ],
+      "frame_offset": 18,
+      "frame_count": 4,
+      "duration_ms": 1410,
+      "frame_ms": [
+        160,
+        220,
+        650,
+        380
+      ]
+    },
+    {
+      "id": "surprised",
+      "aliases": [
+        "shock",
+        "wow"
+      ],
+      "frame_offset": 22,
+      "frame_count": 5,
+      "duration_ms": 1200,
+      "frame_ms": [
+        80,
+        120,
+        130,
+        550,
+        320
+      ]
+    },
+    {
+      "id": "sad",
+      "aliases": [
+        "unhappy",
+        "down"
+      ],
+      "frame_offset": 27,
+      "frame_count": 5,
+      "duration_ms": 1900,
+      "frame_ms": [
+        220,
+        550,
+        180,
+        550,
+        400
+      ]
+    },
+    {
+      "id": "sleep",
+      "aliases": [
+        "nap",
+        "drowsy",
+        "zzz"
+      ],
+      "frame_offset": 32,
+      "frame_count": 5,
+      "duration_ms": 3580,
+      "frame_ms": [
+        180,
+        1200,
+        600,
+        600,
+        1000
+      ]
+    },
+    {
+      "id": "thinking",
+      "aliases": [
+        "think",
+        "ponder",
+        "waiting",
+        "loading",
+        "busy"
+      ],
+      "frame_offset": 37,
+      "frame_count": 6,
+      "duration_ms": 1660,
+      "frame_ms": [
+        180,
+        420,
+        420,
+        420,
+        100,
+        120
+      ]
+    },
+    {
+      "id": "listening",
+      "aliases": [
+        "listen",
+        "attentive"
+      ],
+      "frame_offset": 43,
+      "frame_count": 6,
+      "duration_ms": 1430,
+      "frame_ms": [
+        160,
+        800,
+        120,
+        160,
+        90,
+        100
+      ]
+    },
+    {
+      "id": "wake",
+      "aliases": [
+        "wakeup",
+        "boot",
+        "connect"
+      ],
+      "frame_offset": 49,
+      "frame_count": 9,
+      "duration_ms": 1530,
+      "frame_ms": [
+        80,
+        140,
+        90,
+        220,
+        180,
+        130,
+        90,
+        300,
+        300
+      ]
+    },
+    {
+      "id": "greeting",
+      "aliases": [
+        "hello",
+        "welcome"
+      ],
+      "frame_offset": 58,
+      "frame_count": 6,
+      "duration_ms": 1310,
+      "frame_ms": [
+        140,
+        120,
+        200,
+        120,
+        430,
+        300
+      ]
+    },
+    {
+      "id": "curious",
+      "aliases": [
+        "question",
+        "wonder"
+      ],
+      "frame_offset": 64,
+      "frame_count": 4,
+      "duration_ms": 1260,
+      "frame_ms": [
+        180,
+        600,
+        160,
+        320
+      ]
+    },
+    {
+      "id": "got_it",
+      "aliases": [
+        "idea",
+        "understood",
+        "aha"
+      ],
+      "frame_offset": 68,
+      "frame_count": 5,
+      "duration_ms": 1400,
+      "frame_ms": [
+        100,
+        150,
+        150,
+        650,
+        350
+      ]
+    },
+    {
+      "id": "oops",
+      "aliases": [
+        "embarrassed",
+        "mistake"
+      ],
+      "frame_offset": 73,
+      "frame_count": 5,
+      "duration_ms": 1560,
+      "frame_ms": [
+        100,
+        180,
+        200,
+        700,
+        380
+      ]
+    },
+    {
+      "id": "wink",
+      "aliases": [
+        "playful",
+        "tease"
+      ],
+      "frame_offset": 78,
+      "frame_count": 5,
+      "duration_ms": 800,
+      "frame_ms": [
+        120,
+        90,
+        220,
+        120,
+        250
+      ]
+    }
+  ],
+  "phonemes": [
+    {
+      "id": "sil",
+      "aliases": [
+        "_",
+        "pau",
+        "sp",
+        "silence"
+      ],
+      "frame_offset": 83,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "i",
+      "aliases": [
+        "IY",
+        "IH",
+        "IX"
+      ],
+      "frame_offset": 84,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "e",
+      "aliases": [
+        "EH",
+        "ER"
+      ],
+      "frame_offset": 85,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "o",
+      "aliases": [
+        "AO"
+      ],
+      "frame_offset": 86,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "u",
+      "aliases": [
+        "UW",
+        "UH"
+      ],
+      "frame_offset": 87,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "a",
+      "aliases": [
+        "AA",
+        "AE",
+        "AH"
+      ],
+      "frame_offset": 88,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "v",
+      "aliases": [],
+      "frame_offset": 89,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "ai",
+      "aliases": [
+        "uai"
+      ],
+      "frame_offset": 90,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "ao",
+      "aliases": [
+        "AW"
+      ],
+      "frame_offset": 92,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "ou",
+      "aliases": [
+        "OW",
+        "OY"
+      ],
+      "frame_offset": 94,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "ei",
+      "aliases": [
+        "EY"
+      ],
+      "frame_offset": 96,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "ie",
+      "aliases": [],
+      "frame_offset": 98,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "uo",
+      "aliases": [],
+      "frame_offset": 100,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "ian",
+      "aliases": [
+        "iang",
+        "üan",
+        "van"
+      ],
+      "frame_offset": 102,
+      "frame_count": 3,
+      "duration_ms": 800,
+      "frame_ms": [
+        250,
+        250,
+        300
+      ]
+    },
+    {
+      "id": "in",
+      "aliases": [
+        "ing"
+      ],
+      "frame_offset": 105,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "iong",
+      "aliases": [],
+      "frame_offset": 107,
+      "frame_count": 3,
+      "duration_ms": 800,
+      "frame_ms": [
+        250,
+        250,
+        300
+      ]
+    },
+    {
+      "id": "iou",
+      "aliases": [
+        "iu"
+      ],
+      "frame_offset": 110,
+      "frame_count": 3,
+      "duration_ms": 800,
+      "frame_ms": [
+        250,
+        250,
+        300
+      ]
+    },
+    {
+      "id": "uan",
+      "aliases": [
+        "uang"
+      ],
+      "frame_offset": 113,
+      "frame_count": 3,
+      "duration_ms": 800,
+      "frame_ms": [
+        250,
+        250,
+        300
+      ]
+    },
+    {
+      "id": "an",
+      "aliases": [],
+      "frame_offset": 116,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "ang",
+      "aliases": [],
+      "frame_offset": 118,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "en",
+      "aliases": [
+        "uen",
+        "un"
+      ],
+      "frame_offset": 120,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "eng",
+      "aliases": [],
+      "frame_offset": 122,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "ong",
+      "aliases": [],
+      "frame_offset": 124,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "er",
+      "aliases": [],
+      "frame_offset": 126,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "ve",
+      "aliases": [
+        "üe"
+      ],
+      "frame_offset": 127,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "vn",
+      "aliases": [
+        "ün"
+      ],
+      "frame_offset": 129,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "ui",
+      "aliases": [
+        "uei"
+      ],
+      "frame_offset": 131,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "iao",
+      "aliases": [],
+      "frame_offset": 133,
+      "frame_count": 3,
+      "duration_ms": 800,
+      "frame_ms": [
+        250,
+        250,
+        300
+      ]
+    },
+    {
+      "id": "ia",
+      "aliases": [],
+      "frame_offset": 136,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "ua",
+      "aliases": [],
+      "frame_offset": 138,
+      "frame_count": 2,
+      "duration_ms": 800,
+      "frame_ms": [
+        400,
+        400
+      ]
+    },
+    {
+      "id": "b",
+      "aliases": [
+        "p",
+        "m",
+        "B",
+        "P",
+        "M"
+      ],
+      "frame_offset": 140,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "f",
+      "aliases": [
+        "F",
+        "V"
+      ],
+      "frame_offset": 141,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "d",
+      "aliases": [
+        "t",
+        "D",
+        "T"
+      ],
+      "frame_offset": 142,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "n",
+      "aliases": [
+        "N",
+        "ng",
+        "NG"
+      ],
+      "frame_offset": 143,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "l",
+      "aliases": [
+        "L"
+      ],
+      "frame_offset": 144,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "g",
+      "aliases": [
+        "k",
+        "G",
+        "K"
+      ],
+      "frame_offset": 145,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "h",
+      "aliases": [
+        "H",
+        "HH"
+      ],
+      "frame_offset": 146,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "j",
+      "aliases": [
+        "q",
+        "x",
+        "JH",
+        "CH"
+      ],
+      "frame_offset": 147,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "zh",
+      "aliases": [
+        "ch",
+        "sh",
+        "r",
+        "ZH",
+        "SH"
+      ],
+      "frame_offset": 148,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "z",
+      "aliases": [
+        "c",
+        "s",
+        "S",
+        "Z"
+      ],
+      "frame_offset": 149,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "w",
+      "aliases": [
+        "W"
+      ],
+      "frame_offset": 150,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "y",
+      "aliases": [
+        "Y"
+      ],
+      "frame_offset": 151,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "TH",
+      "aliases": [
+        "DH"
+      ],
+      "frame_offset": 152,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    },
+    {
+      "id": "R",
+      "aliases": [],
+      "frame_offset": 153,
+      "frame_count": 1,
+      "duration_ms": 800,
+      "frame_ms": [
+        800
+      ]
+    }
+  ],
+  "lipsync": {
+    "classifier": "rms-v1",
+    "closed_phoneme": "sil",
+    "open_phoneme": "a"
+  },
+  "idle": {
+    "after_ms": 15000,
+    "repeat_ms": 12000,
+    "clips": [
+      {
+        "anim_id": "idle",
+        "servo": []
+      },
+      {
+        "anim_id": "curious",
+        "servo": [
+          {
+            "xm": 1,
+            "ym": 2,
+            "x": 5,
+            "y": 0,
+            "ms": 600
+          },
+          {
+            "xm": 1,
+            "ym": 2,
+            "x": -5,
+            "y": 0,
+            "ms": 600
+          }
+        ]
+      }
+    ]
+  },
+  "logical_size": [
+    284,
+    240
+  ]
+}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 
 LAYERS = ("bg", "nose", "mouth", "eye_l", "eye_r", "extra")
 SHAPES = (
@@ -27,6 +28,45 @@ def integer(value, lo, hi, where):
     if type(value) is not int or not lo <= value <= hi:
         raise ValueError(f"{where}: expected integer in [{lo}, {hi}]")
     return value
+
+
+def compile_editor_document(doc):
+    """Lower saved editor primitives without changing the editable document.
+
+    The editor represents hidden nose/decorations as empty layers and supports
+    Adafruit horizontal/vertical lines. The bounded ROM program needs explicit
+    layer replacements and only its portable shape vocabulary. Keep the strict
+    compiler as the final validator, including for required eyes and mouth.
+    """
+    source = deepcopy(doc)
+    if isinstance(source, dict):
+        for kind in ("emotions", "phonemes"):
+            scenes = source.get(kind)
+            if not isinstance(scenes, list):
+                continue
+            for scene in scenes:
+                frames = scene.get("frames") if isinstance(scene, dict) else None
+                if not isinstance(frames, list):
+                    continue
+                for frame in frames:
+                    elements = frame.get("elements") if isinstance(frame, dict) else None
+                    if not isinstance(elements, dict):
+                        continue
+                    if kind == "emotions":
+                        for layer in ("nose", "extra"):
+                            if elements.get(layer, []) == []:
+                                elements[layer] = [{"shape": "circle", "x": 0, "y": 0, "r": 0, "c": 0}]
+                    for primitives in elements.values():
+                        if not isinstance(primitives, list):
+                            continue
+                        for primitive in primitives:
+                            if not isinstance(primitive, dict):
+                                continue
+                            shape = primitive.get("shape")
+                            if shape in ("hline", "vline"):
+                                primitive["shape"] = "rect"
+                                primitive["h" if shape == "hline" else "w"] = 1
+    return compile_document(source)
 
 
 def compile_document(doc):

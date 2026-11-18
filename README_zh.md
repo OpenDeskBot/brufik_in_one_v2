@@ -13,7 +13,7 @@
 ## 为什么值得一试
 
 - 🗣️ **开口即聊，无唤醒词**：插电上电，直接对它说话。VAD 自动起停，不用按键、不用喊「你好小歪」。
-- 😊 **表情 + 音素级口型**：TTS 返回音素时间戳，屏幕上的嘴型逐帧对齐声音；语音、嘴型、底部屏显文字三路同步。
+- 😊 **表情 + 本地音量口型**：服务端下发表情 ID／关键帧，ROM 根据实际播放 PCM 的音量驱动开闭嘴，与声音同步。
 - 🎙️ **全双工音频（AEC）**：它说话时你可以直接打断——回声消除（ESP-SR AFE）让它「边听边说」，而不是死板地你一句我一句排队。
 - ⚡ **随时打断**：高优先级消息（如闹钟、紧急提醒）通过 `pb_cancel` 抢占，立刻打断低优先级播放。
 - 👀 **认人 + 追视**：认得的脸能叫出名字（MediaPipe 检测 + InsightFace 512 维档案），摄像头自动转头跟随。
@@ -24,14 +24,14 @@
 
 ## 它怎么「活」起来
 
-设备端「轻」、后台端「重」：ESP32 只负责采音、播音、画屏、转舵机；所有智能（识别、对话、人脸、记忆、定时）都在后台。两者通过**一条 WebSocket 长连接**（`/asr_chat`）实时联动。
+设备端「轻」、后台端「重」：ESP32 只负责采音、播音、画屏、转舵机；所有智能（识别、对话、人脸、记忆、定时）都在后台。设备先请求配置的完整 HTTP/HTTPS 启动接口，取得资源、主 WebSocket 和相机上行地址；语音与播放使用主连接，摄像头使用独立连接。
 
 ```
 你说话 → 设备采集 PDM 麦克风（16kHz）
-              │  audio 帧上行（Opus/PCM + flush）
+              │  audio 帧上行（16kHz 单声道 Opus）
               ▼
-        服务端语音管线：VAD → ASR → LLM(工具) → TTS → 组帧
-              │  pb_start / pb_chunk / pb_end + 24kHz PCM 下行
+        服务端实时桥接 → 外部对话 Agent → 音频与动作组帧
+              │  pb_start / pb_chunk / pb_end + 16kHz Opus/PCM 下行
               ▼
         设备端回应：播音 + 嘴型 + 转头 + 屏显文字 + RGB 状态灯
 ```
@@ -136,7 +136,7 @@ python tools/test_client.py \
 ```bash
 cd hardware
 # 1. 编辑 firmware/deskbot_config.h：WiFi（WIFI_DEFAULT_SSID/PASSWORD）与
-#    DESKBOT_WS_HOST / DESKBOT_WS_PORT（指向你的后台）
+#    DESKBOT_BOOTSTRAP_URL（完整 HTTP/HTTPS 启动接口，例如 http://你的服务器:9000/api/device/bootstrap）
 # 2. 烧录 + 串口监视（需 PlatformIO，Python ≥3.10）
 ./flash_rom.sh all
 ```
@@ -153,7 +153,7 @@ cd hardware
 |------|------|
 | 🗣️ 自然对话 | 多轮上下文（10 分钟会话），人设「小歪」，情绪丰富、会害羞会傲娇 |
 | 📅 定时提醒 | 说「提醒我 3 点喝水」，LLM 调用 `schedule_task`，到点主动播报（北京时区 cron） |
-| 🧠 记住你 | 说「我叫小明，喜欢喝咖啡」，`memory_add` 写入长期记忆，跨会话生效 |
+| 🧠 记住你 | 每日记录保存交流与操作，人物资料从有来源的信息整理，识别后按人物加载 |
 | 😊 情绪表达 | 被夸奖会害羞眨眼，被凶会委屈炸毛；表情、转头、语音联动 |
 | 👁️ 认人 + 跟随 | `register_face` 登记人脸，之后能叫名字；摄像头自动追脸转头 |
 | 🌐 联网 | 「帮我查一下明天的天气」——`webfetch` / `websearch` 后回答 |
@@ -172,20 +172,20 @@ cd hardware
 |------|------|------|
 | VAD | Silero VAD（ONNX，本地） | 端点检测，自动起停 |
 | ASR | FunASR · SenseVoiceSmall（本地 ONNX） | 中文，16kHz，支持 Opus/PCM |
-| LLM | **本地优先**：Qwen3.8-2B（llama-server，端口 9106）或 MiniCPM5-1B（端口 9105），OpenAI 兼容协议；可切换云端火山方舟（DeepSeek 等）/ OpenAI / DashScope | 多轮工具循环，JSON 输出 |
-| TTS | **本地优先**：MOSS-TTS-Nano；可切换云端豆包 Doubao | 返回音素时间戳，驱动屏幕口型 |
+| LLM | **本地优先**：Qwen3.8-2B（llama-server，端口 9106）、MiniCPM5-1B（端口 9105）或 unee-0.8B（端口 9107），OpenAI 兼容协议；可切换云端火山方舟（DeepSeek 等）/ OpenAI / DashScope | 多轮工具循环，JSON 输出 |
+| TTS | **本地优先**：MOSS-TTS-Nano；可切换云端豆包 Doubao | 生成语音；ROM 根据实际播放音量驱动口型 |
 | 组帧 | pb wire：音频 + 动画 + 舵机 + 屏字 | 24kHz s16le PCM，优先级队列（0 空闲/1 说话/2 紧急/3 调试） |
 
 ### 设备 WebSocket 协议
 
-单条持久连接，上行、下行均采用 **「JSON + 紧随一条 binary」**（长度由 `next_bin_len` 声明，不用 base64）：
+主连接双向传输音频与控制，相机独立上行。基础消息为 **「4字节 JSON 长度 + JSON + 媒体」的一条 binary message**；音频与回执可协商紧凑二进制格式：
 
-- **上行**：`audio`（+flush 触发识别）、`camera_frame`（可选 JPEG）、`pb_ack`（播放背压）、`ping`
-- **下行**：`pb_start` / `pb_chunk` / `pb_end` / `pb_single` + 24kHz PCM；`pb_cancel` 支持抢占打断
+- **上行**：`device_hello`、`audio`、`camera_frame`（独立 JPEG 通道）、`pb_ack`、`rom_result`；当前持久会话不靠 flush 触发回复
+- **下行**：`pb_start` / `pb_chunk` / `pb_end` / `pb_single` + 16kHz Opus/PCM；`pb_cancel` 支持抢占打断
 
 ### LLM 工具（`llm_tool_runner.py` / `web_tools.py`）
 
-`schedule_task`（定时提醒）· `memory_add` / `memory_del`（长期记忆）· `get_camera`（取画面）· `register_face`（登记人脸）· `set_camera_follow`（人脸跟随）· `webfetch` / `websearch`（联网）· 沙箱文件读写 · `interim_tts`（边说边想）
+`schedule_task`（定时提醒）· `chat_search` / `chat_read` / `person_read` / `person_update` / `memory_forget`（每日记录与人物资料）· `get_camera`（取画面）· `register_face`（登记人脸）· `set_camera_follow`（人脸跟随）· `webfetch` / `websearch`（联网）· 沙箱文件读写 · `interim_tts`（边说边想）
 
 ### 固件要点（`hardware/firmware/`）
 

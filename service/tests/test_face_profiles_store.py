@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import pytest
 
 
@@ -30,8 +27,8 @@ def test_delete_face_profile(db_env):
     )
 
     device_id = db_env
-    p1 = upsert_profile(device_id, name="小明", descriptor=[0.1] * 512, merge_threshold=0.40)
-    p2 = upsert_profile(device_id, name="小红", descriptor=[0.2] * 512, merge_threshold=0.40)
+    p1 = upsert_profile(device_id, name="小明", descriptor=[1.0] + [0.0] * 511, merge_threshold=0.40)
+    p2 = upsert_profile(device_id, name="小红", descriptor=[0.0, 1.0] + [0.0] * 510, merge_threshold=0.40)
     assert len(list_face_profiles_summary(device_id=device_id)) == 2
     assert delete_face_profile(p1["id"], device_id=device_id)
     rows = list_face_profiles_summary(device_id=device_id)
@@ -63,9 +60,9 @@ def test_update_face_profile_api(monkeypatch, tmp_path):
     monkeypatch.setenv("DESKBOT_DB_PATH", str(db_path))
     monkeypatch.setattr("deskbot_server.service.device_data_paths.ensure_device_data_initialized", lambda _did: False)
 
-    from deskbot_server.service.face_profile_service import upsert_profile
     from deskbot_server.db import init_database
     from deskbot_server.db.engine import init_engine, reset_engine
+    from deskbot_server.service.face_profile_service import upsert_profile
     from deskbot_server.web.app import create_app
 
     reset_engine()
@@ -74,7 +71,7 @@ def test_update_face_profile_api(monkeypatch, tmp_path):
 
     from tests.device_bind_helpers import bind_device_online
 
-    user = __import__("deskbot_server.auth.service", fromlist=["create_user"]).create_user(
+    user = __import__("tests._auth_compat", fromlist=["create_user"]).create_user(
         "face-api@example.com", "password1234"
     )
     bind_device_online(user.id, "deskbot_face")

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 spec = importlib.util.spec_from_file_location(
-    "vowel_diagnostics", Path(__file__).resolve().parents[1] / "tools/verify_vowel_lipsync.py"
+    "device_diagnostics", Path(__file__).resolve().parents[1] / "tools/device_diagnostics.py"
 )
 diagnostics = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(diagnostics)

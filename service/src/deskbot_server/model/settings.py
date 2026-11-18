@@ -65,8 +65,6 @@ class TtsSettings:
     spk_id: int = 0
     sample_rate: int = 16000
     pb_random_servo: dict[str, Any] = field(default_factory=dict)
-    pb_face_bundle_json: str = ""
-    pb_face_bundle_file: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -109,6 +107,7 @@ class AppSettings:
                 "spk_id",
                 "sample_rate",
                 "pb_random_servo",
+                "pb_face_bundle",  # Retired online face configuration; never forward to providers.
                 "pb_face_bundle_json",
                 "pb_face_bundle_file",
             )
@@ -163,8 +162,6 @@ class AppSettings:
                 spk_id=int(tts.get("spk_id", 0)),
                 sample_rate=int(tts.get("sample_rate", 16000)),
                 pb_random_servo=dict(tts.get("pb_random_servo") or {}),
-                pb_face_bundle_json=str(tts.get("pb_face_bundle_json") or ""),
-                pb_face_bundle_file=str(tts.get("pb_face_bundle_file") or ""),
                 extra=tts_extra,
             ),
             camera_face=dict(config.get("camera_face") or {}),
@@ -191,8 +188,6 @@ class AppSettings:
             "spk_id": self.tts.spk_id,
             "sample_rate": self.tts.sample_rate,
             "pb_random_servo": self.tts.pb_random_servo,
-            "pb_face_bundle_json": self.tts.pb_face_bundle_json,
-            "pb_face_bundle_file": self.tts.pb_face_bundle_file,
         }
         base["output_codec"] = self.audio.output_codec
         base.update(self.tts.extra)

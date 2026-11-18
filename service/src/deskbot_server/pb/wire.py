@@ -10,9 +10,7 @@ import uuid
 from typing import Any
 
 from deskbot_server.constants import PB_MAX_WIRE_JSON_BYTES
-from deskbot_server.pb.face_bundle import resolve_pb_face_bundle
 from deskbot_server.pb.llm_plan import expand_llm_moves, interleave_tts_segs_with_llm_plan, map_anim_frames_to_tts_segs
-from deskbot_server.pb.phoneme_anim import phoneme_seq_to_anim_seq
 from deskbot_server.pb.servo_pcm import (
     PB_ACTION_REPLACE,
     PB_CHUNK_MS_MAX,
@@ -60,8 +58,6 @@ __all__ = [
     "pb_wire_json_bytes",
     "merge_pb_subchunks",
     "pb_json_messages",
-    "phoneme_seq_to_anim_seq",
-    "resolve_pb_face_bundle",
 ]
 
 

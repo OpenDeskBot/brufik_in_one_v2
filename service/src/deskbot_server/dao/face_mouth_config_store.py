@@ -117,8 +117,3 @@ def save_face_mouth_cfg_file(groups: list[dict[str, Any]], *, device_id: str | N
     design = ensure_face_design_file(device_id=device_id)
     updated = apply_mouth_groups_to_design(design, groups)
     save_face_design_file(updated, device_id=device_id)
-
-
-def groups_to_mouth_bundle(groups: list[dict[str, Any]]) -> dict[str, Any]:
-    """供 ``phoneme_seq_to_anim_seq`` 使用的 face_bundle 片段。"""
-    return {"mouth_by_phoneme_groups": normalize_face_mouth_groups(groups), "mouth_by_phoneme": {}}

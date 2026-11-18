@@ -1,4 +1,6 @@
 #include "boot_guide.h"
+#include "device_bootstrap.h"
+#include "server_endpoint.h"
 
 #include "deskbot_config.h"
 #include "display.h"
@@ -273,11 +275,11 @@ void boot_guide_show_ready() {
 }
 
 bool boot_guide_wait_ws_ready(unsigned timeout_ms) {
-  char ws_url[128];
+  char ws_url[server_endpoint::kUrlCapacity];
   deskbot_ws_format_active_url(ws_url, sizeof(ws_url));
 
   if (!deskbot_ws_is_active_configured()) {
-    boot_guide_server_result(false, "未配置服务器");
+    boot_guide_server_result(false, "请填写 HTTP(S) 启动接口");
     delay(1200);
     return false;
   }
@@ -300,84 +302,15 @@ bool boot_guide_wait_ws_ready(unsigned timeout_ms) {
 }
 
 void deskbot_ws_format_builtin_url(char* buf, size_t buf_sz) {
-  if (buf == nullptr || buf_sz == 0) {
-    return;
-  }
-  if (DESKBOT_WS_HOST[0] == '\0') {
-    snprintf(buf, buf_sz, "(未配置)");
-    return;
-  }
-  snprintf(buf, buf_sz, "ws://%s:%u", DESKBOT_WS_HOST, (unsigned)DESKBOT_WS_PORT);
-}
-
-void deskbot_ws_get_active(DeskbotWsTarget* out) {
-  if (out == nullptr) {
-    return;
-  }
-  memset(out, 0, sizeof(*out));
-
-  const char* active = nvs_ws_get_active_id();
-  if (strcmp(active, "builtin") == 0) {
-    if (DESKBOT_WS_HOST[0] == '\0') {
-      return;
-    }
-    strncpy(out->host, DESKBOT_WS_HOST, sizeof(out->host) - 1);
-    out->port = DESKBOT_WS_PORT;
-    out->use_ssl = false;
-    out->path_prefix[0] = '\0';
-    out->valid = true;
-    return;
-  }
-
-  char url[128];
-  if (!nvs_ws_get_custom_url(active, url, sizeof(url))) {
-    return;
-  }
-  WsProto proto;
-  if (!parse_ws_proto(url, proto)) {
-    return;
-  }
-  out->use_ssl = proto.is_wss;
-  strncpy(out->host, proto.host, sizeof(out->host) - 1);
-  out->port = proto.port;
-  if (proto.path[0] != '\0') {
-    strncpy(out->path_prefix, proto.path, sizeof(out->path_prefix) - 1);
-    out->path_prefix[sizeof(out->path_prefix) - 1] = '\0';
-  }
-  out->valid = true;
+  if (!buf || !buf_sz) return;
+  snprintf(buf, buf_sz, "%s", DESKBOT_BOOTSTRAP_URL);
 }
 
 bool deskbot_ws_is_active_configured() {
-  DeskbotWsTarget target;
-  deskbot_ws_get_active(&target);
-  return target.valid;
-}
-
-void deskbot_ws_build_service_path(char* buf, size_t buf_sz, const DeskbotWsTarget* target,
-                                   const char* service_path) {
-  if (buf == nullptr || buf_sz == 0 || target == nullptr || service_path == nullptr) {
-    return;
-  }
-  if (target->path_prefix[0] == '\0') {
-    snprintf(buf, buf_sz, "%s", service_path);
-    return;
-  }
-  snprintf(buf, buf_sz, "%s%s", target->path_prefix, service_path);
-}
-
-void deskbot_ws_client_begin(WebSocketsClient& client, const char* path_and_query) {
-  DeskbotWsTarget target;
-  deskbot_ws_get_active(&target);
-  if (!target.valid || path_and_query == nullptr) {
-    return;
-  }
-
-  client.setReconnectInterval(500);
-  if (target.use_ssl) {
-    client.beginSSL(target.host, target.port, path_and_query);
-  } else {
-    client.begin(target.host, target.port, path_and_query);
-  }
+  char url[server_endpoint::kUrlCapacity];
+  deskbot_ws_format_active_url(url, sizeof(url));
+  server_endpoint::Url target;
+  return server_endpoint::bootstrap(url, target);
 }
 
 void deskbot_ws_format_active_url(char* buf, size_t buf_sz) {
@@ -388,9 +321,9 @@ void deskbot_ws_format_active_url(char* buf, size_t buf_sz) {
     deskbot_ws_format_builtin_url(buf, buf_sz);
     return;
   }
-  char url[128];
+  char url[server_endpoint::kUrlCapacity];
   if (!nvs_ws_get_custom_url(nvs_ws_get_active_id(), url, sizeof(url))) {
-    deskbot_ws_format_builtin_url(buf, buf_sz);
+    buf[0] = '\0';
     return;
   }
   strncpy(buf, url, buf_sz - 1);

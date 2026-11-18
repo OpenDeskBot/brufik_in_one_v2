@@ -31,8 +31,8 @@ the rebuilt ROM before the device changes. Keep the server's logical x/y unchang
 
 ## 1. Out of the box
 
-1. Edit [`firmware/deskbot_config.h`](firmware/deskbot_config.h): set `WIFI_DEFAULT_*` to your AP (or set the AP to match those macros), and set `DESKBOT_WS_HOST` / `DESKBOT_WS_PORT` to your backend.
-2. Power on — the device joins WiFi and opens `ws://…/asr_chat?device_id=…` (**device_id only**; no API key or PIN on the device link).
+1. Edit [`firmware/deskbot_config.h`](firmware/deskbot_config.h): set `WIFI_DEFAULT_*` to your AP (or set the AP to match those macros), and set `DESKBOT_BOOTSTRAP_URL` to the complete HTTP/HTTPS discovery endpoint, for example `http://your-server:9000/api/device/bootstrap`. The provisioning page accepts the same endpoint.
+2. Power on — the device joins WiFi, requests that exact discovery URL, then uses the returned resource, main WebSocket and camera URLs. These targets may use different hosts or ports. Existing WS/WSS settings must be replaced with the complete HTTP/HTTPS discovery endpoint. Device credentials are not implemented yet; device links currently check only device_id.
 3. To change WiFi later: power on, join the open soft-AP whose SSID is the **`device_id`** (e.g. `deskbot_e83dc1faea30`), then open the URL on the screen (usually **`http://192.168.4.1/`**).
 
 ---

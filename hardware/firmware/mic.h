@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include "deskbot_config.h"
 
+/** Explicit USB diagnostic, at most 60s; raw and actual uplink PCM pairs. */
+void mic_trace_start(uint32_t duration_ms);
+void mic_trace_stop();
+
 #define PDM_MIC_CLK DESKBOT_PDM_MIC_CLK
 #define PDM_MIC_DATA DESKBOT_PDM_MIC_DATA
 

@@ -6,7 +6,7 @@
 /* ========== 烧录前可改：网络 ==========
  * 默认连 deskbot_wifi；也可改成你的路由器 SSID/密码。
  * 若 SSID 留空 → 开放热点（SSID=设备 ID，无密码），http://192.168.4.1/ 配网；NVS 已存凭证优先。
- * WS host 留空 → 禁用内置 WebSocket；可在配网页添加自定义云服务器。
+ * BOOTSTRAP_URL 留空 → 禁用内置云服务器；可在配网页填写完整 HTTP(S) 启动接口。
  */
 #define WIFI_DEFAULT_SSID "deskbot_wifi"
 #define WIFI_DEFAULT_PASSWORD "hello2026"
@@ -19,16 +19,8 @@
 /** 音频统一采样率（mic/speaker/AEC 共用）。 */
 #define SAMPLE_RATE 16000
 
-#define DESKBOT_WS_HOST "39.107.38.241"
-// #define DESKBOT_WS_HOST "39.107.38.241"
-#define DESKBOT_WS_PORT 9000
-
-#define ASR_CHAT_HOST DESKBOT_WS_HOST
-#define ASR_CHAT_PORT DESKBOT_WS_PORT
-
-static inline bool deskbot_ws_configured(void) {
-  return DESKBOT_WS_HOST[0] != '\0';
-}
+// 完整 HTTP(S) 启动接口；其余连接和资源地址由这个接口下发。
+#define DESKBOT_BOOTSTRAP_URL "http://39.107.38.241:9000/api/device/bootstrap"
 
 /* ========== 硬件接线（Deskbot v2 自研板，已从 Seeed XIAO ESP32S3 Sense 移植）==========
  * 引脚表来源：open-desk-bot-v2/hardware 固件 DESKBOT_BOARD_V2=1 分支（经 app.log 实机验证）。
@@ -98,9 +90,12 @@ static inline bool deskbot_ws_configured(void) {
 #ifndef DESKBOT_AFE_LOW_COST
 #define DESKBOT_AFE_LOW_COST 0
 #endif
+#ifndef DESKBOT_AEC_CORRELATION_DIAGNOSTICS
+#define DESKBOT_AEC_CORRELATION_DIAGNOSTICS 1
+#endif
 /** WebRTC AGC 固定压缩增益（dB）；过高会把 AEC 残留抬过 VAD 阈值。 */
 #ifndef DESKBOT_AFE_AGC_COMPRESSION_GAIN_DB
-#define DESKBOT_AFE_AGC_COMPRESSION_GAIN_DB 12
+#define DESKBOT_AFE_AGC_COMPRESSION_GAIN_DB 9
 #endif
 
 /* 能量门控（enhance_voice 后本地预处理，切句在服务端 Silero VAD） */
@@ -167,3 +162,7 @@ static inline size_t deskbot_pdm_voice_hangover_thr(size_t ema) {
 #define DESKBOT_PB_CREDIT_TICK_MS 100
 #endif
 
+
+// Digital PCM dBFS thresholds for volume-only RMS mouth animation.
+#define DESKBOT_LIPSYNC_SILENCE_DB (-45.f)
+#define DESKBOT_LIPSYNC_FULL_DB (-15.f)

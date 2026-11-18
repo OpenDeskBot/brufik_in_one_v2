@@ -28,8 +28,11 @@ bool s_suffix_ready = false;
 char s_ws_active_id[8] = "builtin";
 bool s_ws_active_cached = false;
 
-void device_suffix_generate_and_persist() {
+void device_suffix_generate_and_persist(uint32_t previous_suffix = 0) {
   s_device_suffix = (uint32_t)(esp_random() % 9000u + 1000u);
+  if (s_device_suffix == previous_suffix) {
+    s_device_suffix = 1000u + (s_device_suffix - 1000u + 1u) % 9000u;
+  }
   Preferences prefs;
   if (prefs.begin(kDevPrefsNs, false)) {
     prefs.putUInt(kDeviceSuffixKey, s_device_suffix);
@@ -175,13 +178,9 @@ uint32_t nvs_get_device_suffix() {
 }
 
 uint32_t nvs_reset_device_suffix() {
-  s_suffix_ready = false;
-  Preferences prefs;
-  if (prefs.begin(kDevPrefsNs, false)) {
-    prefs.remove(kDeviceSuffixKey);
-    prefs.end();
-  }
-  return nvs_get_device_suffix();
+  const uint32_t previous_suffix = nvs_get_device_suffix();
+  device_suffix_generate_and_persist(previous_suffix);
+  return s_device_suffix;
 }
 
 unsigned nvs_get_ap_offer_timeout_min_sec() { return kApOfferSecMin; }
@@ -267,7 +266,7 @@ bool nvs_ws_set_active_id(const char* id) {
     return false;
   }
   if (strcmp(id, "builtin") != 0) {
-    char url[128];
+    char url[server_endpoint::kUrlCapacity];
     if (!nvs_ws_get_custom_url(id, url, sizeof(url))) {
       return false;
     }
@@ -314,9 +313,8 @@ int nvs_ws_list_custom(NvsWsServerEntry* out, int max_out) {
 }
 
 bool nvs_ws_add_custom(const char* url, char* out_id, size_t out_id_sz) {
-  if (url == nullptr || url[0] == '\0') {
-    return false;
-  }
+  server_endpoint::Url target;
+  if (!server_endpoint::bootstrap(url, target)) return false;
 
   Preferences prefs;
   if (!prefs.begin(kDevPrefsNs, false)) {
@@ -347,7 +345,8 @@ bool nvs_ws_add_custom(const char* url, char* out_id, size_t out_id_sz) {
 }
 
 bool nvs_ws_update_custom(const char* id, const char* url) {
-  if (id == nullptr || url == nullptr || url[0] == '\0' || strcmp(id, "builtin") == 0) {
+  server_endpoint::Url target;
+  if (id == nullptr || !server_endpoint::bootstrap(url, target) || strcmp(id, "builtin") == 0) {
     return false;
   }
 
@@ -476,15 +475,23 @@ int nvs_wifi_list(NvsWifiCredential* out, int max_out) {
   return count;
 }
 
-bool nvs_wifi_upsert(const char* ssid, const char* password) {
+bool nvs_wifi_upsert(const char* ssid, const char* password, bool keep_password_if_empty) {
   if (ssid == nullptr || ssid[0] == '\0') {
     return false;
   }
   const String new_ssid(ssid);
-  const String new_password(password ? password : "");
+  String new_password(password ? password : "");
 
   NvsWifiCredential existing[NVS_MAX_SAVED_WIFI];
   const int existing_count = nvs_wifi_list(existing, NVS_MAX_SAVED_WIFI);
+  if (new_password.length() == 0 && keep_password_if_empty) {
+    for (int i = 0; i < existing_count; ++i) {
+      if (existing[i].ssid == new_ssid) {
+        new_password = existing[i].password;
+        break;
+      }
+    }
+  }
 
   NvsWifiCredential merged[NVS_MAX_SAVED_WIFI];
   int merged_count = 0;
@@ -500,6 +507,25 @@ bool nvs_wifi_upsert(const char* ssid, const char* password) {
   }
 
   return persist_wifi_list(merged, merged_count);
+}
+
+bool nvs_wifi_update_password(const char* ssid, const char* password, bool clear_password) {
+  if (ssid == nullptr || ssid[0] == '\0') {
+    return false;
+  }
+  NvsWifiCredential saved[NVS_MAX_SAVED_WIFI];
+  const int count = nvs_wifi_list(saved, NVS_MAX_SAVED_WIFI);
+  for (int i = 0; i < count; ++i) {
+    if (saved[i].ssid != ssid) {
+      continue;
+    }
+    if (!clear_password && (password == nullptr || password[0] == '\0')) {
+      return true;
+    }
+    saved[i].password = clear_password ? "" : password;
+    return persist_wifi_list(saved, count);
+  }
+  return false;
 }
 
 bool nvs_wifi_delete(const char* ssid) {
@@ -526,6 +552,28 @@ bool nvs_wifi_delete(const char* ssid) {
     return false;
   }
   return persist_wifi_list(kept, kept_count);
+}
+
+bool nvs_wifi_move(const char* ssid, int direction) {
+  if (ssid == nullptr || ssid[0] == '\0' || (direction != -1 && direction != 1)) {
+    return false;
+  }
+  NvsWifiCredential saved[NVS_MAX_SAVED_WIFI];
+  const int count = nvs_wifi_list(saved, NVS_MAX_SAVED_WIFI);
+  for (int i = 0; i < count; ++i) {
+    if (saved[i].ssid != ssid) {
+      continue;
+    }
+    const int target = i + direction;
+    if (target < 0 || target >= count) {
+      return false;
+    }
+    const NvsWifiCredential moved = saved[i];
+    saved[i] = saved[target];
+    saved[target] = moved;
+    return persist_wifi_list(saved, count);
+  }
+  return false;
 }
 
 void nvs_wifi_clear() {

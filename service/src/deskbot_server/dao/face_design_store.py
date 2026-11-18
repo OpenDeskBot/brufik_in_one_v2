@@ -93,14 +93,6 @@ def clear_face_design_cache() -> None:
     _design_cache = None
 
 
-def design_file_mtime(*, device_id: str | None = None) -> float:
-    path = resolve_face_design_path(device_id=device_id)
-    try:
-        return float(os.stat(path).st_mtime)
-    except OSError:
-        return 0.0
-
-
 def _load_face_design_cached(*, device_id: str | None = None) -> dict[str, Any] | None:
     global _design_cache
     path = resolve_face_design_path(device_id=device_id)

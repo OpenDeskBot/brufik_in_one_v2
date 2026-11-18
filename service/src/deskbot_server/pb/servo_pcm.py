@@ -40,18 +40,6 @@ def make_anim_item(elements: dict[str, Any], ms: int, *, phoneme: str | None = N
     return item
 
 
-def anim_elements_from_row(row: dict[str, Any]) -> dict[str, Any]:
-    """从 anim 行读取 ``elements``（兼容旧 ``anim: {elements}``）。"""
-    anim = row.get("anim")
-    if isinstance(anim, list):
-        for one in anim:
-            if isinstance(one, dict) and isinstance(one.get("elements"), dict):
-                return one["elements"]
-    if isinstance(anim, dict) and isinstance(anim.get("elements"), dict):
-        return anim["elements"]
-    return {}
-
-
 def normalize_row_anim_list(row: dict[str, Any]) -> list[dict[str, Any]]:
     """保证 ``row['anim']`` 为 ``[{elements, ms, phoneme?}, ...]``。"""
     anim = row.get("anim")

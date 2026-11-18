@@ -7,7 +7,7 @@
 | 文档 | 内容 |
 |------|------|
 | [api_interfaces.md](./api_interfaces.md) | Web 控制台与 deskbot 设备服务接口清单 |
-| [esp32_pb_protocol.md](./esp32_pb_protocol.md) | ESP32 WebSocket 鉴权、上行 / 下行、pb v2 图元与表情 |
+| [esp32_pb_protocol.md](./esp32_pb_protocol.md) | HTTP 启动发现 schema 2、独立媒体通道、PB v2／回执及当前限制 |
 
 ## 服务
 
@@ -15,6 +15,7 @@
 |------|------|
 | [SERVER.md](./SERVER.md) | 主服务：端口、控制台、LLM 工具、豆包 TTS 配置 |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 代码分层、对话与定时任务链路 |
+| [SERVER.md#文件记忆](./SERVER.md#文件记忆) | 每日记录、人物资料、记忆工具、迁移与遗忘 |
 | [external_services.md](./external_services.md) | 外部进程服务管理（manifest 契约 / 状态机 / 管理后台） |
 | [external_service_design.md](./external_service_design.md) | 外部服务设计模式与后台交互规范（insightface-engine 为例，含新增服务清单与踩坑记录） |
 

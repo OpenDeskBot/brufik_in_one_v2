@@ -85,7 +85,7 @@ def test_save_preserves_custom_scene_and_reload(design_file: Path):
     }
     save_face_expr_scenes_file([scene])
     rows = load_face_expr_scenes_file(seed_if_missing=False)
-    assert len(rows) == 1
+    assert sum(r["name"] == "my_test_scene" for r in rows) == 1
     mine = next(r for r in rows if r["name"] == "my_test_scene")
     assert mine["frames"][0]["elements"]["mouth"][0]["x"] == 10
 

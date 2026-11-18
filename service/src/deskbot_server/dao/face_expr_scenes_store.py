@@ -13,7 +13,7 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$", re.I)
 _FRAME_MS_MIN = 40
 _FRAME_MS_MAX = 30000
 
-# 与 face_bundle metadata.blink 一致
+# 默认说话表情的眨眼时长
 _DEFAULT_SPEECH_BLINK_OPEN_MS = 2300
 _DEFAULT_SPEECH_BLINK_CLOSE_MS = 180
 

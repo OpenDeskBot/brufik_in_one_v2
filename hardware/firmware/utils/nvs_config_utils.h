@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include <Arduino.h>
+#include "server_endpoint.h"
 
 /** NVS 命名空间：deskbot_dev（dev_suffix / ap_offer / ws）、deskbot_wifi（凭证列表）。 */
 
@@ -33,7 +34,7 @@ void nvs_device_factory_reset();
 
 struct NvsWsServerEntry {
   char id[8];
-  char url[128];
+  char url[server_endpoint::kUrlCapacity];
 };
 
 /** 当前选中 id："builtin" 或 "c0"… */
@@ -68,9 +69,15 @@ struct NvsWifiCredential {
 
 int nvs_wifi_list(NvsWifiCredential* out, int max_out);
 
-/** 新增或更新（同名覆盖并置顶）。 */
-bool nvs_wifi_upsert(const char* ssid, const char* password);
+/** 新增或更新并置顶；已有网络默认在密码留空时保留原密码。 */
+bool nvs_wifi_upsert(const char* ssid, const char* password, bool keep_password_if_empty = true);
+
+/** 修改已有网络密码，不改变顺序；留空保留，clear_password=true 时明确清除。 */
+bool nvs_wifi_update_password(const char* ssid, const char* password, bool clear_password = false);
 
 bool nvs_wifi_delete(const char* ssid);
+
+/** 将凭证上移（-1）或下移（1）一位；持久化顺序即连接优先级。 */
+bool nvs_wifi_move(const char* ssid, int direction);
 
 void nvs_wifi_clear();

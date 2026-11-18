@@ -18,11 +18,6 @@ enum class WsTxType : uint8_t {
   kAudio = 1,   // Opus batch / flush
 };
 
-/** setup 时从 NVS 解析的服务器地址。 */
-extern WsProto server_ws_proto;
-/** setup 时拼好的 begin 路径：``[path_prefix]/asr_chat?device_id=&version=``。 */
-extern String server_ws_path;
-
 /** WS 链路状态：0=disconnected，1=connecting，2=connected。 */
 enum class WsState : int {
   kDisconnected = 0,
@@ -31,7 +26,7 @@ enum class WsState : int {
 };
 
 /**
- * 初始化：解析 server_ws_proto / server_ws_path，创建 TX 队列、绑定 WS 回调。
+ * 初始化：创建 TX 队列、绑定 WS 回调；连接目标在 HTTP 发现完成后读取。
  * 须在 setup_pb_runtime 之后调用。
  */
 bool setup_ws_transport(void);
@@ -47,6 +42,9 @@ bool ws_transport_ok(void);
 
 /** 是否已收到服务端 ready（可业务上行）。 */
 bool ws_transport_ready(void);
+
+/** Negotiated raw microphone sidecar for command-only barge-in previews. */
+bool ws_transport_raw_preview_supported(void);
 
 /** 未连时 disconnect→begin；已连则直接返回。 */
 void ws_transport_ensure_connected(void);
@@ -66,3 +64,12 @@ bool ws_transport_drain_tx(void);
 
 bool ws_transport_enqueue_state(const char* json);
 bool ws_transport_enqueue_audio(const char* json, const uint8_t* bin, size_t bin_len);
+
+/** Negotiated per main connection; reset before reconnect. */
+bool ws_transport_compact_supported(void);
+bool ws_transport_binary_audio_supported(void);
+bool ws_transport_enqueue_ack(const JsonDocument& ack);
+
+/** Fast Opus path; legacy JSON is built only when binary is not negotiated. */
+bool ws_transport_enqueue_opus(const uint8_t* bin, size_t bin_len, uint16_t frames,
+                               size_t opus_bytes, bool flush);

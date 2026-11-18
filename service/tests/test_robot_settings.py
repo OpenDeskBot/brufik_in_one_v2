@@ -703,7 +703,7 @@ def test_tts_test_moss_synthesize(fake_tts_engine, tmp_path):
     assert result["sample_rate"] == 16000  # 48k 引擎原生 → 统一下发 16k（config tts.sample_rate）
     assert result["wav_base64"]
     assert result["pcm_total_bytes"] == 1600 * 2  # mono 100ms @ 16k（4800 样本 @48k 降采样）
-    assert result["segments"] and any(s["phoneme"] for s in result["segments"])
+    assert result["segments"] and all(not s["phoneme"] for s in result["segments"])
     assert fake_tts_engine.last_text == "你好，测试"
     assert fake_tts_engine.last_demo_id == "demo-3"
 

@@ -13,8 +13,7 @@ from deskbot_server.dao.face_expr_scenes_store import (
     load_face_expr_scenes_file,
 )
 from deskbot_server.dao.servo_config_store import VIEWER_LR_SWAP, clamp_servo_step, load_servo_cfg_file
-from deskbot_server.pb.phoneme_anim import phoneme_seq_to_anim_seq
-from deskbot_server.pb.servo_pcm import _silence_phoneme_seg, anim_elements_from_row, make_anim_item
+from deskbot_server.pb.servo_pcm import _silence_phoneme_seg
 from deskbot_server.pb.shapes import apply_anim_bg_color_elements
 
 logger = logging.getLogger("deskbot-server")
@@ -334,41 +333,3 @@ def interleave_tts_segs_with_llm_plan(
 
     parallel_anim = map_anim_frames_to_tts_segs(out_segs, anim_frames)
     return out_segs, parallel_servo, parallel_anim
-
-
-def merge_llm_plan_anim_rows(
-    segs: list[dict[str, Any]], phoneme_rows: list[dict[str, Any]], parallel_anim: list[dict[str, Any] | None] | None
-) -> list[dict[str, Any]]:
-    """合并 LLM 指定 anim 与音素口型：有真实音素口播时保留音素 ``mouth``。"""
-    out: list[dict[str, Any]] = []
-    for i, ph_row in enumerate(phoneme_rows):
-        row = copy.deepcopy(ph_row)
-        seg = segs[i] if i < len(segs) else {}
-        has_audio = bool(bytes(seg.get("pcm") or b""))
-        plan_el = (parallel_anim or [None] * len(phoneme_rows))[i] if parallel_anim else None
-        if isinstance(plan_el, dict) and plan_el:
-            merged = copy.deepcopy(plan_el)
-            ph_el = anim_elements_from_row(ph_row)
-            chunk_ms = int(ph_row.get("chunk_ms") or seg.get("ms") or 1)
-            ph_name = str(seg.get("phoneme") or "").strip()
-            if not ph_name:
-                anim_list = ph_row.get("anim")
-                if isinstance(anim_list, list) and anim_list:
-                    ph_name = str(anim_list[0].get("phoneme") or "").strip()
-            # 纯表情/舵机包的静音 PCM 不应覆盖情绪口型；仅 TTS 音素口播时保留嘴型
-            if has_audio and ph_name and isinstance(ph_el.get("mouth"), list):
-                merged["mouth"] = copy.deepcopy(ph_el["mouth"])
-            row["anim"] = [make_anim_item(merged, chunk_ms, phoneme=ph_name or None)]
-        out.append(row)
-    return out
-
-
-def build_anim_rows_for_llm_plan(
-    segs: list[dict[str, Any]],
-    parallel_anim: list[dict[str, Any] | None] | None,
-    face_bundle: dict[str, Any],
-    *,
-    device_id: str | None = None,
-) -> list[dict[str, Any]]:
-    phoneme_rows = phoneme_seq_to_anim_seq(segs, face_bundle, device_id=device_id)
-    return merge_llm_plan_anim_rows(segs, phoneme_rows, parallel_anim)

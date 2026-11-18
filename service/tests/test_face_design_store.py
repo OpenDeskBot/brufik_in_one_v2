@@ -19,7 +19,7 @@ def test_merged_emotion_expressions_includes_builtin():
     names = {e["name"] for e in merged}
     assert "angry" in names
     assert "sad" in names
-    assert len(merged) >= 7
+    assert len(names) == len(merged)  # 默认表情名称不得重复；不固定素材数量。
 
 
 def test_merged_emotion_expressions_file_overrides_builtin():
@@ -138,11 +138,12 @@ def test_save_emotions_to_design_file(tmp_path, monkeypatch):
             }
         ]
     )
-    assert len(rows) == 1
     assert rows[0]["name"] == "happy"
+    assert rows[0]["frames"][0]["ms"] == 200
     reloaded = load_face_expr_scenes_file(seed_if_missing=False)
     assert reloaded is not None
-    assert {r["name"] for r in reloaded} == {"happy"}
+    assert {"happy", "angry", "sad"} <= {r["name"] for r in reloaded}
+    assert next(r for r in reloaded if r["name"] == "happy")["frames"] == rows[0]["frames"]
 
 
 def test_resolve_face_design_path_uses_global(tmp_path, monkeypatch):
@@ -153,7 +154,6 @@ def test_resolve_face_design_path_uses_global(tmp_path, monkeypatch):
     device_dir = tmp_path / "device" / "dev1"
     device_dir.mkdir(parents=True)
     (device_dir / "deskbot-face.json").write_text('{"name":"d","phonemes":[],"emotions":[]}', encoding="utf-8")
-    monkeypatch.setattr("deskbot_server.face_design_store.FACE_DESIGN_FILE", str(global_path))
     monkeypatch.setattr("deskbot_server.service.device_data_paths.DATA_DIR", tmp_path)
     from deskbot_server.dao.face_design_store import resolve_face_design_path
 

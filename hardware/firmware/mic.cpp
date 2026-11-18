@@ -1,4 +1,6 @@
 #include "mic.h"
+#include "usb_bench.h"
+#include "usb_trace_filter.h"
 
 #include "audio_frontend_esp_sr.h"
 #include "deskbot_config.h"
@@ -17,8 +19,10 @@
 
 namespace {
 
-constexpr size_t kUplinkBatchFrames = 5;
-constexpr size_t kUplinkBatchMaxBin = kUplinkBatchFrames * (2 + 256);
+constexpr size_t kUplinkBatchFrames = 2; // 40ms; keep control traffic responsive.
+constexpr size_t kUplinkBatchMaxOpus = kUplinkBatchFrames * (2 + 256);
+constexpr size_t kRawPreviewFrameSamples = kMicFrameSamples / 2; // 8kHz PCM
+constexpr size_t kUplinkBatchMaxBin = kUplinkBatchMaxOpus + kUplinkBatchFrames * kRawPreviewFrameSamples * 2;
 constexpr int kOpusSr = SAMPLE_RATE;
 constexpr int kOpusChannels = 1;
 constexpr uint32_t kMicTaskStack = 28 * 1024; /* opus_encode alloca；complexity=0 仍建议 ≥32–40KB */
@@ -29,12 +33,36 @@ constexpr unsigned long kSegmentFlushMs =
 I2SClass s_i2s(I2S_NUM_0);
 
 TaskHandle_t s_task = nullptr;
+std::atomic<uint32_t> s_trace_until_ms{0};
+uint32_t s_trace_sequence = 0;
+uint8_t s_trace_previous_log_level = LOG_LEVEL_WARN;
+
+struct MicTracePacket {
+  char magic[8];
+  uint32_t sequence;
+  uint32_t device_ms;
+  uint32_t flags;
+  int16_t raw[kMicFrameSamples];
+  int16_t uplink[kMicFrameSamples];
+  uint32_t checksum;
+};
+static_assert(sizeof(MicTracePacket) == 1304, "USB trace layout must stay fixed");
+struct UsbMicTracePacket {
+  char magic[8]; uint32_t sequence,device_ms,flags;
+  int16_t raw[kMicFrameSamples/2], uplink[kMicFrameSamples/2];
+  uint32_t checksum;
+};
+static_assert(sizeof(UsbMicTracePacket)==664,"8k diagnostic layout");
+usb_trace::Decimator s_trace_raw_filter,s_trace_up_filter;
 
 std::atomic<MicWsState> s_state_ws{kMicWsError};
 
 uint8_t s_batch_bin[kUplinkBatchMaxBin];
 size_t s_batch_bin_len = 0;
 uint8_t s_batch_count = 0;
+int16_t s_batch_raw[kUplinkBatchFrames * kRawPreviewFrameSamples];
+bool s_batch_has_preview = false;
+uint32_t s_preview_until_ms = 0;
 volatile uint32_t s_samples_sent = 0;
 
 OpusEncoder* s_opus_encoder = nullptr;
@@ -144,19 +172,11 @@ bool enqueue_batch(bool flush) {
     return true;
   }
 
-  char hdr[160];
-  if (flush) {
-    snprintf(hdr, sizeof(hdr),
-             "{\"type\":\"audio\",\"codec\":\"opus\",\"next_bin_len\":%u,\"sr\":16000,\"ch\":1,"
-             "\"frames\":%u,\"flush\":1}",
-             (unsigned)s_batch_bin_len, (unsigned)s_batch_count);
-  } else {
-    snprintf(hdr, sizeof(hdr),
-             "{\"type\":\"audio\",\"codec\":\"opus\",\"next_bin_len\":%u,\"sr\":16000,\"ch\":1,"
-             "\"frames\":%u}",
-             (unsigned)s_batch_bin_len, (unsigned)s_batch_count);
-  }
-  if (!ws_transport_enqueue_audio(hdr, s_batch_bin, s_batch_bin_len)) {
+  const size_t raw_bytes = s_batch_has_preview && ws_transport_raw_preview_supported()
+      ? s_batch_count * kRawPreviewFrameSamples * sizeof(int16_t) : 0;
+  if (raw_bytes) memcpy(s_batch_bin + s_batch_bin_len, s_batch_raw, raw_bytes);
+  if (!ws_transport_enqueue_opus(s_batch_bin,s_batch_bin_len+raw_bytes,
+                                 s_batch_count,s_batch_bin_len,flush)) {
     ++s_stat_enq_fail;
     return false;
   }
@@ -164,6 +184,7 @@ bool enqueue_batch(bool flush) {
   s_samples_sent += (uint32_t)s_batch_count * (uint32_t)kMicFrameSamples;
   s_batch_bin_len = 0;
   s_batch_count = 0;
+  s_batch_has_preview = false;
   return true;
 }
 
@@ -178,6 +199,7 @@ void drop_stuck_batch_for_live(const char* why) {
   ++s_stat_batch_drop;
   s_batch_bin_len = 0;
   s_batch_count = 0;
+  s_batch_has_preview = false;
   (void)why;
 }
 
@@ -185,7 +207,7 @@ void drop_stuck_batch_for_live(const char* why) {
  * 编码 pcm（可空）入 batch；仅在 flush=true 或满 5 帧时发送。
  * flush=true：不足 5 帧也发，JSON 带 "flush":1；batch 空但本段已发过音时发 flush-only。
  */
-bool send_to_ws(const int16_t* pcm, bool flush) {
+bool send_to_ws(const int16_t* pcm, bool flush, const int16_t* raw_pcm = nullptr) {
   /* 满 batch 发不出去时：丢掉旧 batch，继续编当前帧（持续上行，不卡死编码）。 */
   if (s_batch_count >= kUplinkBatchFrames) {
     if (!enqueue_batch(flush)) {
@@ -208,7 +230,7 @@ bool send_to_ws(const int16_t* pcm, bool flush) {
     if (opus_len == 0) {
       return false;
     }
-    if (opus_len > 65535U || s_batch_bin_len + 2U + opus_len > kUplinkBatchMaxBin) {
+    if (opus_len > 65535U || s_batch_bin_len + 2U + opus_len > kUplinkBatchMaxOpus) {
       log_warn("[MIC] Opus batch overflow len=%u bin=%u", (unsigned)opus_len,
                (unsigned)s_batch_bin_len);
       return false;
@@ -217,6 +239,13 @@ bool send_to_ws(const int16_t* pcm, bool flush) {
     s_batch_bin[s_batch_bin_len++] = static_cast<uint8_t>(opus_len & 0xFF);
     memcpy(s_batch_bin + s_batch_bin_len, opus_buf, opus_len);
     s_batch_bin_len += opus_len;
+    if (raw_pcm) {
+      for (size_t i = 0; i < kRawPreviewFrameSamples; ++i)
+        s_batch_raw[s_batch_count * kRawPreviewFrameSamples + i] =
+            (int16_t)(((int32_t)raw_pcm[i * 2] + raw_pcm[i * 2 + 1]) / 2);
+      if (audio_frontend_playback_or_tail_active()) s_preview_until_ms = millis() + 2500;
+      s_batch_has_preview |= (int32_t)(s_preview_until_ms - millis()) > 0;
+    }
     s_batch_count++;
     ++s_stat_encode_ok;
   }
@@ -261,11 +290,13 @@ bool send_to_ws(const int16_t* pcm, bool flush) {
 void discard_batch() {
   s_batch_bin_len = 0;
   s_batch_count = 0;
+  s_batch_has_preview = false;
   enhance_voice_reset();
 }
 
 void task_loop_mic(void* /*arg*/) {
   MicFrame frame;
+  MicTracePacket trace{};
   /* 上一帧是否在采：用于开门沿重置 encoder/段计时，避免每帧都 reset。 */
   bool s_was_open = false;
   MicWsState s_prev_ws = s_state_ws.load(std::memory_order_relaxed);
@@ -308,6 +339,10 @@ void task_loop_mic(void* /*arg*/) {
     /* ESP-SR AFE（AEC/NS/AGC/VAD）：原始帧持续入 AFE（与上行门控无关，保 AEC 收敛），
      * 处理帧供后续门控/编码；AFE 未就绪或输出未就绪时退回原始帧（raw fallback）。 */
     int16_t afe_frame[kMicFrameSamples];
+    const uint32_t trace_until = s_trace_until_ms.load(std::memory_order_acquire);
+    const bool tracing = trace_until && static_cast<int32_t>(trace_until - millis()) > 0;
+    memcpy(trace.raw, frame.pcm, sizeof(trace.raw));
+    if (!tracing && trace_until && s_trace_until_ms.exchange(0)) log_set_level(s_trace_previous_log_level);
     int16_t* up_pcm = frame.pcm;
     bool afe_processed = false;
     if (audio_frontend_ready()) {
@@ -318,18 +353,8 @@ void task_loop_mic(void* /*arg*/) {
       }
     }
 
-    /* ws 不可用：清空积累 + 丢掉当次帧（条件靠前）。 */
-    if (ws == kMicWsError) {
-      ++s_stat_gate_ws;
-      discard_batch();
-      s_samples_sent = 0;
-      s_segment_start_ms = 0;
-      s_was_open = false;
-      continue;
-    }
-
     /* 全双工（AEC）：不再因 speaker 播放而挡麦，ws_ok 即采上行。 */
-    if (!s_was_open) {
+    if (ws != kMicWsError && !s_was_open) {
       enhance_voice_reset();
       if (s_opus_encoder) {
         opus_encoder_ctl(s_opus_encoder, OPUS_RESET_STATE);
@@ -344,9 +369,49 @@ void task_loop_mic(void* /*arg*/) {
      * AFE 输出已含 afe_linear_gain(5x)，若再套 enhance_voice 就是 25x，
      * 会把 AEC 残留在内的一切抬高 14dB——回声漏音更容易被服务器切句。 */
     if (!afe_processed) {
-      enhance_voice(up_pcm, kMicFrameSamples);
+      if (audio_frontend_playback_or_tail_active()) {
+        // Raw fallback has no echo cancellation. Do not amplify the speaker
+        // and send it back as a new user; continue feeding AFE for recovery.
+        memset(up_pcm, 0, kMicFrameSamples * sizeof(int16_t));
+      } else {
+        enhance_voice(up_pcm, kMicFrameSamples);
+      }
     }
-    (void)send_to_ws(up_pcm, /*flush=*/false);
+    if (tracing) {
+      memcpy(trace.magic, "DBAUD001", sizeof(trace.magic));
+      trace.sequence = s_trace_sequence++;
+      trace.device_ms = now;  // End of raw microphone capture, before waiting on AFE.
+      trace.flags = (afe_processed ? 1U : 0U) |
+          (audio_frontend_playback_or_tail_active() ? 2U : 0U);
+      memcpy(trace.uplink, up_pcm, sizeof(trace.uplink));
+      trace.checksum = 0;
+      const auto* bytes = reinterpret_cast<const uint8_t*>(&trace);
+      for (size_t i = 0; i < sizeof(trace) - sizeof(trace.checksum); ++i) trace.checksum += bytes[i];
+      // Debug capture must not pace audio. A partial USB packet is discarded
+      // by the host's magic/checksum parser; sequence gaps become silence.
+      if (usb_bench_active()) {
+        UsbMicTracePacket compact;
+        memcpy(compact.magic,"DBAUD002",8);
+        compact.sequence=trace.sequence; compact.device_ms=trace.device_ms; compact.flags=trace.flags;
+        s_trace_raw_filter.process(trace.raw,kMicFrameSamples,compact.raw);
+        s_trace_up_filter.process(trace.uplink,kMicFrameSamples,compact.uplink);
+        const auto* data=reinterpret_cast<const uint8_t*>(&compact);
+        compact.checksum=0;
+        for(size_t i=0;i<sizeof(compact)-4;++i) compact.checksum+=data[i];
+        (void)usb_bench_write(data,sizeof(compact));
+      } else (void)Serial.write(bytes, sizeof(trace));
+    }
+    /* ws 不可用：清空积累 + 丢掉当次帧（条件靠前）。 */
+    if (ws == kMicWsError) {
+      ++s_stat_gate_ws;
+      discard_batch();
+      s_samples_sent = 0;
+      s_segment_start_ms = 0;
+      s_was_open = false;
+      continue;
+    }
+
+    (void)send_to_ws(up_pcm, /*flush=*/false, trace.raw);
 
     if (s_segment_start_ms != 0 && (millis() - s_segment_start_ms) >= kSegmentFlushMs) {
       (void)send_to_ws(nullptr, /*flush=*/true);
@@ -355,6 +420,20 @@ void task_loop_mic(void* /*arg*/) {
 }
 
 }  // namespace
+
+void mic_trace_stop() {
+  if (s_trace_until_ms.exchange(0)) log_set_level(s_trace_previous_log_level);
+}
+
+void mic_trace_start(uint32_t duration_ms) {
+  if (s_trace_until_ms.load(std::memory_order_acquire)) return;
+  duration_ms = constrain(duration_ms, 1000U, 60000U);
+  s_trace_previous_log_level = global_log_level;
+  log_set_level(LOG_LEVEL_NONE);
+  if (!usb_bench_active()) Serial.setTxBufferSize(4096);
+  s_trace_sequence = 0;
+  s_trace_until_ms.store(millis() + duration_ms, std::memory_order_release);
+}
 
 void mic_set_ws_state(MicWsState s) {
   s_state_ws.store(s, std::memory_order_release);

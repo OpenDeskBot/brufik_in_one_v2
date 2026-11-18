@@ -15,7 +15,7 @@ import wave
 from collections import Counter
 from pathlib import Path
 
-from verify_vowel_lipsync import Recorder
+from device_diagnostics import Recorder
 
 
 async def until(predicate, timeout=20):

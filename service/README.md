@@ -62,13 +62,13 @@ Web / HTTP 接口与调试订阅使用**控制台登录会话**；调试 WebSock
 
 ### 4. 连接设备对话
 
-固件连接（与 `hardware/firmware` 一致）：
+在 ROM 配网页填写完整启动接口：
 
 ```
-ws://<本机IP>:9000/asr_chat?device_id=<你的device_id>
+http://<本机IP>:9000/api/device/bootstrap
 ```
 
-说话后发送 `flush`，服务端识别 → 调用 LLM → TTS → pb 下行播放。
+ROM 读取接口返回的资源、主 WebSocket 和相机地址。服务端在 `server.device_bootstrap` 配置下发的地址，支持独立域名／端口；修改后设备下次启动获取，无需重刷 ROM。当前持久对话由外部 Agent 管理，不通过独立 flush 消息触发识别和回复。完整格式与升级要求见 [设备协议](docs/esp32_pb_protocol.md)。
 
 ### 5. 无硬件时本地试跑
 
@@ -88,12 +88,14 @@ WAV 须 **16 kHz / mono / s16le**。麦克风实时测试见 [tools/README.md](t
 | 工作台 | 用量概览与快捷入口 |
 | 我的设备 | 绑定 / 切换 `device_id` |
 | 定时任务 | 查看 LLM 创建的 cron 任务（北京时间），可删除 |
-| 记忆 | 按设备管理长期记忆（注入 LLM） |
+| 记忆 | 每日交流与操作记录、按人物分块的有来源资料、搜索、纠正及联动遗忘 |
 | 人脸识别 | 按设备查看人脸档案 |
 | 用量看板 | 按 Key / 设备查看 ASR、人脸、LLM、TTS 字节统计 |
 | 调试台 | 设备在线、LLM 试聊、豆包 TTS、流水线等 |
 
-Flecket 实时 Agent 已接入动作与表情、查询时间、设备记忆、定时提醒、ROM 音量、音乐播放和图片展示。声音与人设保留上游配置，工具按当前设备能力动态合并。媒体可在「媒体库」上传，详见 [docs/SERVER.md](docs/SERVER.md)。
+Flecket 实时 Agent 已接入动作与表情、人脸／声纹注册与识别查询、设备记忆、定时提醒、ROM 音量、音乐播放和图片展示。当前时间按每轮动态加入系统上下文，不再提供时间工具。声音与人设保留上游配置，工具按当前设备能力动态合并。媒体可在「媒体库」上传，详见 [docs/SERVER.md](docs/SERVER.md)。
+
+记忆保存在 `data/{device_id}/memory/`：`chat_YYYYMMDD.txt` 自动记录每日发言与操作，`person_{name}.txt` 保存有来源的人物资料。Agent 使用 `chat_search`、`chat_read`、`person_read`、`person_update`、`memory_forget`；人物资料按本轮识别结果加载，不再把最新 30 条混合记忆固定塞入会话。旧 SQLite／JSON 记忆启动时迁入“未归属”，详见 [文件记忆](docs/SERVER.md#文件记忆)。
 
 ---
 
@@ -112,21 +114,21 @@ ESP32 播放 / 屏幕 / 舵机 ← PB / Opus 下行 ← 上游实时语音结果
 
 | JSON `type` | binary | 说明 |
 |-------------|--------|------|
-| `audio` + `next_bin_len` | Opus 或 PCM | 语音流；段结束发 `flush` 触发识别与回复 |
+| `audio` + `next_bin_len` | Opus 或 PCM | 16kHz 单声道语音流；持久会话不以 flush 终止 |
 | `camera_frame` + `next_bin_len` | JPEG | 可选；人脸检测与调试预览 |
 | `pb_ack` | 无 | 播放缓冲回压 |
-| `ping` | 无 | 保活 |
+| `device_hello` / `rom_result` | 无 | 能力握手／设备工具结果 |
 
 ### 下行（服务端 → 设备）
 
-默认 **`asr_chat_device_pb_only: true`**：只处理 **`pb_start` / `pb_chunk` / `pb_end` / `pb_single`**，以及紧随的 **s16le PCM**（24 kHz mono）。
+主连接下发 **`pb_start` / `pb_chunk` / `pb_end` / `pb_single` / `pb_cancel`** 和 ROM 工具命令；音频为 16kHz 单声道 Opus 或 s16le，与 JSON 打包在同一条 binary message 中。纯音频续包和执行回执可协商紧凑格式。
 
 完整字段见 **[docs/esp32_pb_protocol.md](docs/esp32_pb_protocol.md)**。
 
 ### 固件要点
 
-1. URL 须带稳定 **`device_id`**（设备链路仅此一项鉴权，无需 API Key / PIN）。
-2. JSON 与 binary **严格成对、顺序发送**。
+1. 主／相机连接 URL 由启动接口下发，ROM 追加稳定 **`device_id`**。当前该标识尚无设备凭证校验，不等同于身份认证。
+2. 基础消息使用 **4字节 JSON 长度＋JSON＋媒体的单条 binary message**；不使用 TEXT＋独立 BIN。
 3. 周期性 **`pb_ack`** 做播放回压。
 4. 固件栈：Arduino-ESP32 **3.3.9** / IDF **5.5.4**（pioarduino），详见 [`../hardware/README.md`](../hardware/README.md)。
 
@@ -216,7 +218,7 @@ VAD、ASR、LLM、TTS，并返回 48kHz PCM16，服务端连续重采样为 16kH
 
 ### 媒体与 ROM 工具
 
-「媒体库」支持按设备上传图片、音乐，预览、删除、播放／停止和音量控制。图片会等比适配 284×240 屏幕；音乐由 ffmpeg 预处理为单声道 16kHz，再用现有 Opus/PB 链路流式播放。每个上传最多 20 MB，音乐保留前 3 分钟，每台设备最多 100 个资源。当前提供用户上传的资料库，不提供在线曲库检索。
+「媒体库」支持按设备上传图片、音乐，预览、删除、播放／停止和音量控制。图片会等比放大或缩小到 284×240 屏幕边界，居中完整展示；宽高比不一致时保留黑边，不裁切、不拉伸。适配在上传时完成，已入库图片需要在服务更新后重新上传才能应用新规则，无需重刷 ROM。音乐由 ffmpeg 预处理为单声道 16kHz，再用现有 Opus/PB 链路流式播放。每个上传最多 20 MB，音乐保留前 3 分钟，每台设备最多 100 个资源。当前提供用户上传的资料库，不提供在线曲库检索。
 
 ROM 新增 `rom_tools_v1` 和 `image_rgb565_v1` 能力。音量工具等待实际扬声器设置回执，图片等待显示任务确认已绘制；旧 ROM 不注册这些工具，需刷入新版固件。普通音乐播放沿用 `pb_stream_v1`。默认播报回声保护同样适用于音乐；未开启播放时插话时，可在媒体库手动停止。
 

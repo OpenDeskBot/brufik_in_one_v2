@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from deskbot_server.client.tts.doubao import load_doubao_tts_config, synthesize_doubao_tts
-from deskbot_server.client.tts.doubao_phoneme_align import build_phoneme_segments
+from deskbot_server.client.tts.audio_segments import split_pcm_segments
 from deskbot_server.model.settings import AppSettings
 from deskbot_server.ports.tts import PhonemeSegment
 from deskbot_server.utils.audio_resample import resample_pcm16_mono
@@ -14,7 +14,7 @@ logger = logging.getLogger("deskbot-server")
 
 
 class DoubaoPhonemeTtsAdapter:
-    """豆包 TTS 适配器：时间戳 / 拼音均分 → 音素分片（口型）。
+    """豆包 TTS 适配器：合成音频并按固定时长切片，口型由 ROM 计算。
 
     ``overrides`` 为设备级参数（tts_param["doubao"]），优先级高于全局 env。
     云端返回的 PCM 若高于统一下发采样率（settings.tts.sample_rate，默认 16k），
@@ -44,11 +44,9 @@ class DoubaoPhonemeTtsAdapter:
             logger.info("[TTS/doubao] 云端 %dHz → 统一下发 %dHz", sr, target)
             sr = target
 
-        segs = build_phoneme_segments(
-            text=clean, pcm=pcm, sample_rate=sr, sentence_end=result.sentence_end, subtitles=result.subtitles
-        )
+        segs = split_pcm_segments(pcm, sr)
         logger.info(
-            "[TTS/doubao] 音素分片 n=%d pcm_bytes=%d elapsed_ms=%d text=%r",
+            "[TTS/doubao] 音频分片 n=%d pcm_bytes=%d elapsed_ms=%d text=%r",
             len(segs),
             len(pcm),
             result.elapsed_ms,

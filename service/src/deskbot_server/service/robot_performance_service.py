@@ -11,7 +11,8 @@ from deskbot_server.service.llm_context import list_llm_expression_names, list_l
 
 ROBOT_TOOL_INSTRUCTIONS = """
 机器人身体表达：robot_perform 是本设备提供的动作与表情工具。
-用户明确要求点头、转头或表情时调用；聊天时可适度使用，每轮最多调用一次。
+用户明确要求点头、转头或表情，或完成请求确实需要身体表达时调用，每轮最多调用一次。
+普通问答和闲聊直接回答，不要为了给每句话配表情而先调用工具；说话口型由 ROM 自动跟随声音。
 只使用工具枚举中的名称，none 表示该项不执行；look_left/right 是机器人自身的左右。
 调用工具的这一轮只输出工具调用，不同时输出口播；工具回传后再正常回答，避免重复播报。
 一般使用 with_speech，让表现与随后的语音同时开始；before_speech/after_speech 用于明确的先后顺序。

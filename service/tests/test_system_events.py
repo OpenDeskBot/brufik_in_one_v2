@@ -120,6 +120,22 @@ def test_perception_wait_is_bounded_and_never_uses_previous_speaker(perception):
     asyncio.run(run())
 
 
+def test_short_turn_does_not_wait_for_voice_inference_that_was_not_started():
+    from deskbot_server.service.moss_live_service import FlecketBridge
+
+    async def run():
+        voice = SimpleNamespace(finish_turn=lambda turn: None, submitted_turn=None)
+        observer = SimpleNamespace(for_turn=AsyncMock(return_value="snapshot"))
+        bridge = SimpleNamespace(voiceprint=voice, perception_events=observer)
+        assert await FlecketBridge._perception_for_turn(bridge, "short") == "snapshot"
+        observer.for_turn.assert_awaited_once_with("short", wait_seconds=0)
+        voice.submitted_turn = "normal"
+        assert await FlecketBridge._perception_for_turn(bridge, "normal") == "snapshot"
+        observer.for_turn.assert_awaited_with("normal", wait_seconds=.8)
+
+    asyncio.run(run())
+
+
 def test_voice_sampler_flush_tags_turn_and_cancels_previous_inference():
     async def run():
         sampler = RealtimeVoiceprint("robot")

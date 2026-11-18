@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -18,6 +19,8 @@ from deskbot_server.model.memory import now_iso
 from deskbot_server.model.realtime import FlecketConfig, RealtimeEvent
 from deskbot_server.model.robot_performance import ROBOT_TOOL_NAME
 from deskbot_server.model.system_event import SYSTEM_EVENT_INSTRUCTIONS, SystemEvent, current_time_context
+
+logger = logging.getLogger("deskbot-server")
 
 
 def realtime_url(base: str) -> str:
@@ -102,6 +105,13 @@ class FlecketLiveClient:
         self._turn_response_task = None
         self._stopped_generation = None
         self._system_events = OrderedDict()
+        self._turn_timings = OrderedDict()
+
+    def _log_turn_latency(self, turn_id, phase, **fields):
+        started = self._turn_timings.get(turn_id)
+        if started is not None:
+            logger.info("[flecket latency] turn=%s phase=%s elapsed_ms=%.1f stages=%s",
+                        turn_id, phase, (time.monotonic()-started)*1000, fields)
 
     async def _send(self, event):
         async with self._send_lock:
@@ -229,6 +239,7 @@ class FlecketLiveClient:
             self._input_generation, self._turn_id, self._turn_committed))
 
     async def _respond_to_turn(self, generation, turn_id, committed):
+        started = time.monotonic()
         try:
             try:
                 event = await asyncio.wait_for(self.system_event_provider(turn_id), timeout=1.1)
@@ -238,6 +249,7 @@ class FlecketLiveClient:
                 event = SystemEvent.create("perception_snapshot", "perception-"+turn_id, "perception",
                                            {"turn_id": turn_id, "camera": {"state": "unavailable"},
                                             "speaker": {"state": "unavailable"}})
+            perception_done = time.monotonic()
             # A previous cancelled response may still be ending upstream.
             async with asyncio.timeout(10):
                 # speech_stopped precedes ASR enqueue in Flecket. Wait until the
@@ -247,6 +259,7 @@ class FlecketLiveClient:
                     await asyncio.sleep(.025)
             if self._closed or generation != self._input_generation:
                 return
+            committed_at = time.monotonic()
             if self.memory_context_provider:
                 self._memory_context = await self.memory_context_provider(turn_id, event, prepare=True, budget=self._memory_budget(event))
             if self.memory_invalidated or generation != self._input_generation:
@@ -257,6 +270,10 @@ class FlecketLiveClient:
                 "metadata": {"deskbot_turn": turn_id, "system_event_id": event.event_id,
                              "input_generation": generation},
             }})
+            self._log_turn_latency(turn_id, "response_create",
+                                   perception_ms=round((perception_done-started)*1000, 1),
+                                   commit_wait_ms=round((committed_at-perception_done)*1000, 1),
+                                   memory_ms=round((time.monotonic()-committed_at)*1000, 1))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -332,6 +349,8 @@ class FlecketLiveClient:
             )
 
     async def _playback(self, response_id, phase):
+        if phase == "first_audio":
+            self._log_turn_latency(self._response_turns.get(response_id), "rom_first_audio")
         await self._send({"type": "flecket.playback", "response_id": response_id, "phase": phase})
 
     async def send(self, value):
@@ -424,6 +443,7 @@ class FlecketLiveClient:
                 continue
             self._active_calls.add(call_id)
             read_only = False
+            tool_started = time.monotonic()
             try:
                 raw = call.get("arguments", "{}")
                 if not isinstance(raw, str) or len(raw) > 32768:
@@ -463,6 +483,9 @@ class FlecketLiveClient:
                 output = {"ok": False, "error": "工具执行超时"}
             except Exception:
                 output = {"ok": False, "error": "工具执行失败"}
+            logger.info("[flecket tool] response=%s tool=%s elapsed_ms=%.1f ok=%s",
+                        response.get("id", ""), call.get("name"), (time.monotonic()-tool_started)*1000,
+                        output.get("ok") is True)
             read_only_batch = read_only_batch and read_only and output.get("ok") is True
             try:
                 await self._send({"type": "conversation.item.create", "item": {
@@ -607,6 +630,8 @@ class FlecketLiveClient:
                 pcm = base64.b64decode(event["delta"], validate=True)
                 if not pcm or len(pcm) % 2:
                     raise ClientError("flecket PCM 数据无效", provider=self.provider)
+                if not response.audio_bytes:
+                    self._log_turn_latency(self._response_turns.get(response_id), "upstream_first_audio")
                 response.audio_bytes += len(pcm)
                 response.chunks += 1
                 return RealtimeEvent("audio", {**self._context(response_id), "chunk_id": response.chunks}, pcm)
@@ -648,6 +673,10 @@ class FlecketLiveClient:
                                      "item_id": item_id, "turn_id": turn_id, "occurred_at": occurred})
             elif kind == "input_audio_buffer.speech_stopped":
                 self._speech_active = False
+                if self._turn_id not in self._turn_timings:
+                    self._turn_timings[self._turn_id] = time.monotonic()
+                    while len(self._turn_timings) > 128:
+                        self._turn_timings.popitem(last=False)
                 self._last_user_activity = time.monotonic()
                 self._turn_item_id = event.get("item_id") or self._turn_item_id
                 if self._turn_item_id:
@@ -676,6 +705,7 @@ class FlecketLiveClient:
         self._memory_context = ""
         self._input_items.clear()
         self._response_turns.clear()
+        self._turn_timings.clear()
         if self._turn_response_task is not None:
             self._turn_response_task.cancel()
             await asyncio.gather(self._turn_response_task, return_exceptions=True)

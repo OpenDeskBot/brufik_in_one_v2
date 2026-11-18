@@ -67,6 +67,9 @@ struct pb_audio {
   uint32_t sr = 0;
   uint8_t ch = 0;
   char fmt[PB_MODEL_FMT_CAPACITY]{};
+  uint32_t epoch = 0, pts_ms = 0, duration_ms = 0, received_ms = 0;
+  int idx = 0;
+  char req[37]{};
 };
 
 /**
@@ -99,11 +102,14 @@ struct pb_anim_frame {
 };
 
 struct pb_model {
+  bool local_idle = false;  // Internal only; never populated from the network.
   int type = PB_MODEL_UNKNOWN;
   char req[37]{};
   int idx = 0;
   int chunk_ms = 0;
   int level = 1;
+  uint32_t epoch = 0, pts_ms = 0;
+  bool stream = false;
   uint32_t sr = 0;
   uint8_t ch = 0;
   char fmt[PB_MODEL_FMT_CAPACITY]{};

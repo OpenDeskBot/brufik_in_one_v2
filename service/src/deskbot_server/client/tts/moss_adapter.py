@@ -2,8 +2,7 @@
 
 MOSS 只返回 WAV 音频、不返回音素时间戳；引擎输出为原生 48kHz，此处先统一
 降采样到 ``settings.tts.sample_rate``（默认 16k，与豆包下发一致，设备端
-解码预算余量最大），口型用 ``utils.phoneme_duration`` 按文本 + 音频总时长
-补充音素时间轴，再复用 ``doubao_phoneme_align`` 的 PCM 切分。
+解码预算余量最大），再按固定时长切分音频；口型由 ROM 按实际播放响度生成。
 请求格式：multipart/form-data POST /api/generate（text + demo_id），响应 JSON
 含 audio_base64（WAV，16-bit PCM）。无第三方 HTTP 依赖（stdlib urllib）。
 """
@@ -25,11 +24,10 @@ from typing import Any
 
 import numpy as np
 
-from deskbot_server.client.tts.doubao_phoneme_align import pcm_duration_ms, split_pcm_by_timed_phonemes
+from deskbot_server.client.tts.audio_segments import split_pcm_segments
 from deskbot_server.model.errors import ClientError
 from deskbot_server.model.settings import AppSettings
 from deskbot_server.utils.audio_resample import resample_pcm16_mono
-from deskbot_server.utils.phoneme_duration import text_to_phoneme_durations
 
 logger = logging.getLogger("deskbot-server")
 
@@ -110,9 +108,7 @@ class MossTtsClient:
             sr = target
         t_resample = time.monotonic()
 
-        total_ms = pcm_duration_ms(pcm, sr)
-        timed = text_to_phoneme_durations(clean, total_ms)
-        segs = split_pcm_by_timed_phonemes(pcm, sr, timed)
+        segs = split_pcm_segments(pcm, sr)
         t_split = time.monotonic()
 
         if len(clean) <= 80:
@@ -123,7 +119,7 @@ class MossTtsClient:
                 _TTS_CACHE.popitem(last=False)
 
         logger.info(
-            "[TTS/moss] 音素分片 n=%d pcm_bytes=%d sr=%d "
+            "[TTS/moss] 音频分片 n=%d pcm_bytes=%d sr=%d "
             "timing http=%dms decode=%dms resample=%dms split=%dms total=%dms text=%r",
             len(segs),
             len(pcm),

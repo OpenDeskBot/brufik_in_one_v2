@@ -21,7 +21,7 @@ def empty_phrase_cache():
     macos_adapter._PCM_CACHE.clear()
 
 
-def test_system_voice_preserves_pcm_duration_and_robot_phonemes(monkeypatch):
+def test_system_voice_preserves_pcm_duration_without_phoneme_alignment(monkeypatch):
     async def run():
         class Process:
             returncode = 0
@@ -45,7 +45,7 @@ def test_system_voice_preserves_pcm_duration_and_robot_phonemes(monkeypatch):
         assert sr == 16000
         assert sum(len(segment.pcm) for segment in segments) == 32000
         assert sum(segment.ms for segment in segments) == pytest.approx(1000, abs=2)
-        assert any(segment.phoneme for segment in segments)
+        assert all(not segment.phoneme for segment in segments)
     asyncio.run(run())
 
 

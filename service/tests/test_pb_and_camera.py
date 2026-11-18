@@ -173,7 +173,7 @@ def test_face_tracker_profile_hysteresis():
     assert is_embedding_vector(desc)
     thr = 0.40
     profiles: list = [{"id": 1, "name": "小明", "descriptor": list(desc), "descriptor_kind": "embedding"}]
-    tracker = FaceTracker(identity_similarity_threshold=thr, max_dist_px=90.0)
+    tracker = FaceTracker(device_id="camera_test", identity_similarity_threshold=thr, max_dist_px=90.0)
     tracker._profiles = profiles
     tagged = tracker.assign_ids([dict(face)])
     assert tagged[0].get("id") == 1
@@ -198,7 +198,7 @@ def test_face_tracker_assigns_stable_ids():
 
     landmarks = _sample_landmarks(nose=(120.0, 115.0))
     emb = [1.0 / math.sqrt(512)] * 512  # 模拟外部服务返回的 embedding
-    tracker = FaceTracker(max_dist_px=30.0, max_lost_frames=3)
+    tracker = FaceTracker(device_id="camera_test", max_dist_px=30.0, max_lost_frames=3)
     frame1 = [{"landmarks": landmarks, "embedding": emb, "face_descriptor": emb, "descriptor_kind": "embedding"}]
     frame2 = [
         {

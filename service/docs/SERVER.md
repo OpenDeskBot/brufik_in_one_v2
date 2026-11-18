@@ -48,9 +48,12 @@ cp .env.example .env   # 配置 FLECKET_API_KEY 或 MOSS_API_KEY
 
 | 路径 | 说明 |
 |------|------|
-| `/asr_chat?device_id=` | **生产设备**：语音 + 可选 `camera_frame`；pb 下行（仅 `device_id` 鉴权） |
+| `/asr_chat?device_id=` | **生产设备**：语音 + 可选 `camera_frame`；pb 下行（当前只检查 `device_id`，尚无设备凭证校验） |
+| `/camera_uplink?device_id=` | 独立 JPEG 上行，不抢占主连接；当前只检查 device_id |
 | `/camera_view?device_id=&debug_token=` | 调试：JPEG 预览（控制台签发 debug_token + 设备归属） |
 | `/device_pipeline?role=subscriber&device_id=&debug_token=` | 调试：流水线事件（订阅侧 debug_token；生产者仅 `device_id`） |
+
+ROM 只配置完整 HTTP/HTTPS 启动接口（默认 `/api/device/bootstrap`）；对外主连接、相机和资源地址在 `server.device_bootstrap` 中配置，返回给 ROM。见设备协议中的 schema 2 示例。
 
 `device_id` 别名：`device` / `deviceid` / `id`。协议：[../docs/esp32_pb_protocol.md](../docs/esp32_pb_protocol.md)。
 
@@ -75,21 +78,36 @@ cp .env.example .env   # 配置 FLECKET_API_KEY 或 MOSS_API_KEY
 `flecket`，新设备默认 Flecket；既有外部服务配置、密钥和旧模型参数保留。
 本地模型组合已从启动、设备语音入口和模型设置页移除，不再作为失败回退。
 
-Flecket 保存的 Agent 管理基础人设、工具定义和音色。连接时读取原工具列表，合并当前设备的工具；同名内置工具采用设备端定义，其他上游工具保留。原人设后追加机器人规则和当前记忆，音色留空时沿用上游配置。
+Flecket 保存的 Agent 管理基础人设、工具定义和音色。连接时读取原工具列表，合并当前设备的工具；同名内置工具采用设备端定义，其他上游工具保留。原人设后追加固定机器人规则，人物资料按本轮身份和最新文件版本动态加入回复提示词，音色留空时沿用上游配置。
 
 | 工具 | 执行位置 | 行为 |
 |---|---|---|
 | `robot_perform` | 服务端编排、ROM 执行 | 预设动作与表情；支持说话前、同时、说话后，以及纯动作 |
-| `get_current_time` | 服务端 | 北京时间与 UTC |
-| `memory` | 服务端 | 本设备长期记忆 list/get/add/update/delete；写入后更新会话记忆上下文 |
-| `schedule_task` | 服务端 | 一次性、周期性提醒 CRUD，支持相对秒／分钟与五段 cron |
+| `recognize_face` | 服务端 | 查询自动识别的新鲜画面，可返回多人和注册用的 track_id |
+| `recognize_voiceprint` | 服务端 | 查询本轮声音的识别结果，不沿用上一轮姓名 |
+| `register_face` | 服务端 | 使用新鲜画面登记姓名；多人时必须指定 face_id |
+| `register_voiceprint` | 服务端 | 使用本轮声音样本登记姓名；无本轮样本时拒绝注册 |
+| `chat_search` | 服务端 | 按日期、人物、关键词查每日记录，支持完整分页 |
+| `chat_read` | 服务端 | 按真实事件 ID 读取原文和前后文 |
+| `person_read` | 服务端 | 列出人物或读取指定人物、分块和版本 |
+| `person_update` | 服务端 | 按用户发言来源整理或纠正资料，检查版本；临时状态带失效时间 |
+| `memory_forget` | 服务端 | 联动遗忘条目、来源及同轮记录，阻止重新整理恢复，重建对话连接 |
+| `schedule_task` | 服务端 | 一次性、周期性提醒 CRUD；创建和修改支持相对秒／分钟或五段 cron；列表支持 limit/offset 和 total/has_more |
 | `rom_volume` | ROM | get/set/adjust 实际扬声器音量，确认后同步设备设置 |
 | `media_list` | 服务端 | 查询本设备上传的音乐与图片 |
 | `play_music` | 服务端传输、ROM 播放 | 默认先简短回复再播放；speak=false 直接播放 |
 | `show_image` | ROM | 默认先回复再展示；speak=false 直接展示，收到实际绘制回执才报告 displayed |
-| `stop_media` | 服务端与 ROM | 停止音乐、取消图片 |
+| `stop_media` | 服务端与 ROM | 停止音乐、取消图片；图片停止没有设备确认时返回 unconfirmed，不报告全部成功 |
 
 工具回传遵循 `function_call_output`。慢工具在独立任务中执行，不阻塞音频和打断接收；call_id 去重，重连或新输入阻止旧轮续写。所有工具可用 `speak=false` 安静执行。未知工具返回错误，不执行任意代码。ROM 工具只在设备声明对应能力时注册。
+
+不再注册 `get_current_time` 和旧 `memory` / `memory_add` / `memory_delete` / `memory_del`，也会移除上游保存的同名定义。北京时间、UTC 和星期在每轮用户回复、工具续答和提醒的 system instructions 中重新生成，避免长连接使用连接建立时的旧时间。
+
+`speak` 默认 true；只有用户明确要求安静执行时才设 false，同批本项目工具统一保持安静。它只控制口播，不改变工具成功／失败结果。成功的只读查询可通过 `output_modalities=[text]` 继续必要工具步骤，并将安静标记传到后续动作；例如先安静查找歌曲，再安静播放，不能在查完列表时提前结束。终结动作完成后不再续答。自动识别始终复用原有感知服务：查询工具读取最新观察，最多等待 1.2 秒；人脸最多采用 3 秒内画面，声纹仅采用当前对话轮次。注册结果只返回姓名与档案 ID，不向模型返回特征向量或原始音视频。感知引擎未启用、样本不足和多张脸未选定都返回错误。
+
+提醒修改中的相对延迟从修改时重新计时，并转为一次性提醒；cron、delay_minutes、delay_seconds 只能提供一个。重新指定时间可重新启用已完成提醒；正在播报时拒绝修改时间，防止旧播报结果覆盖新计划。
+
+媒体在上传时预处理：图片等比缩放并居中填充至 284×240，保存 PNG 预览和 RGB565 原始像素；音频由 ffmpeg 转为 16kHz 单声道 PCM WAV。播放时音乐经 Opus 编码，通过有界 PB 流发送给设备解码播放；图片通过带二进制像素的 ROM 命令交显示任务绘制。默认等简短回答实际播完再启动媒体，安静模式直接执行。started/displayed 是开始状态，scheduled 只是排期；后台启动失败会记入媒体失败状态。
 
 `robot_perform` 参数：`gesture`、`expression`（当前设备枚举，none 表示不使用）、`duration_ms`（200～3000）、`timing`（before_speech/with_speech/after_speech）、可选 `speak`。一轮最多一个表现计划；说话同时执行的轨迹和音频共用 PB/epoch，必要时补静音尾段维持设备时间轴，回传上游的已播放语音位置不包含补齐静音。纯动作等待 PB 完成回执；scheduled 只是已安排。
 
@@ -108,14 +126,13 @@ MOSS Live 继续提供直接语音桥接，以上 Agent 工具和主动提醒目
 | 文件 / 目录 | 说明 |
 |-------------|------|
 | `data/global/llm_system.txt` | 全局 LLM 人设模板 |
-| `user_memory.json` | 长期记忆 |
-| `face_profiles.json` | 人脸档案 |
-| `session/` | 对话 session（10 分钟无对话开新 session） |
+| `memory/chat_YYYYMMDD.txt` | 按北京时间分日的发言、操作结果和播放回执 |
+| `memory/person_{name}.txt` | 基本信息、爱好、偏好、近期关注、任务、项目、健康与情绪；同名增加人物编号后缀 |
+| `memory/_memory_state.json` | 人物与识别档案映射、版本、处理进度、请求防重和遗忘标记 |
+| `memory/.pending.json` | 事务中断恢复文件；正常提交后删除 |
 | `tmp/` | LLM `read` / `write` 沙箱目录 |
 
 全局 SQLite：`data/opendesk.db`（用户、设备绑定、`scheduled_tasks`、用量等表）。
-
----
 
 ## 文件记忆
 
@@ -178,4 +195,4 @@ pytest tests/ -q
 
 两个独立进程由应用启动时的限定管理器拉起并监控，自动启动选择保存在 `data/services/state.json`，应用退出时先关闭实时会话再停止感知进程。声纹首次安装需在页面安装；已有独立环境可经部署检查后复用。健康检查要求 model_ready，且人脸 embedding_ready 为真；进程启动或端口可访问不代表模型就绪。
 
-Realtime 摄像头分支同时启动限频人脸分析，保留即时网页预览；Flecket/MOSS 上传 PCM 同时交给有界声纹采样器。识别快照供实验台和人物注册使用。本次不自动将识别姓名注入 Flecket 人设，也不替换上游 VAD、ASR、LLM 或 TTS。
+Realtime 摄像头分支同时启动限频人脸分析，保留即时网页预览；Flecket/MOSS 上传 PCM 同时交给有界声纹采样器。识别快照供实验台和人物注册使用；Flecket 每轮通过有时效的系统事件获得识别结果，也可用识别工具查询，注册工具负责登记新人物。识别姓名不写入永久人设，不替换上游 VAD、ASR、LLM 或 TTS。

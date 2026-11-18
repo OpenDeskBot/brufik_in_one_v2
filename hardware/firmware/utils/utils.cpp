@@ -1,4 +1,5 @@
 #include "utils.h"
+#include "server_endpoint.h"
 
 #include "deskbot_config.h"
 #include "logger.h"
@@ -91,18 +92,18 @@ void setup_FFat() {
 }
 
 const char* get_device_id() {
-  static char id[32];
-  static bool initialized = false;
-  if (!initialized) {
+  static char s_id[32];
+  static uint32_t s_cached_suffix = 0;
+  const uint32_t suffix = nvs_get_device_suffix();
+  if (s_cached_suffix != suffix) {
     uint8_t mac[6] = {0};
     (void)esp_read_mac(mac, ESP_MAC_WIFI_STA);
     /* 格式：brfk_ + mac(12位hex) + 随机4位数字，后缀存 NVS 保持重启不变 */
-    uint32_t suffix = nvs_get_device_suffix();
-    snprintf(id, sizeof(id), "brfk_%02x%02x%02x%02x%02x%02x%04u", mac[0], mac[1], mac[2], mac[3],
+    snprintf(s_id, sizeof(s_id), "brfk_%02x%02x%02x%02x%02x%02x%04u", mac[0], mac[1], mac[2], mac[3],
              mac[4], mac[5], suffix);
-    initialized = true;
+    s_cached_suffix = suffix;
   }
-  return id;
+  return s_id;
 }
 
 String json_escape(const String& raw) {
@@ -146,136 +147,20 @@ String json_escape(const String& raw) {
   return out;
 }
 
-const char* get_server_ws_url() {
-  static char url[192];
-  url[0] = '\0';
-
-  char base[128];
-  base[0] = '\0';
-  const char* active = nvs_ws_get_active_id();
-  if (strcmp(active, "builtin") == 0) {
-    if (DESKBOT_WS_HOST[0] == '\0') {
-      return url;
-    }
-    snprintf(base, sizeof(base), "ws://%s:%u", DESKBOT_WS_HOST, (unsigned)DESKBOT_WS_PORT);
-  } else if (!nvs_ws_get_custom_url(active, base, sizeof(base)) || base[0] == '\0') {
-    return url;
-  }
-
-  /* 去掉 base 末尾多余 '/'，再拼服务路径与鉴权 query。 */
-  size_t base_len = strlen(base);
-  while (base_len > 0 && base[base_len - 1] == '/') {
-    base[--base_len] = '\0';
-  }
-  snprintf(url, sizeof(url), "%s/asr_chat?device_id=%s&version=%s", base, get_device_id(), VERSION);
-  return url;
-}
-
-namespace {
-
-bool ws_host_char_valid(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.'
-         || c == '-';
-}
-
-}  // namespace
-
 bool parse_ws_proto(const char* str, WsProto& out) {
   out = {};
-  if (str == nullptr) {
-    return false;
-  }
-
-  const char* p = str;
-  while (*p == ' ') {
-    ++p;
-  }
-  if (strncmp(p, "wss://", 6) == 0) {
-    out.is_wss = true;
-    p += 6;
-  } else if (strncmp(p, "ws://", 5) == 0) {
-    out.is_wss = false;
-    p += 5;
-  } else {
-    return false;
-  }
-
-  const char* host_start = p;
-  const char* colon = strchr(p, ':');
-  const char* slash = strchr(p, '/');
-  const char* host_end = nullptr;
-  const uint16_t default_port = out.is_wss ? 443 : 80;
-
-  if (colon != nullptr && (slash == nullptr || colon < slash)) {
-    host_end = colon;
-    const char* port_start = colon + 1;
-    char* port_end = nullptr;
-    long port = 0;
-    if (*port_start >= '0' && *port_start <= '9') {
-      port = strtol(port_start, &port_end, 10);
-      p = port_end ? port_end : port_start;
-    } else {
-      p = port_start;
-    }
-    out.port = (port > 0 && port <= 65535) ? (uint16_t)port : default_port;
-    if (slash != nullptr) {
-      p = slash;
-    }
-  } else {
-    host_end = slash != nullptr ? slash : (p + strlen(p));
-    out.port = default_port;
-    p = slash != nullptr ? slash : host_end;
-  }
-
-  if (out.port == 0) {
-    out.port = default_port;
-  }
-
-  const size_t host_len = (size_t)(host_end - host_start);
-  if (host_len == 0 || host_len >= sizeof(out.host)) {
-    return false;
-  }
-  for (size_t i = 0; i < host_len; ++i) {
-    if (!ws_host_char_valid(host_start[i])) {
-      return false;
-    }
-  }
-  memcpy(out.host, host_start, host_len);
-  out.host[host_len] = '\0';
-
-  if (*p == '/') {
-    const char* path_start = p;
-    const char* path_end = path_start + strlen(path_start);
-    while (path_end > path_start && path_end[-1] == '/') {
-      --path_end;
-    }
-    const size_t path_len = (size_t)(path_end - path_start);
-    if (path_len >= sizeof(out.path)) {
-      return false;
-    }
-    if (path_len > 0) {
-      memcpy(out.path, path_start, path_len);
-      out.path[path_len] = '\0';
-    }
-  }
-
-  return out.host[0] != '\0';
+  server_endpoint::Url parsed;
+  if (!str || !server_endpoint::parse(str, parsed) ||
+      (parsed.scheme != "ws" && parsed.scheme != "wss")) return false;
+  out.is_wss = parsed.secure();
+  out.port = parsed.port;
+  strlcpy(out.host, parsed.host.c_str(), sizeof(out.host));
+  strlcpy(out.path, parsed.path.c_str(), sizeof(out.path));
+  return true;
 }
 
-String build_device_ws_path(const WsProto& target, const char* endpoint) {
-  String path(target.path);
-  while (path.endsWith("/")) {
-    path.remove(path.length() - 1);
-  }
-  if (!endpoint || endpoint[0] == '\0') {
-    return String();
-  }
-  if (endpoint[0] != '/') {
-    path += '/';
-  }
-  path += endpoint;
-  path += "?device_id=";
-  path += get_device_id();
+String build_device_ws_path(const WsProto& target) {
+  String path(server_endpoint::with_device(target.path, get_device_id()).c_str());
   path += "&version=";
   path += VERSION;
   return path;
@@ -374,7 +259,7 @@ bool utils_http_get_binary(const char* url, uint8_t** out_buf, size_t* out_len) 
 
 BaseType_t utils_task_create_pinned(TaskFunction_t fn, const char* name, uint32_t stack_bytes,
                                     void* arg, UBaseType_t prio, TaskHandle_t* out_handle,
-                                    BaseType_t core_id) {
+                                    BaseType_t core_id, UtilsTaskStack memory) {
   if (!fn || !name || stack_bytes < 1024) {
     return pdFAIL;
   }
@@ -383,8 +268,11 @@ BaseType_t utils_task_create_pinned(TaskFunction_t fn, const char* name, uint32_
    * 避免 mic/speaker/ws/display 吃光内部 SRAM 后 pb_runtime/camera 创建失败。
    * TCB 仍须在内部 RAM。
    */
-  StackType_t* stack = static_cast<StackType_t*>(
-      heap_caps_malloc(stack_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  // NVS/FFat operations disable the external-memory cache. Their owner tasks
+  // MUST keep their stack in internal RAM, even when PSRAM stacks are enabled.
+  const bool internal = memory == UtilsTaskStack::internal;
+  const uint32_t caps = (internal ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT;
+  StackType_t* stack = static_cast<StackType_t*>(heap_caps_malloc(stack_bytes, caps));
   StaticTask_t* tcb = static_cast<StaticTask_t*>(
       heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   if (stack && tcb) {
@@ -394,7 +282,7 @@ BaseType_t utils_task_create_pinned(TaskFunction_t fn, const char* name, uint32_
       if (out_handle) {
         *out_handle = handle;
       }
-      log_warn("[TASK] %s stack=%uB memory=PSRAM", name, (unsigned)stack_bytes);
+      log_warn("[TASK] %s stack=%uB memory=%s", name, (unsigned)stack_bytes, internal ? "internal" : "PSRAM");
       return pdPASS;
     }
   }
@@ -405,7 +293,7 @@ BaseType_t utils_task_create_pinned(TaskFunction_t fn, const char* name, uint32_
     heap_caps_free(tcb);
   }
   /* 回落动态创建（可能仍走内部堆）。 */
-  log_warn("[TASK] %s PSRAM stack unavailable; fallback=internal stack=%uB", name,
+  log_warn("[TASK] %s requested stack unavailable; fallback=internal stack=%uB", name,
            (unsigned)stack_bytes);
   return xTaskCreatePinnedToCore(fn, name, stack_bytes, arg, prio, out_handle, core_id);
 }

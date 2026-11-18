@@ -1,0 +1,57 @@
+{
+  "date": "2026-11-18",
+  "scope": "完整 HTTP(S) 启动接口、服务端下发媒体与资源 URL、协议文档更新",
+  "base_commit": "8973b5b8eedd088b74988452f963f50bfe2cdd33",
+  "workspace": "基于已有未提交改动继续实现；未提交、未部署、未烧录",
+  "contracts": {
+    "bootstrap_schema": 2,
+    "pb_version": 2,
+    "media_header_version": 1,
+    "configuration_activation": "每次 ROM 启动获取快照；尚无运行中定时刷新",
+    "addresses": "用户填写精确 HTTP(S) 启动路径；资源、主 WS、相机均由服务端下发，可独立域名和端口",
+    "relative_urls": "根相对 URL 基于启动接口 origin，不拼路径前缀",
+    "failure": "发现失败每10秒重试且不连接媒体；资源失败保留缓存/内置资源",
+    "migration": "旧 WS(S)/origin 配置需要重填完整 HTTP(S) 路径；ROM 与 schema 2 服务端配套升级"
+  },
+  "validation": [
+    {
+      "command": "cd service && .venv/bin/python -m pytest -q tests/test_device_bootstrap.py tests/test_firmware_wifi_onboarding.py tests/test_media_wire.py tests/test_pb_continuous.py tests/test_pb_ack_window.py tests/test_camera_uplink.py tests/test_pb_wire_format.py tests/test_controller_auth.py tests/test_moss_live.py tests/test_conversation_settings.py",
+      "result": "167 passed",
+      "warning": "现有 Starlette/httpx 测试客户端弃用提示"
+    },
+    {
+      "command": "service/.venv/bin/python -m pytest -q hardware/tests/test_server_endpoint.py hardware/tests/test_bootstrap_config.py hardware/tests/test_face_cache_policy.py hardware/tests/test_media_wire.py hardware/tests/test_rom_control.py",
+      "result": "5 passed；包括真实服务端响应经 ROM C++ 解码器校验"
+    },
+    {
+      "command": "cd hardware && .venv/bin/pio run -e seeed_xiao_esp32s3",
+      "result": "SUCCESS",
+      "firmware_sha256": "df116d079af7208d1c90b21eefda83a0238087721206a8ba7eafe9616fe73ed7",
+      "firmware_bytes": 2358256
+    },
+    {
+      "command": "本机临时 uvicorn，隔离资源副本；启动/请求/停止后重新启动，执行两轮",
+      "path": "/fleet/api/device/bootstrap?device_id=smoke-rom",
+      "result": "两轮 health/discovery/resource 均200；schema2；资源长度和SHA-256通过；ETag304；停止后端口不可访问"
+    },
+    {
+      "command": "针对本次服务端 Python 变更的 ruff check",
+      "result": "All checks passed"
+    },
+    {
+      "command": "针对本次改动的 git diff --check",
+      "result": "通过；未修改其他工作区改动中的格式问题"
+    }
+  ],
+  "not_performed": [
+    "真机烧录",
+    "真机 HTTP/WSS 跨主机联调",
+    "公网部署",
+    "运行中地址热切换"
+  ],
+  "proposals_not_implemented": [
+    "设备独立凭证与连接认证",
+    "普通 JSON 与紧凑二进制共用严格序列校验及明确错误回执",
+    "传输就绪与对话就绪分离"
+  ]
+}

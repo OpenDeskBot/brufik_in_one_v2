@@ -7,7 +7,9 @@ import re
 from collections import OrderedDict
 from threading import RLock
 
+from deskbot_server.config import get_config
 from deskbot_server.dao.face_asset_catalog import load_face_asset_library
+from deskbot_server.model.device_discovery import DeviceDiscovery
 from deskbot_server.model.face_package import encode_package
 
 _lock = RLock()
@@ -45,13 +47,15 @@ class DeviceBootstrapService:
     def bootstrap(self, device_id: str) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", device_id):
             raise ValueError("invalid device_id")
+        endpoints = DeviceDiscovery.from_server(get_config().get("server", {}))
         metadata, _ = self.package()
+        metadata["url"] = f"{endpoints.face_pack_base_url}/{metadata['version']}"
         return dict(
-            schema=1,
+            schema=2,
             device_id=device_id,
             face_pack=metadata,
-            realtime=dict(protocol="deskbot.pb.v2", url="/asr_chat"),
-            camera=dict(enabled=True, url="/camera_uplink"),
+            realtime=dict(protocol="deskbot.pb.v2", url=endpoints.realtime_url),
+            camera=dict(enabled=endpoints.camera_enabled, url=endpoints.camera_url),
             audio=dict(input_codec="opus", output_codec="opus", sample_rate=16000, channels=1),
             capabilities=["local_face_pack_v1", "pcm_lipsync_v1", "local_idle_v1"],
         )

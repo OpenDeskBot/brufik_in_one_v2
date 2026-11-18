@@ -43,38 +43,20 @@ const char* get_device_id();
 /** JSON 字符串转义（``"`` ``\`` 控制字符等）。 */
 String json_escape(const String& raw);
 
-/**
- * 当前云服务器完整 WS URL（NVS active / builtin + ``/asr_chat?device_id=&version=``）。
- * 未配置时返回空串。返回值指向静态缓冲，下次调用会覆盖。
- */
-const char* get_server_ws_url();
-
-/** PIN / AP 等待 / WiFi / 云服务器 NVS：见 ``nvs_config_utils.h``。 */
-
-/** 解析后的 WebSocket 目标（不含 query）。 */
-struct DeskbotWsTarget {
-  bool valid = false;
-  bool use_ssl = false;
-  char host[64] = {};
-  uint16_t port = 0;
-  /** 可选路径前缀，如 "/api"；空表示根路径。 */
-  char path_prefix[48] = {};
-};
-
 /** ``ws://`` / ``wss://`` URL 解析结果。 */
 struct WsProto {
   bool is_wss = false;
   char host[64] = {};
   uint16_t port = 0;
-  /** 可选路径前缀，如 "/api"；无路径则为空串。 */
-  char path[64] = {};
+  /** 服务端下发的完整路径及可选 query。 */
+  char path[512] = {};
 };
 
 /** 解析 ``ws://host[:port][/path]`` 或 ``wss://...`` 到 ``out``。 */
 bool parse_ws_proto(const char* str, WsProto& out);
 
-/** 拼出 ``[path_prefix]/<endpoint>?device_id=&version=``。endpoint 可带或不带前导 ``/``。 */
-String build_device_ws_path(const WsProto& target, const char* endpoint);
+/** 使用下发的完整路径，保留 query，再追加设备 ID 和 ROM 版本。 */
+String build_device_ws_path(const WsProto& target);
 
 /**
  * HTTP(S) GET 整包下载到 PSRAM（失败回落内部已释放）。
@@ -84,12 +66,14 @@ String build_device_ws_path(const WsProto& target, const char* endpoint);
 bool utils_http_get_binary(const char* url, uint8_t** out_buf, size_t* out_len);
 
 /**
- * 创建 pinned 任务。Arduino 3.x / IDF 5.5 下优先 Static+PSRAM 栈（TCB 仍在内部 SRAM）。
+ * 创建 pinned 任务。媒体任务默认优先 Static+PSRAM 栈（TCB 仍在内部 SRAM）。
+ * NVS/FFat/Flash 写入任务必须显式指定 UtilsTaskStack::internal，禁缓存时 PSRAM 不可访问。
  * ``stack_bytes`` 与 ESP-IDF ``xTaskCreate*`` 一致（字节）。
  */
+enum class UtilsTaskStack { prefer_psram, internal };
 BaseType_t utils_task_create_pinned(TaskFunction_t fn, const char* name, uint32_t stack_bytes,
                                     void* arg, UBaseType_t prio, TaskHandle_t* out_handle,
-                                    BaseType_t core_id);
+                                    BaseType_t core_id, UtilsTaskStack memory = UtilsTaskStack::prefer_psram);
 
 /** PSRAM 优先分配，失败回落内部堆。调用方 free() 或 heap_caps_free() 均可。 */
 void* psram_malloc(size_t sz);

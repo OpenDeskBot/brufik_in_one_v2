@@ -616,7 +616,10 @@ class FlecketBridge(MossLiveBridge):
 
     async def _perception_for_turn(self, turn_id):
         self.voiceprint.finish_turn(turn_id)
-        return await self.perception_events.for_turn(turn_id)
+        # Short/noisy utterances may not have enough audio for an inference.
+        # Do not spend the entire wait budget on a job that was never started.
+        wait_seconds = .8 if self.voiceprint.submitted_turn == turn_id else 0
+        return await self.perception_events.for_turn(turn_id, wait_seconds=wait_seconds)
 
     async def _memory_context_for_turn(self, turn_id, event, *, prepare=False, budget=4000):
         observation = json.loads(event.context()).get("data", {}) if event.event == "perception_snapshot" else {}

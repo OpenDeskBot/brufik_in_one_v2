@@ -1,11 +1,38 @@
 #include "wifi_provision_internal.h"
 
 #include "boot_guide.h"
+#include "device_bootstrap.h"
 #include "utils/html.h"
 #include "utils/nvs_config_utils.h"
 #include "utils/utils.h"
 
 namespace {
+
+// The regular command dispatcher is unavailable before playback queues exist.
+// Keep this boot escape bounded and limited to the same action as the portal.
+void poll_boot_continue() {
+  static char s_command[32];
+  static size_t s_length = 0;
+  static bool s_overflow = false;
+  for (size_t budget = 0; budget < 64 && Serial.available(); ++budget) {
+    const char ch = static_cast<char>(Serial.read());
+    if (ch == '\r') continue;
+    if (ch == '\n') {
+      s_command[s_length] = '\0';
+      if (!s_overflow && strcmp(s_command, "continue_boot") == 0) {
+        g_wifi_portal_exit_continue = true;
+        g_wifi_done_config = true;
+        Serial.println("[wifi] continue boot requested over USB");
+      }
+      s_length = 0;
+      s_overflow = false;
+    } else if (s_length + 1 < sizeof(s_command)) {
+      s_command[s_length++] = ch;
+    } else {
+      s_overflow = true;
+    }
+  }
+}
 
 void send_json(int code, const String& body) {
   g_wifi_server.send(code, "application/json", body);
@@ -24,7 +51,7 @@ void send_err(int code, const char* msg) {
             String("{\"success\":false,\"message\":\"") + json_escape(String(msg)) + "\"}");
 }
 
-/** 读取并校验 url 表单参数（去空格 + 长度 + ws:// 协议）；校验失败时已发出错误响应。 */
+/** 读取并校验 url 表单参数（去空格 + 长度 + 完整 HTTP(S) 启动接口）；校验失败时已发出错误响应。 */
 bool read_valid_ws_url(String& out) {
   constexpr size_t kMaxUrlLen = sizeof(NvsWsServerEntry::url) - 1;
   out = g_wifi_server.arg("url");
@@ -39,9 +66,9 @@ bool read_valid_ws_url(String& out) {
              (String("URL 过长（上限 ") + String((unsigned)kMaxUrlLen) + " 字符）").c_str());
     return false;
   }
-  WsProto parsed;
-  if (!parse_ws_proto(out.c_str(), parsed)) {
-    send_err(400, "URL 格式须为 ws:// 或 wss://");
+  server_endpoint::Url parsed;
+  if (!server_endpoint::bootstrap(out.c_str(), parsed)) {
+    send_err(400, "请输入包含完整接口路径的 http:// 或 https:// 地址，不支持 WS 地址、查询参数或片段");
     return false;
   }
   return true;
@@ -150,17 +177,25 @@ void wifi_portal_setup_http(void) {
 
   g_wifi_server.on("/save-wifi", HTTP_POST, []() {
     const String new_ssid = g_wifi_server.arg("ssid");
-    const String new_password = g_wifi_server.arg("password");
+    String new_password = g_wifi_server.arg("password");
+    const bool clear_password = g_wifi_server.arg("clear_password") == "1";
+    if (clear_password) {
+      new_password = "";
+    }
     if (new_ssid.length() == 0) {
       send_err(400, "SSID cannot be empty");
       return;
     }
-    if (!nvs_wifi_upsert(new_ssid.c_str(), new_password.c_str())) {
+    if (!nvs_wifi_upsert(new_ssid.c_str(), new_password.c_str(), !clear_password)) {
       send_err(500, "Failed to save credentials");
       return;
     }
     g_wifi_ssid = new_ssid;
-    g_wifi_password = new_password;
+    // 保留原密码时也同步有效凭证；密码不会返回到网页。
+    NvsWifiCredential saved[NVS_MAX_SAVED_WIFI];
+    if (nvs_wifi_list(saved, NVS_MAX_SAVED_WIFI) > 0) {
+      g_wifi_password = saved[0].password;
+    }
     Serial.printf("[wifi] credentials saved ssid=%s\r\n", new_ssid.c_str());
     send_ok_body("\"message\":\"WiFi configuration saved\"");
   });
@@ -184,7 +219,7 @@ void wifi_portal_setup_http(void) {
     }
     json += "],";
 
-    char builtin_url[96];
+    char builtin_url[server_endpoint::kUrlCapacity];
     deskbot_ws_format_builtin_url(builtin_url, sizeof(builtin_url));
     json += "\"ws_active\":\"" + json_escape(String(nvs_ws_get_active_id())) + "\",";
     json += "\"ws_builtin_url\":\"" + json_escape(String(builtin_url)) + "\",";
@@ -218,6 +253,29 @@ void wifi_portal_setup_http(void) {
   g_wifi_server.on("/device-config/delete-wifi", HTTP_POST, []() {
     if (!nvs_wifi_delete(g_wifi_server.arg("ssid").c_str())) {
       send_err(404, "未找到该 Wi‑Fi");
+      return;
+    }
+    send_ok();
+  });
+
+  g_wifi_server.on("/device-config/update-wifi-password", HTTP_POST, []() {
+    if (!nvs_wifi_update_password(g_wifi_server.arg("ssid").c_str(),
+                                  g_wifi_server.arg("password").c_str(),
+                                  g_wifi_server.arg("clear_password") == "1")) {
+      send_err(400, "更新失败：网络不存在或密码保存失败");
+      return;
+    }
+    send_ok();
+  });
+
+  g_wifi_server.on("/device-config/move-wifi", HTTP_POST, []() {
+    const String direction = g_wifi_server.arg("direction");
+    if (direction != "up" && direction != "down") {
+      send_err(400, "移动方向须为 up 或 down");
+      return;
+    }
+    if (!nvs_wifi_move(g_wifi_server.arg("ssid").c_str(), direction == "up" ? -1 : 1)) {
+      send_err(400, "移动失败：网络不存在、已到列表边界或保存失败");
       return;
     }
     send_ok();
@@ -326,6 +384,12 @@ bool wifi_provision_ap_offer(unsigned timeout_ms) {
   g_wifi_portal_exit_continue = false;
 
   while (true) {
+    poll_boot_continue();
+    if (g_wifi_done_config) {
+      wifi_portal_stop(false);
+      g_wifi_portal_exit_continue = false;
+      return true;
+    }
     const unsigned long now = millis();
     const unsigned long elapsed = now - last_tick_ms;
     last_tick_ms = now;
@@ -381,6 +445,7 @@ void wifi_provision_config_portal() {
 
   const unsigned long portal_start_ms = millis();
   while (!g_wifi_done_config) {
+    poll_boot_continue();
     g_wifi_server.handleClient();
     if (millis() - portal_start_ms >= kWifiConfigPortalTimeoutMs) {
       Serial.println("[wifi] config portal timeout, retry connect");

@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from deskbot_server.model.face_package import compile_document
+from deskbot_server.model.face_package import compile_editor_document
 from deskbot_server.service.device_data_paths import global_config_dir
 
 CATALOG_PATH = Path(__file__).resolve().parents[1] / "pb/data/face_assets_manifest.json"
@@ -25,7 +25,7 @@ def load_face_asset_catalog() -> dict[str, Any]:
 
 @lru_cache(maxsize=4)
 def _compile_source(source: bytes) -> dict[str, Any]:
-    return compile_document(json.loads(source))
+    return compile_editor_document(json.loads(source))
 
 
 def load_face_asset_library() -> dict[str, Any]:

@@ -50,7 +50,7 @@ class DoubaoTtsConfig:
     ws_url: str = DEFAULT_WS_URL
     sample_rate: int = 16000
     audio_format: str = "pcm"
-    enable_timestamp: bool = True
+    enable_timestamp: bool = False
 
     def ws_headers(self) -> dict[str, str]:
         return {"X-Api-Key": self.api_key, "X-Api-Resource-Id": self.resource_id, "X-Api-Connect-Id": uuid4().hex}
@@ -137,8 +137,8 @@ def load_doubao_tts_config(
         logger.info("speaker=%s 使用 seed-tts-1.0，忽略 2.0 model=%s", speaker, model)
         model = ""
     api_key = str(ov.get("api_key") or "").strip()
-    raw_flag = str(ov.get("enable_timestamp") or "").strip()
-    enable_timestamp = True if not raw_flag else raw_flag.strip().lower() not in ("0", "false", "no", "off")
+    raw_flag = str(ov.get("enable_timestamp", False)).strip().lower()
+    enable_timestamp = raw_flag in ("1", "true", "yes", "on")
     return DoubaoTtsConfig(
         api_key=api_key,
         speaker=speaker,

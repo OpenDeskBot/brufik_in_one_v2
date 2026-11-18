@@ -24,6 +24,14 @@ server:
   host: 0.0.0.0
   port: 9000
   ws_path: /asr_chat
+  # ROM 填写完整启动接口，例如 https://example.com/robot/bootstrap。
+  # 下列地址由启动接口下发；根相对地址基于该接口的 origin，不自动补路径前缀。
+  # 可改成独立主机/端口的完整 wss:// 或 https:// 地址；对应路径需由网关路由。
+  device_bootstrap:
+    realtime_url: /asr_chat
+    camera_url: /camera_uplink
+    camera_enabled: true
+    face_pack_base_url: /api/device/face-pack
   ws_ping_interval: 120
   ws_ping_timeout: 300
   send_face_info_to_asr_chat: false
@@ -46,42 +54,3 @@ audio:
   output_codec: opus
   sample_rate: 16000
   channels: 1
-vad:
-  mode: 3
-  frame_ms: 30
-  min_speech_ms: 250
-  max_silence_ms: 200
-  pre_speech_ms: 300
-  silero_model_path: models/silero_vad/silero_vad.onnx
-  silero_threshold: 0.5
-  silero_threshold_low: 0.2
-asr:
-  external_url: http://127.0.0.1:9102
-  text_filter:
-    min_text_len: 2
-    min_chinese_ratio: 0.0
-llm:
-  # 本地模型组合的系统默认 LLM；flecket 在独立「对话方式」中选择。
-  protocol: openai
-  base_url: https://api.siliconflow.cn/v1
-  model_name: Qwen/Qwen3-8B
-  api_key_env: SILICONFLOW_API_KEY
-  context_window: 32768
-  system_prompt_file: data/global/llm_system.txt
-  # 文件（system_prompt_file）优先；这里只保留文件缺失时的纯文本兜底
-  system_prompt: '你是"小歪"，桌面上活泼俏皮、温柔体贴的小型陪伴机器人。直接输出要说给主人听的口语纯文本，不要输出 JSON、字段名、动作/表情信息，也不要输出括号内的思考/规则说明；不要原样复述用户刚说的话；无需开口时输出完全空白。回复会转成语音（TTS）播报，简短自然，不使用 markdown、列表或 emoji。'
-tts:
-  sample_rate: 16000
-  pb_random_servo:
-    enabled: true
-    probability: 0.4
-    ms_min: 150
-    ms_max: 320
-    rel_x_range:
-    - -8
-    - 8
-    rel_y_range:
-    - -8
-    - 8
-    skip_first: true
-    skip_last: true

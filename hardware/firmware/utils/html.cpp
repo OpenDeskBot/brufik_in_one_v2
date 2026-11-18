@@ -8,113 +8,187 @@ const char index_html[] PROGMEM = R"rawliteral(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>小歪配网</title>
   <style>
-    :root{--bg:#e9e7de;--panel:#fff;--panel2:#f2f0e8;--ink:#16171b;--dim:#5b5b52;--line:#16171b;--accent:#ff6700;--bw:3px;--shadow:5px 5px 0 var(--line);--r:8px;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+    :root{--bg:#e9e7de;--panel:#fff;--panel2:#f2f0e8;--ink:#16171b;--dim:#5b5b52;--line:#16171b;--accent:#ff6700;--bw:2px;--shadow:3px 3px 0 var(--line);--r:8px;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
     *{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);background-image:linear-gradient(rgba(0,0,0,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,.06) 1px,transparent 1px);background-size:28px 28px;padding:16px}
-    .wrap{max-width:760px;margin:0 auto}.top{display:flex;align-items:center;gap:12px;margin:8px 0 14px}.mark{width:42px;height:42px;background:var(--accent);border:var(--bw) solid var(--line);box-shadow:3px 3px 0 var(--line);color:#fff;font-weight:900;display:grid;place-items:center}.brand b{display:block;font-size:18px;letter-spacing:.08em}.brand span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim);font-size:12px}
-    .card{background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:18px;margin-bottom:16px}.hero{background:#16171b;color:#f8f5ed;position:relative;overflow:hidden}.hero:after{content:"";position:absolute;left:0;right:0;top:0;height:5px;background:var(--accent)}.eyebrow{display:inline-block;background:var(--accent);border:2px solid var(--line);color:#fff;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:800;letter-spacing:.08em;padding:4px 8px;box-shadow:2px 2px 0 var(--line)}h1{font-size:30px;margin:14px 0 8px;line-height:1.05}.hero p{color:#d8d4ca;margin:0;line-height:1.5}.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:16px}.step{border:2px solid #f8f5ed;padding:10px;min-height:84px}.step b{display:block;color:#fff}.step span{display:block;color:#c8c4ba;font-size:12px;margin-top:5px;line-height:1.35}
-    .status{display:grid;grid-template-columns:1fr 1fr;gap:10px}.pill{border:var(--bw) solid var(--line);background:var(--panel2);padding:10px}.pill span{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--dim);font-weight:800}.pill b{display:block;margin-top:4px;word-break:break-all}
-    .section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.section-title h2{margin:0;font-size:20px}.actions{display:flex;gap:8px;flex-wrap:wrap}button{border:var(--bw) solid var(--line);border-radius:6px;background:var(--panel);box-shadow:3px 3px 0 var(--line);padding:10px 13px;font-weight:800;cursor:pointer;color:var(--ink)}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.6;cursor:not-allowed}.list{display:grid;gap:8px;margin:10px 0 0}.network{width:100%;display:flex;align-items:center;justify-content:space-between;text-align:left;background:var(--panel2);box-shadow:2px 2px 0 var(--line)}.network.on{background:var(--accent);color:#fff}.network small{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;opacity:.75}
-    label{display:block;font-weight:800;margin:12px 0 6px}.hint{color:var(--dim);font-size:13px;line-height:1.45}input{width:100%;border:var(--bw) solid var(--line);border-radius:6px;padding:12px;background:#fff;font-size:16px;color:var(--ink)}.form-grid{display:grid;gap:10px}.msg{border:var(--bw) solid var(--line);background:var(--panel2);padding:12px;margin-top:12px;font-weight:700}.msg.ok{background:#dff5df}.msg.err{background:#ffe1dc}.footer{text-align:center;color:var(--dim);font-size:12px;margin:18px 0}.hidden{display:none}.spin{display:inline-block;width:14px;height:14px;border:3px solid rgba(0,0,0,.18);border-top-color:var(--line);border-radius:50%;animation:spin .8s linear infinite;margin-right:6px;vertical-align:-2px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:620px){body{padding:10px}.steps,.status{grid-template-columns:1fr}h1{font-size:26px}.card{padding:15px}}
+    .wrap{max-width:720px;margin:0 auto}.card{background:var(--panel);border:var(--bw) solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:14px;margin-bottom:12px}
+    h1,h2{margin:0;font-size:20px}h3{font-size:14px;margin:0 0 6px}.section-title{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px}.actions{display:flex;gap:6px;flex-wrap:wrap}
+    button{border:var(--bw) solid var(--line);border-radius:6px;background:var(--panel);box-shadow:2px 2px 0 var(--line);min-height:36px;padding:7px 10px;font-size:13px;font-weight:800;cursor:pointer;color:var(--ink)}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.6;cursor:not-allowed}button:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+    .device-id-row{display:flex;align-items:center;gap:10px}.device-id-value{flex:1;min-width:0}.field-label,label{display:block;font-weight:800;font-size:13px;margin-bottom:5px}#config-device-id{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;overflow-wrap:anywhere}.device-id-row .actions{flex:none}.firmware{display:flex;align-items:center;gap:12px;margin:10px 0;font-size:13px}.firmware span{color:var(--dim)}.firmware b{overflow-wrap:anywhere}
+    .field{margin-top:12px}.inline-form{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px}.ap-offer{max-width:300px}.hint{color:var(--dim);font-size:12px;line-height:1.4;margin:6px 0 0}.reset-row{border-top:1px dashed var(--dim);padding-top:10px;margin-top:12px}.reset-row .hint{margin:6px 0 0}.reset-row button{flex:none}
+    input{width:100%;min-width:0;border:var(--bw) solid var(--line);border-radius:6px;padding:8px 10px;background:#fff;font-size:16px;color:var(--ink)}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}.list{display:grid;gap:6px;margin-top:6px}.network{width:100%;min-width:0;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;background:var(--panel2);border:var(--bw) solid var(--line);border-radius:6px;padding:7px 9px;box-shadow:none}.network>span:first-child{min-width:0;overflow-wrap:anywhere}.network.on{background:var(--accent);color:#fff}.network small{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:700}.network>button,.network .actions{flex-shrink:0}.network .server-address{flex:1 1 160px}.server-row{flex-wrap:wrap}.server-row .actions{margin-left:auto}.server-edit input{flex:1 1 180px}.server-edit .actions{margin-left:auto}#networks-list{max-height:176px;overflow-y:auto}#networks-list:empty{display:none}#networks-list small{flex-shrink:0}.wifi-saved{border-top:1px dashed var(--dim);padding-top:10px;margin-top:12px}
+    .msg{border:var(--bw) solid var(--line);border-radius:6px;background:var(--panel2);padding:8px 10px;margin-top:10px;font-size:13px;line-height:1.45;overflow-wrap:anywhere}.msg.ok{background:#dff5df}.msg.err{background:#ffe1dc}.continue{margin-top:2px;padding-bottom:4px}#continue-boot-btn{width:100%;min-height:42px;font-size:15px}.spin{display:inline-block;width:14px;height:14px;border:3px solid rgba(0,0,0,.18);border-top-color:var(--line);border-radius:50%;animation:spin .8s linear infinite;margin-right:6px;vertical-align:-2px}.hidden{display:none}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:480px){body{padding:10px}.card{padding:12px}.device-id-row{gap:8px}.device-id-row .actions{gap:5px}.device-id-row button{padding:7px 8px}.form-grid{grid-template-columns:1fr}}
+    .heading-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.heading-group h3{margin:0}.save-state{font-size:11px;color:var(--dim);background:var(--panel2);border-radius:4px;padding:3px 6px}.password-control{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center}.form-actions{grid-column:1/-1;display:flex;gap:8px}.form-actions .primary{flex:1}.form-note{grid-column:1/-1;margin:0}.choice{align-items:center;gap:6px;font-size:12px;font-weight:400;margin:6px 0 0}.choice:not(.hidden){display:flex}.choice input{width:auto;margin:0;accent-color:var(--accent)}.saved-network{flex-wrap:wrap}.saved-network>span:first-child{flex:1 1 180px}.saved-network .actions{margin-left:auto}.continue>.hint{text-align:center}
   </style>
 </head>
 <body>
   <main class="wrap">
-    <div class="top"><div class="mark">歪</div><div class="brand"><b>BRUFIK</b><span>ONBOARDING</span></div></div>
-    <section class="card hero">
-      <span class="eyebrow">ONBOARDING · WIFI</span>
-      <h1>给小歪连上家里的 Wi‑Fi</h1>
-      <p>按照屏幕上的地址打开本页，选择路由器并输入密码。保存后点击「继续启动」连接新网络。</p>
-      <div class="steps">
-        <div class="step"><b>1 连接小歪热点</b><span>手机或电脑加入屏幕上的 Device ID 同名 Wi‑Fi</span></div>
-        <div class="step"><b>2 打开屏幕上的网址</b><span>通常是 http://192.168.4.1</span></div>
-        <div class="step"><b>3 选择家里的 Wi‑Fi</b><span>保存后看设备屏幕上的连接结果</span></div>
+    <section class="card" id="device-config-card" aria-labelledby="device-title">
+      <div class="section-title"><h1 id="device-title">设备信息</h1></div>
+      <div class="device-id-row">
+        <div class="device-id-value"><span class="field-label">设备 ID</span><b id="config-device-id">读取中…</b></div>
+        <div class="actions">
+          <button type="button" id="copy-device-id-btn" onclick="copyDeviceId()" disabled>复制</button>
+        </div>
       </div>
+      <p class="hint">复制设备 ID 可用于绑定设备。</p>
+      <div class="firmware"><span>固件版本</span><b id="firmware-version">读取中…</b></div>
+
+      <div class="field">
+        <label for="ap-offer-input">配网热点窗口（秒）</label>
+        <div class="inline-form ap-offer">
+          <input type="number" id="ap-offer-input" min="5" max="60" step="1" value="20" required>
+          <button type="button" id="ap-offer-save-btn" onclick="saveApOfferSec()">保存</button>
+        </div>
+        <p class="hint" id="ap-offer-hint">5–60 秒，默认 20 秒；下次开机生效。</p>
+      </div>
+
+      <div class="field">
+        <h3>云服务器配置</h3>
+        <div id="ws-server-list" class="list"></div>
+        <label for="ws-server-url-input" class="field">添加云服务器</label>
+        <div class="inline-form">
+          <input type="text" id="ws-server-url-input" autocapitalize="none" spellcheck="false" maxlength="511" placeholder="https://example.com/api/device/bootstrap">
+          <button type="button" id="ws-server-add-btn" onclick="addWsServer()">添加</button>
+        </div>
+        <p class="hint">填写完整的 HTTP/HTTPS 启动接口地址，必须包含接口路径。连接和表情资源地址由服务器下发。</p>
+      </div>
+
+      <div class="reset-row">
+        <div class="actions">
+          <button type="button" id="reset-device-id-btn" onclick="resetDeviceId()">重置设备 ID</button>
+          <button type="button" id="factory-reset-btn" onclick="factoryReset()">恢复出厂设置</button>
+        </div>
+        <p class="hint">生成新 ID 后需重新绑定；旧账号记录保留。</p>
+        <p class="hint">恢复出厂将清除 Wi‑Fi、云服务器、绑定 PIN 与热点窗口设置并重启。</p>
+      </div>
+      <div id="config-message" class="msg hidden" role="status" aria-live="polite"></div>
     </section>
 
-    <section class="card">
-      <div class="status">
-        <div class="pill"><span>设备热点</span><b id="ap-ssid">deskbot_000000000000</b></div>
-        <div class="pill"><span>配网地址</span><b id="ap-ip">http://192.168.4.1</b></div>
-        <div class="pill"><span>设备 ID</span><b id="device-id">读取中</b></div>
-        <div class="pill"><span>连接设备数</span><b id="station-count">0</b></div>
-      </div>
-    </section>
-
-    <section class="card">
+    <section class="card" id="wifi-settings-card" aria-labelledby="wifi-title">
       <div class="section-title">
-        <h2>选择 Wi‑Fi</h2>
+        <h2 id="wifi-title">Wi‑Fi 设置</h2>
         <div class="actions">
           <button type="button" id="scan-btn" onclick="scanNetworks()"><span id="scan-spinner" class="spin hidden"></span><span id="scan-text">扫描网络</span></button>
           <button type="button" onclick="showManual()">隐藏网络</button>
         </div>
       </div>
-      <p class="hint">如果没有看到你的路由器，可以重新扫描，或使用“隐藏网络”手动输入 SSID。</p>
       <div id="networks-list" class="list"></div>
-      <div id="message" class="msg hidden"></div>
-    </section>
-
-    <section class="card" id="password-card">
-      <h2>填写网络密码</h2>
       <form id="wifi-form" class="form-grid">
-        <input type="hidden" id="ssid-input" name="ssid">
-        <label for="manual-ssid-input">Wi‑Fi 名称</label>
-        <input type="text" id="manual-ssid-input" placeholder="选择网络后自动填入，也可手动输入">
-        <label for="password-input">Wi‑Fi 密码</label>
-        <input type="password" id="password-input" name="password" autocomplete="current-password" placeholder="留空表示开放网络">
-        <button type="submit" id="save-btn" class="primary">保存</button>
+        <p id="wifi-edit-hint" class="hint form-note hidden">修改密码，保留原连接优先级。</p>
+        <div>
+          <label for="manual-ssid-input">Wi‑Fi 名称</label>
+          <input type="text" id="manual-ssid-input" name="ssid" autocapitalize="none" spellcheck="false" placeholder="选择网络或手动输入">
+        </div>
+        <div>
+          <label for="password-input">Wi‑Fi 密码</label>
+          <div class="password-control">
+            <input type="password" id="password-input" name="password" autocomplete="new-password" placeholder="开放网络可留空">
+            <button type="button" id="toggle-password-btn" aria-label="显示密码" aria-controls="password-input" aria-pressed="false" onclick="togglePassword()">显示</button>
+          </div>
+          <label id="clear-password-label" class="choice hidden"><input type="checkbox" id="clear-password-input" onchange="updateWifiForm()">开放网络（清除原密码）</label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" id="save-btn" class="primary">保存 Wi‑Fi</button>
+          <button type="button" id="cancel-wifi-edit-btn" class="hidden" onclick="cancelWifiPasswordEdit()">取消修改</button>
+        </div>
       </form>
+      <div class="wifi-saved">
+        <div class="heading-group"><h3>已保存的 Wi‑Fi</h3><span id="wifi-save-state" class="save-state" role="status">读取中…</span></div>
+        <p class="hint">按从上到下的顺序尝试连接；上移或下移后自动保存。</p>
+        <div id="saved-wifi-list" class="list"></div>
+        <p class="hint hidden" id="saved-wifi-empty">暂无已保存 Wi‑Fi。</p>
+      </div>
+      <div id="message" class="msg hidden" role="status" aria-live="polite"></div>
     </section>
 
-    <section class="card" id="device-config-card">
-      <h2>设备配置</h2>
-      <p class="hint">管理配网热点窗口、设备绑定 PIN、已保存 Wi‑Fi 与恢复出厂。</p>
-
-      <label for="ap-offer-input">配网热点窗口（秒）</label>
-      <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end">
-        <input type="number" id="ap-offer-input" min="5" max="60" step="1" value="20">
-        <button type="button" id="ap-offer-save-btn" onclick="saveApOfferSec()">保存</button>
-      </div>
-      <p class="hint" id="ap-offer-hint">范围 5–60 秒，默认 20 秒；下次开机生效。</p>
-
-      <label>设备信息</label>
-      <div class="status" style="margin-bottom:8px">
-        <div class="pill"><span>设备 ID</span><b id="config-device-id">----</b></div>
-        <div class="pill"><span>固件版本</span><b id="firmware-version">----</b></div>
-      </div>
-      <button type="button" onclick="resetDeviceId()">重置设备 ID</button>
-
-      <label style="margin-top:16px">已保存 Wi‑Fi</label>
-      <div id="saved-wifi-list" class="list"></div>
-      <p class="hint hidden" id="saved-wifi-empty">暂无已保存 Wi‑Fi。</p>
-
-      <label style="margin-top:16px">云服务器</label>
-      <p class="hint">格式 ws://主机:端口 或 wss://主机:端口，可选路径前缀；设备连接 /asr_chat（语音与相机帧同连接）。</p>
-      <div id="ws-server-list" class="list"></div>
-      <p class="hint hidden" id="ws-server-empty">暂无自定义云服务器。</p>
-      <label for="ws-server-url-input">添加云服务器</label>
-      <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end">
-        <input type="text" id="ws-server-url-input" placeholder="ws://192.168.1.1:9000">
-        <button type="button" id="ws-server-add-btn" onclick="addWsServer()">添加</button>
-      </div>
-
-      <div style="margin-top:18px;padding-top:14px;border-top:2px dashed var(--line)">
-        <p class="hint">恢复出厂将清除已保存 Wi‑Fi、云服务器、重置 PIN 与启动时间，设备随后重启。</p>
-        <button type="button" id="factory-reset-btn" onclick="factoryReset()">恢复出厂设置</button>
-      </div>
-      <div id="config-message" class="msg hidden"></div>
-    </section>
-
-    <section class="card">
-      <p class="hint">配网或查看设置完成后，可关闭热点并继续正常启动（将尝试连接已保存 Wi‑Fi）。</p>
-      <button type="button" id="continue-boot-btn" class="primary" style="width:100%"
-              onclick="continueBoot()">继续启动</button>
-    </section>
-
-    <p class="footer">Open‑Deskbot · 小歪配网</p>
+    <div class="continue">
+      <button type="button" id="continue-boot-btn" class="primary" onclick="continueBoot()">继续启动</button>
+      <p class="hint">设备将关闭热点，并按已保存列表的顺序尝试连接。</p>
+      <div id="boot-message" class="msg hidden" role="status" aria-live="polite"></div>
+    </div>
   </main>
 
   <script>
-    let selectedNetwork = null;
+    let savedWifiBusy = false;
+    let savedWifiSsids = new Set();
+    let editingWifiSsid = null;
+
+    function setSavedWifiBusy(busy) {
+      savedWifiBusy = busy;
+      document.getElementById('save-btn').disabled = busy;
+      document.getElementById('cancel-wifi-edit-btn').disabled = busy;
+      document.getElementById('manual-ssid-input').disabled = busy;
+      document.getElementById('clear-password-input').disabled = busy;
+      updateWifiForm();
+      document.querySelectorAll('#saved-wifi-list button').forEach(btn => {
+        btn.disabled = busy || btn.dataset.boundary === 'true';
+      });
+    }
+
+    function hidePassword() {
+      document.getElementById('password-input').type = 'password';
+      const btn = document.getElementById('toggle-password-btn');
+      btn.textContent = '显示';
+      btn.setAttribute('aria-label', '显示密码');
+      btn.setAttribute('aria-pressed', 'false');
+    }
+
+    function togglePassword() {
+      const input = document.getElementById('password-input');
+      const visible = input.type === 'password';
+      input.type = visible ? 'text' : 'password';
+      const btn = document.getElementById('toggle-password-btn');
+      btn.textContent = visible ? '隐藏' : '显示';
+      btn.setAttribute('aria-label', visible ? '隐藏密码' : '显示密码');
+      btn.setAttribute('aria-pressed', String(visible));
+    }
+
+    function updateWifiForm() {
+      const ssid = document.getElementById('manual-ssid-input').value.trim();
+      const saved = savedWifiSsids.has(ssid);
+      const clearInput = document.getElementById('clear-password-input');
+      if (!saved) clearInput.checked = false;
+      document.getElementById('clear-password-label').classList.toggle('hidden', !saved);
+      const password = document.getElementById('password-input');
+      password.placeholder = clearInput.checked ? '开放网络无需密码' : (saved ? '留空保留原密码' : '开放网络可留空');
+      password.disabled = savedWifiBusy || clearInput.checked;
+      document.getElementById('toggle-password-btn').disabled = password.disabled;
+      if (clearInput.checked) {
+        password.value = '';
+        hidePassword();
+      }
+      if (!savedWifiBusy) {
+        document.getElementById('save-btn').textContent = editingWifiSsid === null ? '保存 Wi‑Fi' : '保存密码';
+      }
+    }
+
+    function cancelWifiPasswordEdit() {
+      if (savedWifiBusy) return;
+      editingWifiSsid = null;
+      const ssidInput = document.getElementById('manual-ssid-input');
+      ssidInput.readOnly = false;
+      ssidInput.value = '';
+      document.getElementById('password-input').value = '';
+      document.getElementById('clear-password-input').checked = false;
+      document.getElementById('cancel-wifi-edit-btn').classList.add('hidden');
+      document.getElementById('wifi-edit-hint').classList.add('hidden');
+      document.querySelectorAll('#networks-list .network').forEach(item => item.classList.remove('on'));
+      hidePassword();
+      updateWifiForm();
+    }
+
+    function editSavedWifiPassword(ssid) {
+      if (savedWifiBusy) return;
+      cancelWifiPasswordEdit();
+      editingWifiSsid = ssid;
+      const ssidInput = document.getElementById('manual-ssid-input');
+      ssidInput.value = ssid;
+      ssidInput.readOnly = true;
+      document.getElementById('cancel-wifi-edit-btn').classList.remove('hidden');
+      document.getElementById('wifi-edit-hint').classList.remove('hidden');
+      updateWifiForm();
+      document.getElementById('password-input').focus();
+    }
 
     function setMessage(text, type) {
       const el = document.getElementById('message');
@@ -128,18 +202,6 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (rssi > -70) return '优';
       if (rssi > -80) return '中';
       return '弱';
-    }
-
-    function loadStatus() {
-      fetch('/status')
-        .then(r => r.json())
-        .then(s => {
-          if (s.ap_ssid) document.getElementById('ap-ssid').textContent = s.ap_ssid;
-          if (s.ap_ip) document.getElementById('ap-ip').textContent = 'http://' + s.ap_ip;
-          if (s.device_id) document.getElementById('device-id').textContent = s.device_id;
-          if (typeof s.station_count !== 'undefined') document.getElementById('station-count').textContent = s.station_count;
-        })
-        .catch(() => {});
     }
 
     function scanNetworks() {
@@ -171,7 +233,13 @@ const char index_html[] PROGMEM = R"rawliteral(
             btn.type = 'button';
             btn.className = 'network';
             btn.setAttribute('data-ssid', network.ssid);
-            btn.innerHTML = '<span>' + network.ssid + '</span><small>' + signalText(network.rssi) + ' · ' + network.rssi + ' dBm</small>';
+            const name = document.createElement('span');
+            name.textContent = network.ssid;
+            const signal = document.createElement('small');
+            signal.textContent = signalText(network.rssi) + ' · ' + network.rssi + ' dBm';
+            btn.appendChild(name);
+            btn.appendChild(signal);
+            btn.classList.toggle('on', network.ssid === document.getElementById('manual-ssid-input').value);
             btn.addEventListener('click', () => selectNetwork(network.ssid));
             networksList.appendChild(btn);
           });
@@ -186,9 +254,13 @@ const char index_html[] PROGMEM = R"rawliteral(
     }
 
     function selectNetwork(ssid) {
-      selectedNetwork = ssid;
+      if (savedWifiBusy) return;
+      if (editingWifiSsid !== null) cancelWifiPasswordEdit();
+      if (document.getElementById('manual-ssid-input').value !== ssid) {
+        document.getElementById('password-input').value = '';
+      }
 
-      const networkItems = document.querySelectorAll('.network');
+      const networkItems = document.querySelectorAll('#networks-list .network');
       networkItems.forEach(item => {
         if (item.getAttribute('data-ssid') === ssid) {
           item.classList.add('on');
@@ -197,55 +269,71 @@ const char index_html[] PROGMEM = R"rawliteral(
         }
       });
 
-      document.getElementById('ssid-input').value = ssid;
       document.getElementById('manual-ssid-input').value = ssid;
+      document.getElementById('clear-password-input').checked = false;
+      hidePassword();
+      updateWifiForm();
       document.getElementById('password-input').focus();
     }
 
     function showManual() {
-      selectedNetwork = '';
-      document.querySelectorAll('.network').forEach(item => item.classList.remove('on'));
-      document.getElementById('ssid-input').value = '';
+      if (savedWifiBusy) return;
+      cancelWifiPasswordEdit();
       document.getElementById('manual-ssid-input').focus();
     }
+
+    document.getElementById('manual-ssid-input').addEventListener('input', function() {
+      document.getElementById('clear-password-input').checked = false;
+      hidePassword();
+      updateWifiForm();
+      document.querySelectorAll('#networks-list .network').forEach(item => {
+        item.classList.toggle('on', item.getAttribute('data-ssid') === this.value);
+      });
+    });
 
     document.getElementById('wifi-form').addEventListener('submit', function(e) {
       e.preventDefault();
 
-      const ssid = (document.getElementById('manual-ssid-input').value || document.getElementById('ssid-input').value).trim();
+      const ssid = document.getElementById('manual-ssid-input').value.trim();
       const password = document.getElementById('password-input').value;
+      const clearPassword = document.getElementById('clear-password-input').checked;
+      const editing = editingWifiSsid !== null;
       const saveBtn = document.getElementById('save-btn');
+      if (savedWifiBusy) return;
 
       if (!ssid) {
         setMessage('请选择一个网络，或手动输入 Wi‑Fi 名称。', 'err');
         return;
       }
 
-      saveBtn.disabled = true;
+      setSavedWifiBusy(true);
       saveBtn.textContent = '保存中...';
       setMessage('正在保存配置…', '');
 
-      fetch('/save-wifi', {
+      fetch(editing ? '/device-config/update-wifi-password' : '/save-wifi', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: `ssid=${encodeURIComponent(ssid)}&password=${encodeURIComponent(password)}`
+        body: `ssid=${encodeURIComponent(ssid)}&password=${encodeURIComponent(password)}&clear_password=${clearPassword ? '1' : '0'}`
       })
       .then(response => response.json())
       .then(data => {
         if (data.success) {
-          setMessage('Wi‑Fi 配置已保存。点击下方「继续启动」后设备将连接新网络。', 'ok');
+          const result = clearPassword ? '已设为开放网络' : (savedWifiSsids.has(ssid) && !password ? '原密码已保留' : (editing ? '新密码已保存' : 'Wi‑Fi 已保存'));
+          setMessage(result + '，待继续启动后连接。', 'ok');
+          document.getElementById('password-input').value = '';
+          hidePassword();
+          return loadDeviceConfig();
         } else {
           setMessage('错误: ' + data.message, 'err');
-          saveBtn.disabled = false;
-          saveBtn.textContent = '保存';
         }
       })
       .catch(error => {
         setMessage('保存配置错误: ' + error.message, 'err');
-        saveBtn.disabled = false;
-        saveBtn.textContent = '保存';
+      })
+      .finally(() => {
+        setSavedWifiBusy(false);
       });
     });
 
@@ -256,13 +344,58 @@ const char index_html[] PROGMEM = R"rawliteral(
       el.classList.remove('hidden');
     }
 
+    function updateDeviceId(id) {
+      document.getElementById('config-device-id').textContent = id;
+      const btn = document.getElementById('copy-device-id-btn');
+      btn.disabled = false;
+      btn.textContent = '复制';
+    }
+
+    async function copyDeviceId() {
+      const id = document.getElementById('config-device-id').textContent;
+      let copied = false;
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(id);
+          copied = true;
+        } catch (_) {
+          // 热点页或内嵌浏览器可能不支持 Clipboard API，继续尝试传统复制。
+        }
+      }
+      if (!copied) {
+        const input = document.createElement('textarea');
+        input.value = id;
+        input.readOnly = true;
+        input.style.cssText = 'position:fixed;left:-9999px;top:0;font-size:16px';
+        document.body.appendChild(input);
+        const previousFocus = document.activeElement;
+        try {
+          input.focus();
+          input.select();
+          input.setSelectionRange(0, id.length);
+          copied = document.execCommand('copy');
+        } catch (_) {
+          copied = false;
+        } finally {
+          input.remove();
+          if (previousFocus) previousFocus.focus({ preventScroll: true });
+        }
+      }
+      if (copied) {
+        document.getElementById('copy-device-id-btn').textContent = '已复制';
+        setConfigMessage('设备 ID 已复制，可用于绑定设备。', 'ok');
+      } else {
+        setConfigMessage('复制失败，请长按或选中设备 ID 复制。', 'err');
+      }
+    }
+
     function loadDeviceConfig() {
-      fetch('/device-config')
+      return fetch('/device-config')
         .then(r => r.json())
         .then(c => {
-          if (!c.ok) return;
+          if (!c.ok) throw new Error(c.message || '设备未返回配置');
           if (c.device_id) {
-            document.getElementById('config-device-id').textContent = c.device_id;
+            updateDeviceId(c.device_id);
           }
           if (c.version) {
             document.getElementById('firmware-version').textContent = c.version;
@@ -279,65 +412,91 @@ const char index_html[] PROGMEM = R"rawliteral(
           }
           if (typeof c.ap_offer_min !== 'undefined' && typeof c.ap_offer_max !== 'undefined') {
             document.getElementById('ap-offer-hint').textContent =
-              '范围 ' + c.ap_offer_min + '–' + c.ap_offer_max + ' 秒，默认 20 秒；下次开机生效。';
+              c.ap_offer_min + '–' + c.ap_offer_max + ' 秒，默认 20 秒；下次开机生效。';
           }
 
           const listEl = document.getElementById('saved-wifi-list');
           const emptyEl = document.getElementById('saved-wifi-empty');
           listEl.innerHTML = '';
           const saved = c.saved_wifi || [];
+          savedWifiSsids = new Set(saved);
+          document.getElementById('wifi-save-state').textContent = saved.length ? '已保存，待连接' : '尚未保存网络';
+          updateWifiForm();
           if (saved.length === 0) {
             emptyEl.classList.remove('hidden');
           } else {
             emptyEl.classList.add('hidden');
-            saved.forEach(ssid => {
+            saved.forEach((ssid, index) => {
               const row = document.createElement('div');
-              row.className = 'network';
+              row.className = 'network saved-network';
               row.style.cursor = 'default';
-              row.innerHTML = '<span>' + ssid + '</span>';
+              const name = document.createElement('span');
+              name.textContent = (index + 1) + '. ' + ssid;
+              row.appendChild(name);
+              const actions = document.createElement('span');
+              actions.className = 'actions';
+              const editBtn = document.createElement('button');
+              editBtn.type = 'button';
+              editBtn.textContent = '修改密码';
+              editBtn.setAttribute('aria-label', '修改密码「' + ssid + '」');
+              editBtn.disabled = savedWifiBusy;
+              editBtn.onclick = () => editSavedWifiPassword(ssid);
+              actions.appendChild(editBtn);
+              ['up', 'down'].forEach(direction => {
+                const moveBtn = document.createElement('button');
+                moveBtn.type = 'button';
+                moveBtn.textContent = direction === 'up' ? '上移' : '下移';
+                moveBtn.setAttribute('aria-label', moveBtn.textContent + '「' + ssid + '」');
+                const atBoundary = direction === 'up' ? index === 0 : index === saved.length - 1;
+                moveBtn.dataset.boundary = String(atBoundary);
+                moveBtn.disabled = savedWifiBusy || atBoundary;
+                moveBtn.onclick = () => moveSavedWifi(ssid, direction);
+                actions.appendChild(moveBtn);
+              });
               const delBtn = document.createElement('button');
               delBtn.type = 'button';
               delBtn.textContent = '删除';
-              delBtn.style.marginLeft = '8px';
+              delBtn.setAttribute('aria-label', '删除「' + ssid + '」');
+              delBtn.disabled = savedWifiBusy;
               delBtn.onclick = () => deleteSavedWifi(ssid);
-              row.appendChild(delBtn);
+              actions.appendChild(delBtn);
+              row.appendChild(actions);
               listEl.appendChild(row);
             });
           }
 
           renderWsServers(c);
         })
-        .catch(() => {});
+        .catch(err => setConfigMessage('读取设备配置失败，请刷新重试：' + err.message, 'err'));
     }
 
     function renderWsServers(c) {
       const listEl = document.getElementById('ws-server-list');
-      const emptyEl = document.getElementById('ws-server-empty');
       listEl.innerHTML = '';
       const active = c.ws_active || 'builtin';
       const rows = [{ id: 'builtin', url: c.ws_builtin_url || '', label: '内置（默认）' }];
       (c.ws_servers || []).forEach(s => rows.push({ id: s.id, url: s.url, label: s.id }));
-
-      if ((c.ws_servers || []).length === 0) {
-        emptyEl.classList.remove('hidden');
-      } else {
-        emptyEl.classList.add('hidden');
-      }
 
       rows.forEach(row => listEl.appendChild(buildWsServerRow(row, active)));
     }
 
     function buildWsServerRow(row, active) {
       const item = document.createElement('div');
-      item.className = 'network' + (row.id === active ? ' on' : '');
+      item.className = 'network server-row' + (row.id === active ? ' on' : '');
       item.style.cursor = 'default';
       const text = document.createElement('span');
-      text.innerHTML = '<b>' + row.label + '</b><br><small>' + row.url + '</small>';
+      text.className = 'server-address';
+      const label = document.createElement('b');
+      label.textContent = row.label;
+      const address = document.createElement('small');
+      address.textContent = row.url;
+      text.appendChild(label);
+      text.appendChild(document.createElement('br'));
+      text.appendChild(address);
       item.appendChild(text);
 
       const actions = document.createElement('span');
-      actions.style.display = 'flex';
-      actions.style.gap = '8px';
+      actions.className = 'actions';
 
       const useBtn = document.createElement('button');
       useBtn.type = 'button';
@@ -366,20 +525,18 @@ const char index_html[] PROGMEM = R"rawliteral(
 
     function editWsServerRow(item, row) {
       item.innerHTML = '';
-      item.className = 'network';
+      item.className = 'network server-row server-edit';
       item.style.cursor = 'default';
 
       const input = document.createElement('input');
       input.type = 'text';
       input.value = row.url;
-      input.style.width = 'auto';
-      input.style.flex = '1';
-      input.style.minWidth = '0';
-      input.style.marginRight = '8px';
+      input.setAttribute('aria-label', '云服务器地址');
+      input.autocapitalize = 'none';
+      input.spellcheck = false;
 
       const actions = document.createElement('span');
-      actions.style.display = 'flex';
-      actions.style.gap = '8px';
+      actions.className = 'actions';
 
       const saveBtn = document.createElement('button');
       saveBtn.type = 'button';
@@ -504,7 +661,9 @@ const char index_html[] PROGMEM = R"rawliteral(
     }
 
     function saveApOfferSec() {
-      const sec = parseInt(document.getElementById('ap-offer-input').value, 10);
+      const input = document.getElementById('ap-offer-input');
+      if (!input.reportValidity()) return;
+      const sec = Number(input.value);
       const btn = document.getElementById('ap-offer-save-btn');
       btn.disabled = true;
       fetch('/device-config/ap-offer-sec', {
@@ -516,7 +675,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         .then(data => {
           btn.disabled = false;
           if (data.success) {
-            setConfigMessage('启动时间已保存为 ' + data.ap_offer_sec + ' 秒，下次开机生效。', 'ok');
+            input.value = data.ap_offer_sec;
+            setConfigMessage('配网热点窗口已保存为 ' + data.ap_offer_sec + ' 秒，下次开机生效。', 'ok');
           } else {
             setConfigMessage('保存失败: ' + (data.message || '未知错误'), 'err');
           }
@@ -528,22 +688,27 @@ const char index_html[] PROGMEM = R"rawliteral(
     }
 
     function resetDeviceId() {
-      if (!confirm('确定重置设备 ID？将重新生成随机后缀。')) return;
+      if (!confirm('重置后将生成新设备 ID，继续启动后需用新 ID 重新绑定。\n旧账号中的绑定和历史数据保留在旧 ID 下，不会自动迁移或解绑。\nWi‑Fi 和云服务器设置保留。确定重置？')) return;
+      const btn = document.getElementById('reset-device-id-btn');
+      btn.disabled = true;
       fetch('/device-config/reset-device-id', { method: 'POST' })
         .then(r => r.json())
         .then(data => {
           if (data.success && data.device_id) {
-            document.getElementById('config-device-id').textContent = data.device_id;
-            setConfigMessage('设备 ID 已重置为 ' + data.device_id, 'ok');
+            updateDeviceId(data.device_id);
+            setConfigMessage('新设备 ID：' + data.device_id + '。继续启动后请用新 ID 重新绑定；旧账号记录保留。', 'ok');
           } else {
             setConfigMessage('重置失败: ' + (data.message || '未知错误'), 'err');
           }
         })
-        .catch(err => setConfigMessage('重置失败: ' + err.message, 'err'));
+        .catch(err => setConfigMessage('重置失败: ' + err.message, 'err'))
+        .finally(() => { btn.disabled = false; });
     }
 
     function deleteSavedWifi(ssid) {
+      if (savedWifiBusy) return;
       if (!confirm('确定删除已保存 Wi‑Fi「' + ssid + '」？')) return;
+      setSavedWifiBusy(true);
       fetch('/device-config/delete-wifi', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -552,17 +717,38 @@ const char index_html[] PROGMEM = R"rawliteral(
         .then(r => r.json())
         .then(data => {
           if (data.success) {
-            setConfigMessage('已删除 Wi‑Fi「' + ssid + '」', 'ok');
-            loadDeviceConfig();
+            setMessage('已删除 Wi‑Fi「' + ssid + '」', 'ok');
+            return loadDeviceConfig();
           } else {
-            setConfigMessage('删除失败: ' + (data.message || '未知错误'), 'err');
+            setMessage('删除失败: ' + (data.message || '未知错误'), 'err');
           }
         })
-        .catch(err => setConfigMessage('删除失败: ' + err.message, 'err'));
+        .catch(err => setMessage('删除失败: ' + err.message, 'err'))
+        .finally(() => setSavedWifiBusy(false));
+    }
+
+    function moveSavedWifi(ssid, direction) {
+      if (savedWifiBusy) return;
+      setSavedWifiBusy(true);
+      fetch('/device-config/move-wifi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'ssid=' + encodeURIComponent(ssid) + '&direction=' + encodeURIComponent(direction)
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data.success) {
+            setMessage('Wi‑Fi 顺序已保存，将从最上面的网络开始尝试连接。', 'ok');
+            return loadDeviceConfig();
+          }
+          setMessage('移动失败: ' + (data.message || '未知错误'), 'err');
+        })
+        .catch(err => setMessage('移动失败: ' + err.message, 'err'))
+        .finally(() => setSavedWifiBusy(false));
     }
 
     function factoryReset() {
-      if (!confirm('确定恢复出厂？将清除已保存 Wi‑Fi、重置 PIN 与启动时间，设备随后重启。')) return;
+      if (!confirm('确定恢复出厂？将清除已保存 Wi‑Fi、云服务器、绑定 PIN 与热点窗口设置，设备随后重启。')) return;
       const btn = document.getElementById('factory-reset-btn');
       btn.disabled = true;
       fetch('/device-config/factory-reset', { method: 'POST' })
@@ -585,14 +771,20 @@ const char index_html[] PROGMEM = R"rawliteral(
       const btn = document.getElementById('continue-boot-btn');
       btn.disabled = true;
       btn.textContent = '已继续启动';
-      setConfigMessage('设备正在继续启动，配网热点即将关闭；手机可能提示已断开该网络。请查看设备屏幕上的连接结果。', 'ok');
+      setBootMessage('设备正在启动，热点即将关闭，请查看设备屏幕上的连接结果。', 'ok');
     }
 
     function showContinueBootFailed(text) {
       const btn = document.getElementById('continue-boot-btn');
       btn.disabled = false;
       btn.textContent = '继续启动';
-      setConfigMessage(text, 'err');
+      setBootMessage(text, 'err');
+    }
+
+    function setBootMessage(text, type) {
+      const el = document.getElementById('boot-message');
+      el.textContent = text;
+      el.className = 'msg ' + (type || '');
     }
 
     function continueBoot() {
@@ -616,7 +808,6 @@ const char index_html[] PROGMEM = R"rawliteral(
     }
 
     window.onload = function() {
-      loadStatus();
       loadDeviceConfig();
       setTimeout(scanNetworks, 700);
     };

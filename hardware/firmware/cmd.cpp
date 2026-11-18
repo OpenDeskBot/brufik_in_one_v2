@@ -1,7 +1,16 @@
 #include "cmd.h"
+#include "usb_bench.h"
+#include "audio_frontend_esp_sr.h"
+#include "face_assets.h"
+#include "device_bootstrap.h"
+#include "display.h"
+#include "pb_runtime.h"
 #include "logger.h"
+#include "mic.h"
 #include "speaker.h"
 #include "task_trace.h"
+#include "utils/nvs_config_utils.h"
+#include "utils/utils.h"
 
 /** 解析 cmd 中从首个空格开始的空格分隔整数，写入 out[0..max_n-1]，返回实际解析个数。 */
 static int parse_int_args(const String& cmd, int* out, int max_n) {
@@ -72,7 +81,87 @@ void executeCommand(String cmd) {
 }
 
 void executeFactoryCommand(String cmd) {
-  if (cmd == "reboot" || cmd == "restart") {
+  if (cmd.startsWith("ws_url ")) {
+    String url = cmd.substring(7);
+    url.trim();
+    server_endpoint::Url parsed;
+    if (!server_endpoint::bootstrap(url.c_str(), parsed)) {
+      log_warn("[CMD] invalid server URL");
+      return;
+    }
+    const char* active = nvs_ws_get_active_id();
+    bool saved = false;
+    if (strcmp(active, "builtin") != 0) saved = nvs_ws_update_custom(active, url.c_str());
+    else {
+      char id[8];
+      saved = nvs_ws_add_custom(url.c_str(), id, sizeof(id)) && nvs_ws_set_active_id(id);
+    }
+    if (saved) {
+      log_warn("[CMD] server URL updated; restarting");
+      ESP.restart();
+    } else log_warn("[CMD] server URL save failed");
+  } else if (cmd.startsWith("usb_mode ")) {
+    int enabled[1];
+    if (parse_int_args(cmd,enabled,1)==1) usb_bench_set_mode(enabled[0]!=0);
+  } else if (cmd.startsWith("aec_enable ")) {
+    int enabled[1];
+    const bool ok=parse_int_args(cmd,enabled,1)==1 && audio_frontend_bench_set_aec_enabled(enabled[0]!=0);
+    usb_bench_emit(ok?"{\"usb\":\"aec_enable\",\"accepted\":true}":"{\"usb\":\"aec_enable\",\"accepted\":false}");
+  } else if (cmd.startsWith("aec_delay ")) {
+    int ms[1];
+    const bool ok=parse_int_args(cmd,ms,1)==1 && ms[0]>=0 &&
+        audio_frontend_set_reference_delay_ms(ms[0]);
+    char reply[128];
+    snprintf(reply,sizeof(reply),"{\"usb\":\"aec_delay\",\"accepted\":%s,\"ms\":%u}",
+        ok?"true":"false",(unsigned)audio_frontend_reference_delay_ms());
+    usb_bench_emit(reply);
+  } else if (cmd == "mic_trace_stop") {
+    mic_trace_stop();
+  } else if (cmd.startsWith("mic_trace ")) {
+    int durations[1];
+    if (parse_int_args(cmd, durations, 1) == 1) mic_trace_start((uint32_t)max(1000, durations[0]));
+  } else if (cmd.startsWith("log ")) {
+    int levels[1];
+    if (parse_int_args(cmd, levels, 1) == 1) {
+      log_set_level((uint8_t)constrain(levels[0], LOG_LEVEL_NONE, LOG_LEVEL_TRACE));
+      log_warn("[CMD] log level=%u", (unsigned)global_log_level);
+    }
+  } else if (cmd == "resource_status") {
+    Serial.println(device_bootstrap_status_json());
+  } else if (cmd == "lipsync_status") {
+    Serial.println("{\"type\":\"lipsync_status\",\"mode\":\"rms\",\"classifier\":\"rms-v1\"}");
+  } else if (cmd == "audio_status") {
+    Serial.println(speaker_status_json());
+  } else if (cmd == "cpu_stats") {
+    if(setup_cpu_runtime_stats())task_setup_cpu_runtime_stats();
+  } else if (cmd == "cpu_stats_stop") {
+    cpu_runtime_stats_stop();
+  } else if (cmd.startsWith("mouth_trace ")) {
+    int durations[1];
+    if (parse_int_args(cmd,durations,1)==1 && durations[0]>=0)
+      display_mouth_trace((uint32_t)durations[0]);
+  } else if (cmd == "continue_boot") {
+    // Idempotent after the provisioning phase has already completed.
+  } else if (cmd == "face_version") {
+    log_info("[FACE] version=%s", face_assets_version());
+  } else if (cmd.startsWith("face ")) {
+    String id = cmd.substring(5);
+    id.trim();
+    JsonDocument doc;
+    doc["type"] = "pb_single";
+    doc["req"] = String("face-") + String(millis());
+    doc["anim_id"] = id;
+    String json;
+    serializeJson(doc, json);
+    size_t packed_len = 0;
+    uint8_t* packed = new_packed_bin(json.c_str(), nullptr, 0, &packed_len);
+    if (!packed) { log_warn("[FACE] command allocation failed"); return; }
+    if (!pb_runtime_enqueue_frame(packed, packed_len)) {
+      free(packed);
+      log_warn("[FACE] rejected id=%s", id.c_str());
+      return;
+    }
+  } else if (cmd == "reboot" || cmd == "restart") {
     log_info("[CMD] Rebooting device...");
     ESP.restart();
   } else if (cmd == "reset_wifi") {

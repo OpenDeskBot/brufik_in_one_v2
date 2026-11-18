@@ -1,4 +1,5 @@
 #include "pb_model.h"
+#include "face_assets.h"
 
 #include <limits.h>
 #include <string.h>
@@ -103,10 +104,42 @@ bool parse_anim_frames(JsonVariantConst value, pb_model& out) {
   if (frames.size() > PB_ANIM_FRAME_CAPACITY) return false;
   if (frames.size() == 0) return true;
   out.anim = static_cast<pb_anim_frame*>(
-      heap_caps_malloc(frames.size() * sizeof(pb_anim_frame), MALLOC_CAP_SPIRAM));
+      heap_caps_calloc(PB_ANIM_FRAME_CAPACITY, sizeof(pb_anim_frame), MALLOC_CAP_SPIRAM));
   if (!out.anim) return false;
-  memset(out.anim, 0, frames.size() * sizeof(pb_anim_frame));
   for (JsonObjectConst item : frames) {
+    if (!item["anim_id"].isNull()) {
+      int index = 0, duration = 0;
+      if (!item["anim_id"].is<const char*>() || !item["elements"].isNull() ||
+          !item["phoneme_id"].isNull() ||
+          !parse_nonnegative_int(item["frame"], index) ||
+          !parse_nonnegative_int(item["ms"], duration) ||
+          out.anim_count == PB_ANIM_FRAME_CAPACITY) return false;
+      pb_anim_frame* local = nullptr; size_t count = 0; const char* error = nullptr;
+      if (!face_assets_load_frame(item["anim_id"].as<const char*>(), index, duration,
+                                  local, count, error)) return false;
+      out.anim[out.anim_count++] = local[0];
+      heap_caps_free(local);  // Selected element ownership moved to out.anim.
+      continue;
+    }
+    if (!item["phoneme_id"].isNull()) {
+      int duration = 0;
+      if (!item["phoneme_id"].is<const char*>() || !item["elements"].isNull() ||
+          !parse_nonnegative_int(item["ms"], duration)) return false;
+      pb_anim_frame* mouth = nullptr;
+      size_t mouth_count = 0;
+      const char* error = nullptr;
+      if (!face_assets_load_phoneme(item["phoneme_id"].as<const char*>(), duration,
+                                    mouth, mouth_count, error)) return false;
+      if (out.anim_count + mouth_count > PB_ANIM_FRAME_CAPACITY) {
+        pb_anim_frames_free(mouth, mouth_count);
+        return false;
+      }
+      memcpy(out.anim + out.anim_count, mouth, mouth_count * sizeof(pb_anim_frame));
+      out.anim_count += mouth_count;
+      heap_caps_free(mouth);  // Element ownership moved into out.anim.
+      continue;
+    }
+    if (out.anim_count == PB_ANIM_FRAME_CAPACITY) return false;
     pb_anim_frame& frame = out.anim[out.anim_count++];
     if (!parse_nonnegative_int(item["ms"], frame.ms)) return false;
     if (item["phoneme"].is<String>()) copy_string(frame.phoneme, sizeof(frame.phoneme), item["phoneme"].as<String>());
@@ -217,8 +250,47 @@ bool pb_model_from_json(const JsonDocument& doc, const uint8_t* media, size_t me
     return false;
   }
   req.toCharArray(out.req, sizeof(out.req));
+  out.epoch = doc["epoch"] | 0u;
+  out.stream = doc["stream"] | false;
+  out.pts_ms = doc["pts_ms"] | 0u;
+  if (out.stream && out.epoch == 0) { err = "stream requires epoch"; return false; }
 
   if (out.type != PB_MODEL_CANCEL) {
+    if (!doc["anim_version"].isNull() &&
+        (!doc["anim_version"].is<const char*>() ||
+         strcmp(doc["anim_version"].as<const char*>(), face_assets_version()) != 0)) {
+      err = "anim_version mismatch";
+      return false;
+    }
+    // Standalone local expression: keep the same PB queue/cancel/ACK lifecycle.
+    // IDs and authored frames are mutually exclusive; no implicit audio overlay.
+    if (!doc["anim_id"].isNull()) {
+      if (out.type != PB_MODEL_SINGLE || !doc["anim_id"].is<const char*>() ||
+          !doc["anim"].isNull() || !doc["audio"].isNull() ||
+          !doc["servo"].isNull() || out.stream || media_len > 0) {
+        err = "anim_id requires standalone pb_single";
+        return false;
+      }
+      if (!doc["idx"].isNull() &&
+          (!parse_nonnegative_int(doc["idx"], out.idx) || out.idx != 0)) {
+        err = "anim_id requires idx=0";
+        return false;
+      }
+      uint32_t duration = 0;
+      if (!face_assets_load(doc["anim_id"].as<const char*>(), out.anim,
+                            out.anim_count, duration, err)) return false;
+      out.chunk_ms = static_cast<int>(duration);
+      if (!doc["chunk_ms"].isNull()) {
+        int requested = 0;
+        if (!parse_nonnegative_int(doc["chunk_ms"], requested) || requested != out.chunk_ms) {
+          err = "anim_id chunk_ms mismatch";
+          pb_model_free(out);
+          return false;
+        }
+      }
+      if (doc["level"].is<int>()) out.level = constrain(doc["level"].as<int>(), 0, 3);
+      return true;
+    }
     if (!parse_nonnegative_int(doc["idx"], out.idx) ||
         !parse_nonnegative_int(doc["chunk_ms"], out.chunk_ms)) {
       err = "invalid idx or chunk_ms";
@@ -256,6 +328,7 @@ bool pb_model_from_json(const JsonDocument& doc, const uint8_t* media, size_t me
         return false;
       }
       memset(out.audio, 0, sizeof(pb_audio));
+      // Legacy voice_key metadata is ignored; mouth movement only uses PCM volume.
       out.audio->sr = out.sr;
       out.audio->ch = out.ch;
       if (out.fmt[0] != '\0') {
@@ -288,6 +361,14 @@ bool pb_model_from_json(const JsonDocument& doc, const uint8_t* media, size_t me
         memcpy(out.audio->bin, media, (size_t)out.audio->next_bin_len);
       }
     }
+  }
+  if (out.audio) {
+    out.audio->epoch = out.epoch;
+    out.audio->pts_ms = out.pts_ms;
+    out.audio->duration_ms = out.chunk_ms;
+    out.audio->received_ms = millis();
+    out.audio->idx = out.idx;
+    strlcpy(out.audio->req, out.req, sizeof(out.audio->req));
   }
   return true;
 }

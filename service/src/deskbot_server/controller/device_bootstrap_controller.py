@@ -17,7 +17,7 @@ def bootstrap(request: Request, device_id: str):
         data = DeviceBootstrapService().bootstrap(device_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    # URLs are relative: reverse-proxy host/prefix is not inferred from untrusted headers.
+    # Public URLs come from server configuration, never untrusted proxy/Host headers.
     return JSONResponse(dict(code=0, message="ok", data=data), headers={"Cache-Control": "no-cache"})
 
 

@@ -31,7 +31,10 @@ def upload(device_id: str, kind: str, title: str, data: bytes) -> dict:
                 if source.width * source.height > 16_000_000:
                     raise ValueError("图片像素过大")
                 picture = ImageOps.exif_transpose(source).convert("RGBA")
-                picture.thumbnail((FACE_LCD_WIDTH, FACE_LCD_HEIGHT))
+                # Enlarge small uploads too, keeping the entire picture visible.
+                picture = ImageOps.contain(
+                    picture, (FACE_LCD_WIDTH, FACE_LCD_HEIGHT), Image.Resampling.LANCZOS,
+                )
                 canvas = Image.new("RGB", (FACE_LCD_WIDTH, FACE_LCD_HEIGHT), "black")
                 canvas.paste(picture, ((FACE_LCD_WIDTH-picture.width)//2, (FACE_LCD_HEIGHT-picture.height)//2), picture)
             preview = store.asset_path(device_id, aid, "png")

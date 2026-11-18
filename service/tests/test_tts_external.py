@@ -146,8 +146,8 @@ def test_moss_adapter_synthesize(fake_engine):
 
     sr, segs = asyncio.run(run())
     assert sr == 48000
-    assert segs, "应产出音素分片"
-    assert any(s.phoneme for s in segs)  # 至少一个真实口型音素（非纯静音片）
+    assert segs, "应产出音频分片"
+    assert all(not s.phoneme for s in segs)  # 口型由设备按播放响度计算
     # 分片 PCM 合计 = WAV 的 mono PCM 总量（100ms @ 48k mono = 9600 字节）
     total = sum(len(s.pcm) for s in segs)
     assert total == 4800 * 2
@@ -228,9 +228,10 @@ def test_build_tts_adapter_unknown_falls_back_to_moss():
 
 
 def test_doubao_config_speaker_precedence(monkeypatch):
-    """豆包音色优先级：config tts.doubao_speaker > env DOUBAO_TTS_SPEAKER。"""
-    from deskbot_server.client.tts.doubao import load_doubao_tts_config
+    """设备音色覆盖 > 配置 > 内置默认；不读取全局音色环境变量。"""
+    from deskbot_server.client.tts.doubao import DEFAULT_SPEAKER, load_doubao_tts_config
 
     monkeypatch.setenv("DOUBAO_TTS_SPEAKER", "env_speaker")
-    assert load_doubao_tts_config({}).speaker == "env_speaker"
+    assert load_doubao_tts_config({}).speaker == DEFAULT_SPEAKER
     assert load_doubao_tts_config({"doubao_speaker": "cfg_speaker"}).speaker == "cfg_speaker"
+    assert load_doubao_tts_config({"doubao_speaker": "cfg_speaker"}, {"speaker": "device_speaker"}).speaker == "device_speaker"

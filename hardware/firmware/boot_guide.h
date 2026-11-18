@@ -29,13 +29,6 @@ bool boot_guide_wait_ws_ready(unsigned timeout_ms);
 
 void deskbot_ws_format_builtin_url(char* buf, size_t buf_sz);
 
-void deskbot_ws_get_active(DeskbotWsTarget* out);
-
 bool deskbot_ws_is_active_configured();
-
-void deskbot_ws_build_service_path(char* buf, size_t buf_sz, const DeskbotWsTarget* target,
-                                   const char* service_path);
-
-void deskbot_ws_client_begin(WebSocketsClient& client, const char* path_and_query);
 
 void deskbot_ws_format_active_url(char* buf, size_t buf_sz);

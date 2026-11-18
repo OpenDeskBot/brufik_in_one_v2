@@ -41,7 +41,7 @@ void wifi_build_ap_ssid(void);
 bool wifi_link_up(void);
 void wifi_apply_runtime_keepalive(void);
 
-/** 扫可见已保存 → 逐个连；再试编译期默认。 */
+/** 按保存列表优先级逐个连接（含隐藏网络），最后尝试编译期默认。 */
 bool wifi_connect_saved_then_default(const char* tag, int max_attempts);
 
 void wifi_register_event_handlers_once(void);

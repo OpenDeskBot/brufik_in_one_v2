@@ -29,6 +29,8 @@ void log_stack_heap_tick();
  * （Arduino-ESP32 2.x 预编译库无 vTaskGetRunTimeStats，用等价采样实现。）
  */
 void task_setup_cpu_runtime_stats();
+bool setup_cpu_runtime_stats();
+void cpu_runtime_stats_stop();
 
 class LogTaskScope {
  public:

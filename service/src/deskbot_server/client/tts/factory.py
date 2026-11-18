@@ -19,8 +19,8 @@ def build_tts_adapter(settings: AppSettings) -> TtsPort:
     """按 ``settings.tts.provider`` 选择 TTS 后端（bootstrap 默认装配 / 测试用）。
 
     设备级运行时解析请用 ``client/tts/resolve.py::resolve_tts_adapter``。
-    - moss-tts-nano：本地独立进程（默认），只返回音频，口型由 phoneme_duration 补充
-    - doubao：火山云端 TTS，时间戳/拼音均分音素口型
+    - moss-tts-nano：本地独立进程（默认），只返回音频，口型由 ROM 按播放响度生成
+    - doubao：火山云端 TTS，音频分片后下发，口型由 ROM 生成
     """
     provider = (settings.tts.provider or DEFAULT_TTS_PROVIDER).strip().lower()
     if provider == "macos":

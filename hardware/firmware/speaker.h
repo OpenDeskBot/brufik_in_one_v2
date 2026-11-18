@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "deskbot_config.h"
 #include "pb_model.h"
+#include "audio_lipsync.h"
 
 #define MAX98357_LRC DESKBOT_ROM_MAX98357_LRC
 #define MAX98357_BCLK DESKBOT_ROM_MAX98357_BCLK
@@ -51,3 +52,12 @@ void speaker_set_task_done_flag();
 /** xQueue 缓冲深度（供 pb 回压 / ack）。 */
 unsigned speaker_input_queue_depth();
 bool speaker_stream_pcm_active();
+
+/** Continuous PB telemetry: completed I2S DMA content clock (not an acoustic measurement). */
+uint32_t speaker_buffered_ms();
+int32_t speaker_timeline_ms(uint32_t epoch);
+bool speaker_cancel_pending();
+
+/** Actual completed DMA period; UNKNOWN uses RMS opening, no TTS labels. */
+audio_lipsync::Frame speaker_mouth_frame();
+String speaker_status_json();

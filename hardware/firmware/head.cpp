@@ -7,6 +7,7 @@
 #include <soc/io_mux_reg.h>
 
 #include "logger.h"
+#include "speaker.h"
 #include "utils/utils.h"
 
 #include "freertos/FreeRTOS.h"
@@ -61,6 +62,7 @@ struct MotorJob {
   MotorJobType type = MotorJobType::kPbServoChunk;
   pb_servo_frame* servo_frames = nullptr;
   size_t servo_count = 0;
+  uint32_t epoch = 0, pts_ms = 0;
 };
 
 QueueHandle_t s_motor_queue = nullptr;
@@ -140,7 +142,7 @@ static bool execute_motor_cmd(const MotorCmd& cmd) {
 
 /* ---- motor_task ---- */
 
-static void task_loop_motor(void* /*arg*/) {
+static void task_loop_head(void* /*arg*/) {
   MotorJob job{};
   for (;;) {
     (void)poll_cancel();
@@ -159,7 +161,16 @@ static void task_loop_motor(void* /*arg*/) {
     }
     /* kPbServoChunk：逐帧执行，任意帧被 cancel 则中断本 chunk。 */
     if (job.servo_frames && job.servo_count > 0) {
-      for (size_t i = 0; i < job.servo_count; ++i) {
+      bool cancelled = false;
+      if (job.epoch) {
+        const uint32_t wait_at = millis();
+        while ((speaker_timeline_ms(job.epoch) < 0 ||
+                (uint32_t)speaker_timeline_ms(job.epoch) < job.pts_ms) && millis()-wait_at < 5000) {
+          if (poll_cancel()) { cancelled = true; break; }
+          vTaskDelay(pdMS_TO_TICKS(2));
+        }
+      }
+      for (size_t i = 0; !cancelled && i < job.servo_count; ++i) {
         const pb_servo_frame& f = job.servo_frames[i];
         MotorCmd cmd{};
         cmd.xm = (uint8_t)constrain(f.xm, 0, 2);
@@ -183,14 +194,13 @@ static void task_loop_motor(void* /*arg*/) {
  * ================================================================ */
 
 void task_setup_head() {
-  if (s_motor_queue && s_motor_task) return;
-  s_motor_queue       = xQueueCreate(HEAD_MOTOR_QUEUE_DEPTH, sizeof(MotorJob));
+  if (s_motor_task) return;
   if (!s_motor_queue) {
     log_error("[HEAD] motor queue create failed");
     return;
   }
   const BaseType_t rc =
-      utils_task_create_pinned(task_loop_motor, "motor", 8 * 1024, nullptr, 3, &s_motor_task, APP_CPU_NUM);
+      utils_task_create_pinned(task_loop_head, "motor", 8 * 1024, nullptr, 3, &s_motor_task, APP_CPU_NUM);
   if (rc != pdPASS) {
     log_error("[HEAD] motor task create rc=%d", (int)rc);
   } else {
@@ -198,7 +208,7 @@ void task_setup_head() {
   }
 }
 
-void head_submit_pb_servo_chunk_owned(pb_servo_frame* frames, size_t count) {
+void head_submit_pb_servo_chunk_owned(pb_servo_frame* frames, size_t count, uint32_t epoch, uint32_t pts_ms) {
   if (!frames || count == 0) {
     if (frames) {
       pb_servo_frames_free(frames);
@@ -209,6 +219,7 @@ void head_submit_pb_servo_chunk_owned(pb_servo_frame* frames, size_t count) {
   job.type = MotorJobType::kPbServoChunk;
   job.servo_frames = frames;
   job.servo_count = count;
+  job.epoch = epoch; job.pts_ms = pts_ms;
   s_task_done.store(false, std::memory_order_release);
   if (xQueueSend(s_motor_queue, &job, 0) != pdTRUE) {
     pb_servo_frames_free(frames);
@@ -223,6 +234,8 @@ void head_submit_pb_servo_chunk_owned(pb_servo_frame* frames, size_t count) {
 
 /** 双轴 MCPWM attach + 立即写中位。 */
 void setup_head() {
+  if (!s_motor_queue) s_motor_queue = xQueueCreate(HEAD_MOTOR_QUEUE_DEPTH, sizeof(MotorJob));
+  if (!s_motor_queue) { log_error("[HEAD] queue allocation failed"); return; }
   if (s_servos_attached) return;
   const int x = constrain(X_CENTER, X_MIN_LIMIT, X_MAX_LIMIT);
   const int y = constrain(Y_CENTER, Y_MIN_LIMIT, Y_MAX_LIMIT);
@@ -244,9 +257,6 @@ void setup_head() {
 /* ---- 任务管理 ---- */
 
 void head_abort() {
-  if (!s_motor_queue) {
-    return;
-  }
   MotorJob job{};
   job.type = MotorJobType::kCancel;
   s_need_cancel.store(true, std::memory_order_release);
@@ -254,9 +264,6 @@ void head_abort() {
 }
 
 unsigned head_motor_input_queue_depth() {
-  if (!s_motor_queue) {
-    return 0;
-  }
   return (unsigned)uxQueueMessagesWaiting(s_motor_queue);
 }
 
@@ -273,3 +280,5 @@ void head_signal_task_done() {
 void head_set_task_done_flag() {
   s_task_done.store(true, std::memory_order_release);
 }
+
+bool head_cancel_pending() { return s_need_cancel.load(std::memory_order_acquire); }

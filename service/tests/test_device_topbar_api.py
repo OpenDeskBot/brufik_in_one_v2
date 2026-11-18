@@ -102,9 +102,10 @@ def test_api_list_devices_returns_live_fields(temp_db, monkeypatch):
     assert data["current_device_id"] is None
 
 
-def test_api_list_devices_without_live_map(temp_db):
+def test_api_list_devices_without_live_map(temp_db, monkeypatch):
     """实时注册表无该设备时，online 为 False、时间为占位符。"""
     from deskbot_server.web.app import create_app
+    from deskbot_server.web.blueprints import app_bp
     from tests._auth_compat import create_user
     from tests.device_bind_helpers import bind_device_online
 
@@ -113,6 +114,7 @@ def test_api_list_devices_without_live_map(temp_db):
     app = create_app()
     client = app.test_client()
     client.post("/login", data={"email": "topbar2@example.com", "password": "password1234"})
+    monkeypatch.setattr(app_bp, "fetch_live_device_details", lambda **kw: {})
 
     resp = client.get("/app/api/devices")
     data = resp.get_json()

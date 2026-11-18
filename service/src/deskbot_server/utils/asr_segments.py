@@ -4,8 +4,6 @@
 时由主服务内部统一补全，与 ASR 后端无关：按句末标点切句 → 按字符数等分总时长 →
 末段吃舍入余量，保证 ``end_ms == total_ms`` 总和守恒。
 
-与 utils/phoneme_duration.py 是同一"文本+总时长→时间轴"算法思路，但**不共享代码**：
-本模块是句子级、字符等权，比音素级简单，各自独立实现。
 """
 
 from __future__ import annotations

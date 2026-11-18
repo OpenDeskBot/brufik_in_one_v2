@@ -1,4 +1,6 @@
 #include "camera_ws_transport.h"
+#include "device_bootstrap.h"
+#include "server_tls.h"
 
 #include "deskbot_config.h"
 #include "logger.h"
@@ -23,6 +25,7 @@ struct Frame {
 };
 
 WebSocketsClient s_client;
+WsProto s_target;
 String s_path;
 std::atomic<LinkState> s_state{LinkState::kDown};
 std::atomic<bool> s_disconnect_requested{false};
@@ -32,6 +35,7 @@ portMUX_TYPE s_latest_mux = portMUX_INITIALIZER_UNLOCKED;
 Frame s_latest;
 TaskHandle_t s_task = nullptr;
 bool s_setup_ok = false;
+bool s_bootstrap_path_ready = false;
 uint32_t s_connect_started_ms = 0;
 uint32_t s_last_attempt_ms = 0;
 uint8_t s_fail_count = 0;
@@ -107,7 +111,13 @@ void adapt_rate(bool ok, uint32_t send_ms, uint32_t& seen_overwrites, uint32_t& 
 }
 
 void ensure_connected() {
-  if (WiFi.status() != WL_CONNECTED || server_ws_proto.host[0] == '\0' || s_path.isEmpty()) {
+  if (!device_bootstrap_camera_enabled()) return;
+  if (!s_bootstrap_path_ready) {
+    if (!parse_ws_proto(device_bootstrap_camera_url(),s_target)) return;
+    s_path=build_device_ws_path(s_target);
+    s_bootstrap_path_ready=true;
+  }
+  if (WiFi.status() != WL_CONNECTED || s_target.host[0] == '\0' || s_path.isEmpty()) {
     s_state.store(LinkState::kDown, std::memory_order_release);
     s_connect_started_ms = 0;
     return;
@@ -136,16 +146,16 @@ void ensure_connected() {
   }
   s_client.disconnect();
   s_client.setReconnectInterval(backoff);
-  if (server_ws_proto.is_wss) {
-    s_client.beginSSL(server_ws_proto.host, server_ws_proto.port, s_path.c_str());
+  if (s_target.is_wss) {
+    server_begin_wss(s_client,s_target,s_path.c_str());
   } else {
-    s_client.begin(server_ws_proto.host, server_ws_proto.port, s_path.c_str());
+    s_client.begin(s_target.host, s_target.port, s_path.c_str());
   }
   s_state.store(LinkState::kConnecting, std::memory_order_release);
   s_connect_started_ms = millis();
   log_warn("[CAMERA_WS] connect %s://%s:%u%s backoff=%ums",
-           server_ws_proto.is_wss ? "wss" : "ws", server_ws_proto.host,
-           (unsigned)server_ws_proto.port, s_path.c_str(), (unsigned)backoff);
+           s_target.is_wss ? "wss" : "ws", s_target.host,
+           (unsigned)s_target.port, s_path.c_str(), (unsigned)backoff);
 }
 
 void task_loop(void*) {
@@ -200,11 +210,6 @@ bool setup_camera_ws_transport() {
   if (s_setup_ok) {
     return true;
   }
-  if (server_ws_proto.host[0] == '\0') {
-    log_warn("[CAMERA_WS] no configured server");
-    return false;
-  }
-  s_path = build_device_ws_path(server_ws_proto, "/camera_uplink");
   s_client.onEvent([](WStype_t type, uint8_t*, size_t) {
     if (type == WStype_CONNECTED) {
       s_state.store(LinkState::kUp, std::memory_order_release);
@@ -218,7 +223,7 @@ bool setup_camera_ws_transport() {
       log_warn("[CAMERA_WS] disconnected");
     }
   });
-  s_setup_ok = !s_path.isEmpty();
+  s_setup_ok = true;
   return s_setup_ok;
 }
 

@@ -32,6 +32,12 @@ bool audio_frontend_setup();
 /** True only after AEC, NS and VAD were all created and enabled successfully. */
 bool audio_frontend_ready();
 
+/** Processed PCM is healthy (as distinct from an allocated/running AFE). */
+bool audio_frontend_output_healthy();
+
+/** Speaker reference or its acoustic tail is still present. */
+bool audio_frontend_playback_or_tail_active();
+
 /**
  * Degrade the uplink to the continuously retained raw microphone stream.
  *
@@ -74,3 +80,16 @@ void audio_frontend_submit_playback_reference(
 
 /** Consume a debounced ESP-SR VAD transition for USB side-band signalling. */
 bool audio_frontend_take_vad_event(AudioFrontendVadEvent* event);
+
+/** Non-consuming, debounced speech state for local attention/idle control.
+ * Callers use ready/output_healthy to distinguish silence from unavailable VAD.
+ */
+bool audio_frontend_speech_active();
+
+/** Idle-only bench calibration, 0..160 ms; takes effect on the next stream. */
+bool audio_frontend_set_reference_delay_ms(uint32_t ms);
+uint32_t audio_frontend_reference_delay_ms();
+
+/** USB bench only: A/B comparison; applied by the AFE feed owner at a frame boundary. */
+bool audio_frontend_bench_set_aec_enabled(bool enabled);
+bool audio_frontend_bench_aec_enabled();

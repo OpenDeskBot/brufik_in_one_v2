@@ -92,65 +92,34 @@ int scan_target_ssid_channel() {
   return channel;
 }
 
-int build_visible_saved_candidates(const NvsWifiCredential* saved, int saved_count,
-                                   NvsWifiCredential* out, uint8_t* out_channel, int max_out) {
-  if (!saved || saved_count <= 0 || !out || !out_channel || max_out <= 0) {
-    return 0;
+void scan_saved_channels(const NvsWifiCredential* saved, int saved_count, uint8_t* out_channel) {
+  if (saved_count <= 0) {
+    return;
   }
-
-  struct Match {
-    NvsWifiCredential cred;
-    int rssi;
-    uint8_t channel;
-  };
-  Match matches[NVS_MAX_SAVED_WIFI];
-  int match_count = 0;
 
   wifi_prepare_sta();
   const int n = WiFi.scanNetworks();
   for (int s = 0; s < saved_count; ++s) {
+    int best_rssi = -128;
+    out_channel[s] = 0;
     for (int i = 0; i < n; ++i) {
-      if (WiFi.SSID(i) == saved[s].ssid) {
-        matches[match_count].cred = saved[s];
-        matches[match_count].rssi = WiFi.RSSI(i);
-        matches[match_count].channel = (uint8_t)WiFi.channel(i);
-        Serial.printf("[wifi] scan: saved %s visible rssi=%d ch=%u\r\n", saved[s].ssid.c_str(),
-                      WiFi.RSSI(i), (unsigned)matches[match_count].channel);
-        match_count++;
-        break;
+      if (WiFi.SSID(i) == saved[s].ssid && WiFi.RSSI(i) > best_rssi) {
+        best_rssi = WiFi.RSSI(i);
+        out_channel[s] = (uint8_t)WiFi.channel(i);
       }
     }
+    Serial.printf("[wifi] scan: saved priority=%d ssid=%s ch=%u\r\n", s + 1,
+                  saved[s].ssid.c_str(), (unsigned)out_channel[s]);
   }
   WiFi.scanDelete();
-
-  for (int i = 0; i < match_count; ++i) {
-    for (int j = i + 1; j < match_count; ++j) {
-      if (matches[j].rssi > matches[i].rssi) {
-        Match tmp = matches[i];
-        matches[i] = matches[j];
-        matches[j] = tmp;
-      }
-    }
-  }
-
-  int out_count = 0;
-  for (int i = 0; i < match_count && out_count < max_out; ++i) {
-    out[out_count] = matches[i].cred;
-    out_channel[out_count] = matches[i].channel;
-    out_count++;
-  }
-  if (match_count == 0) {
-    Serial.printf("[wifi] scan: no saved SSID visible (saved=%d, seen=%d)\r\n", saved_count, n);
-  }
-  return out_count;
 }
 
 bool try_connect_credential(const char* source_label, int max_attempts, int known_channel) {
   wifi_prepare_sta();
 
   int channel = known_channel;
-  const bool ssid_in_scan = channel > 0;
-  if (!ssid_in_scan) {
+  // 0 表示已扫描但不可见（仍尝试隐藏网络），-1 表示尚未扫描。
+  if (channel < 0) {
     channel = scan_target_ssid_channel();
   }
   const bool visible = channel > 0;
@@ -236,29 +205,24 @@ void wifi_apply_runtime_keepalive(void) {
 bool wifi_connect_saved_then_default(const char* tag, int max_attempts) {
   NvsWifiCredential saved[NVS_MAX_SAVED_WIFI];
   const int saved_count = nvs_wifi_list(saved, NVS_MAX_SAVED_WIFI);
-  NvsWifiCredential visible[NVS_MAX_SAVED_WIFI];
-  uint8_t visible_ch[NVS_MAX_SAVED_WIFI] = {};
-  const int visible_count = build_visible_saved_candidates(saved, saved_count, visible, visible_ch,
-                                                           NVS_MAX_SAVED_WIFI);
-  Serial.printf("[wifi] %s saved=%d visible=%d\r\n", tag, saved_count, visible_count);
+  uint8_t saved_channels[NVS_MAX_SAVED_WIFI] = {};
+  scan_saved_channels(saved, saved_count, saved_channels);
+  Serial.printf("[wifi] %s saved=%d (priority order)\r\n", tag, saved_count);
 
-  // Prefer strongest visible saved network for maintain fallback (not compile-time default).
+  // Preserve the first saved network for maintain fallback as well.
   String preferred_ssid;
   String preferred_password;
-  if (visible_count > 0) {
-    preferred_ssid = visible[0].ssid;
-    preferred_password = visible[0].password;
-  } else if (saved_count > 0) {
+  if (saved_count > 0) {
     preferred_ssid = saved[0].ssid;
     preferred_password = saved[0].password;
   }
 
-  for (int i = 0; i < visible_count; ++i) {
-    g_wifi_ssid = visible[i].ssid;
-    g_wifi_password = visible[i].password;
-    Serial.printf("[wifi] %s try saved [%d/%d] ssid=%s\r\n", tag, i + 1, visible_count,
+  for (int i = 0; i < saved_count; ++i) {
+    g_wifi_ssid = saved[i].ssid;
+    g_wifi_password = saved[i].password;
+    Serial.printf("[wifi] %s try saved [%d/%d] ssid=%s\r\n", tag, i + 1, saved_count,
                   g_wifi_ssid.c_str());
-    if (try_connect_credential(tag, max_attempts, visible_ch[i])) {
+    if (try_connect_credential(tag, max_attempts, saved_channels[i])) {
       Serial.printf("[wifi] %s connected IP=%s RSSI=%d dBm\r\n", tag,
                     WiFi.localIP().toString().c_str(), WiFi.RSSI());
       return true;
@@ -269,7 +233,7 @@ bool wifi_connect_saved_then_default(const char* tag, int max_attempts) {
     g_wifi_ssid = WIFI_DEFAULT_SSID;
     g_wifi_password = WIFI_DEFAULT_PASSWORD;
     Serial.printf("[wifi] %s try default ssid=%s\r\n", tag, g_wifi_ssid.c_str());
-    if (try_connect_credential(tag, max_attempts, 0)) {
+    if (try_connect_credential(tag, max_attempts, -1)) {
       Serial.printf("[wifi] %s connected IP=%s RSSI=%d dBm\r\n", tag,
                     WiFi.localIP().toString().c_str(), WiFi.RSSI());
       return true;

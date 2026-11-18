@@ -40,7 +40,8 @@ void setup_head();
 /** 启动舵机 motor 队列与 motor_task（幂等）；enqueue 路径亦可兜底。 */
 void task_setup_head();
 /** 提交 pb_servo_frame[] chunk 所有权到 motor 队列（1 chunk = 1 队列项）。 */
-void head_submit_pb_servo_chunk_owned(pb_servo_frame* frames, size_t count);
+void head_submit_pb_servo_chunk_owned(pb_servo_frame* frames, size_t count,
+                                      uint32_t epoch = 0, uint32_t pts_ms = 0);
 /** 打断：置 need_cancel，再队尾入队 type=cancel。 */
 void head_abort();
 /** 当前任务是否已执行完毕（kEndOfTask 已出队）。 */
@@ -52,3 +53,5 @@ void head_set_task_done_flag();
 /** xQueue 缓冲深度（供 pb 回压）。 */
 unsigned head_motor_input_queue_depth();
 
+
+bool head_cancel_pending();

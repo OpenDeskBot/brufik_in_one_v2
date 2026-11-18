@@ -1,5 +1,6 @@
 // Deskbot — XIAO ESP32S3 Sense：摄像头 + pb + 音频 + 显示屏 + 舵机
 #include <WiFi.h>
+#include "usb_bench.h"
 #include "display_panel.h"
 #include "camera.h"
 #include "camera_ws_transport.h"
@@ -19,6 +20,7 @@
 #include "utils/utils.h"
 #include "utils/nvs_config_utils.h"
 #include "boot_guide.h"
+#include "device_bootstrap.h"
 
 /* loopTask 只做 cmd / wifi maintain / yield；Opus encode 在 mic、decode 在 pb_runtime。
  * 覆盖弱符号 getArduinoLoopTaskStackSize（platformio.ini 另有 -DARDUINO_LOOP_STACK_SIZE）。 */
@@ -37,13 +39,18 @@ static void on_wifi_link_up() {
 }
 
 void setup() {
+  Serial.setTxBufferSize(2048); // Bounded diagnostic snapshots without blocking playback.
   Serial.begin(115200);
+  // USB debug logging must never pace playback when no host drains the CDC
+  // buffer. HWCDC otherwise retries 20 * 100ms per write under backpressure.
+  Serial.setTxTimeoutMs(0);
   Serial.flush();
   /* USB CDC 在 ESP32-S3 上 !Serial 永远为 false，用固定 delay 等待监视器连接。
    * 3s 足够 Linux/macOS 完成 USB CDC 枚举并让 flash_rom.sh 启动监视器。
    * 独立运行（无 USB）时同样只多等 3s，不影响正常功能。 */
   delay(3000);
   log_set_level(LOG_LEVEL_WARN);
+  if (!setup_usb_bench()) { log_error("[USB] allocation failed"); return; }
   log_info("Initializing Deskbot...");
   log_info("[BOOT] device_id=%s", get_device_id());
 
@@ -54,7 +61,7 @@ void setup() {
    * 本机 JPEG 硬件编码不可用；setup_camera 内用 RGB565 + frame2jpg。
    * ESP32-S3：相机 GDMA 在 WiFi STA 连接时若仍在跑，会整机挂死。 */
   static bool s_camera_ok = false;
-  const bool camera_probed = setup_camera();
+  const bool camera_probed = !usb_bench_active() && setup_camera();
   if (camera_probed) {
     camera_deinit();
     log_warn("[CAMERA] suspended for i2s/wifi (will reinit after STA)");
@@ -71,6 +78,19 @@ void setup() {
   /* ESP-SR AFE（AEC/NS/AGC/VAD）：失败不致命，mic 自动退回原始帧。 */
   audio_frontend_setup();
 
+  if (usb_bench_active()) {
+    // Explicit audio bench mode: no camera/Wi-Fi/server boot dependency.
+    task_setup_speaker();
+    if (!setup_pb_runtime()) return;
+    task_setup_display();
+    task_setup_head();
+    task_setup_mic();
+    if (!task_setup_pb_runtime()) return;
+    log_set_level(LOG_LEVEL_NONE);
+    task_setup_usb_bench();
+    return;
+  }
+
   log_info("[BOOT] device_id=%s version=%s", get_device_id(), VERSION);
 
   (void)wifi_provision_ap_offer(nvs_get_ap_offer_timeout_ms());
@@ -83,6 +103,10 @@ void setup() {
     }
   }
   wifi_provision_set_link_handlers(on_wifi_link_down, on_wifi_link_up);
+  if (!setup_device_bootstrap() || !task_setup_device_bootstrap()) {
+    log_error("[BOOT] HTTP bootstrap task unavailable");
+    return;
+  }
 
   /* ---- 阶段 B：云服务器连接（屏幕引导）----
    * 先建 pb 帧队列，避免 WS ready 后下行帧因 pb 未 setup 被丢。
@@ -136,7 +160,7 @@ void setup() {
   }
 
   log_info("[BOOT] firmware=%s %s %s", VERSION, __DATE__, __TIME__);
-  char ws_url[128];
+  char ws_url[server_endpoint::kUrlCapacity];
   deskbot_ws_format_active_url(ws_url, sizeof(ws_url));
   log_info("[BOOT] device_id=%s ws=%s version=%s", get_device_id(), ws_url, VERSION);
   log_info("PSRAM size=%u free=%u", (unsigned)ESP.getPsramSize(), (unsigned)ESP.getFreePsram());
@@ -149,8 +173,12 @@ void setup() {
 }
 
 void loop() {
+  if (usb_bench_active()) { delay(1); return; }
   handle_cmd();
   wifi_provision_maintain();
   log_task_tick();
-  yield();
+  // Audio, WS, rendering and motion have their own tasks. yield() keeps this
+  // low-priority polling loop runnable and burns the remaining core budget.
+  // One millisecond bounds command/portal polling without starving Idle1.
+  delay(1);
 }

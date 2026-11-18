@@ -45,7 +45,7 @@ from deskbot_server.web.helpers import (
 )
 from deskbot_server.web.pages import page
 from deskbot_server.web.session_device import get_current_device_id
-from deskbot_server.web.view_helpers import ViewAPIRoute, get_json, jsonify, render_template
+from deskbot_server.web.view_helpers import ViewAPIRoute, get_json, jsonify, redirect, render_template
 
 logger = logging.getLogger("deskbot-server")
 
@@ -370,29 +370,15 @@ def debug_llm(request: Request, user: RequireUser):
 
 @router.get("/debug/simulation")
 @access('developer')
-@page('debug_simulation.html')
 def debug_simulation(request: Request, user: RequireUser):
-    from deskbot_server.pb.display import FACE_LCD_HEIGHT, FACE_LCD_WIDTH
-    from deskbot_server.pb.shapes import default_face_circles
-
-    cfg = load_config()
-    tts = cfg.get("tts") or {}
-    return render_template(
-        request,
-        "debug_simulation.html",
-        active_nav="sim",
-        default_spk=int(tts.get("spk_id", 0)),
-        sample_rate=int(tts.get("sample_rate", 16000)),
-        face_lcd_w=FACE_LCD_WIDTH,
-        face_lcd_h=FACE_LCD_HEIGHT,
-        default_face_circles=default_face_circles(),
-    )
+    """Keep old bookmarks usable after retiring the phoneme simulator."""
+    return redirect("/debug/devices")
 
 
 @router.post("/api/tts/phoneme_tts")
 @access('user')
 def api_tts_phoneme_tts(request: Request, user: RequireUser):
-    """TTS 合成 + 音素分片（按当前 tts.provider），供仿真调试等页面使用。"""
+    """兼容旧地址的 TTS 音频合成接口；分片不再生成音素标签。"""
     from deskbot_server.client.tts.factory import build_tts_adapter
     from deskbot_server.model.settings import AppSettings
 

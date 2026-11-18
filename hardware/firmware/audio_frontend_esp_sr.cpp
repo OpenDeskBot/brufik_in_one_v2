@@ -1,4 +1,5 @@
 #include "audio_frontend_esp_sr.h"
+#include "usb_bench.h"
 
 #include "deskbot_config.h"
 #include "logger.h"
@@ -22,6 +23,8 @@
 namespace {
 
 #ifndef DESKBOT_AFE_REFERENCE_DELAY_MS
+// USB physical sweep with the current three 160-frame DMA playback buffers:
+// 96 ms made the reference non-causal; 32 ms retained ~20 ms causal echo lead.
 #define DESKBOT_AFE_REFERENCE_DELAY_MS 32
 #endif
 
@@ -63,9 +66,9 @@ constexpr size_t kAfeAccumulatorSamples =
 constexpr size_t kReferenceDelaySamples =
     static_cast<size_t>(DESKBOT_AFE_REFERENCE_DELAY_MS) * 16U;
 constexpr uint32_t kAecDiagnosticsIntervalMs = 5000;
-constexpr size_t kCorrelationDownsample = 4;
-constexpr size_t kCorrelationHistorySamples = 2048;  // 512 ms @ 4 kHz
-constexpr int kCorrelationMaxLagSamples = 640;       // +/-160 ms @ 4 kHz
+constexpr size_t kCorrelationDownsample = 8;
+constexpr size_t kCorrelationHistorySamples = 512;  // 256 ms @ 2 kHz
+constexpr int kCorrelationMaxLagSamples = 160;       // +/-80 ms @ 2 kHz
 constexpr uint32_t kCorrelationReferenceRmsFloor = 64;
 constexpr uint32_t kProcessedFreezeFrames = 64;  // about 2 s at 32 ms/fetch
 constexpr uint32_t kProcessedRecoveryFrames = 16;
@@ -118,6 +121,7 @@ float s_vad_noise_floor_db = -60.0f;
 uint8_t s_vad_start_frames = 0;
 uint8_t s_vad_end_frames = 0;
 std::atomic<uint32_t> s_vad_playback_tail_until_ms{0};
+std::atomic<bool> s_speaker_active{false};
 std::atomic<uint32_t> s_vad_reset_generation{0};
 uint32_t s_vad_applied_reset_generation = 0;
 std::atomic<uint32_t> s_feed_chunks{0};
@@ -132,6 +136,8 @@ bool s_previous_processed_valid = false;
 
 portMUX_TYPE s_reference_mux = portMUX_INITIALIZER_UNLOCKED;
 int16_t s_reference_ring[kReferenceRingSamples]{};
+std::atomic<bool> s_bench_aec_requested{true}, s_bench_aec_applied{true};
+size_t s_reference_delay_samples = kReferenceDelaySamples;
 size_t s_reference_read = 0;
 size_t s_reference_write = 0;
 size_t s_reference_count = 0;
@@ -172,12 +178,12 @@ void reference_clear_locked(bool seed_delay = false) {
      * before the first submitted sample is silence, so seed that silence and
      * let every microphone frame consume a complete, continuous reference.
      */
-    for (size_t i = 0; i < kReferenceDelaySamples; ++i) {
+    for (size_t i = 0; i < s_reference_delay_samples; ++i) {
       s_reference_ring[s_reference_write] = 0;
       s_reference_write =
           (s_reference_write + 1U) % kReferenceRingSamples;
     }
-    s_reference_count = kReferenceDelaySamples;
+    s_reference_count = s_reference_delay_samples;
   }
 }
 
@@ -194,7 +200,7 @@ void reference_read_samples(int16_t* dst, size_t samples) {
    * more damaging to an adaptive echo canceller than short-term queue jitter.
    */
   const size_t reserve =
-      s_reference_playback_active ? kReferenceDelaySamples : 0U;
+      s_reference_playback_active ? s_reference_delay_samples : 0U;
   if (!s_reference_primed) {
     if ((!s_reference_playback_active && s_reference_count > 0) ||
         s_reference_count >= reserve + samples) {
@@ -290,11 +296,7 @@ void reset_feed_processing_state() {
 }
 
 bool vad_playback_or_tail_active() {
-  bool playback_active = false;
-  portENTER_CRITICAL(&s_reference_mux);
-  playback_active = s_reference_playback_active;
-  portEXIT_CRITICAL(&s_reference_mux);
-  return playback_active ||
+  return s_speaker_active.load(std::memory_order_acquire) ||
          static_cast<int32_t>(
              s_vad_playback_tail_until_ms.load(std::memory_order_acquire) -
              millis()) > 0;
@@ -583,7 +585,7 @@ struct CorrelationResult {
 CorrelationResult calculate_reference_correlation() {
   CorrelationResult result{};
   if (!s_correlation_mic || !s_correlation_reference ||
-      s_correlation_count < 512U) {
+      s_correlation_count < kCorrelationHistorySamples) {
     return result;
   }
   const size_t samples = s_correlation_count;
@@ -609,7 +611,7 @@ CorrelationResult calculate_reference_correlation() {
           : kCorrelationMaxLagSamples;
   int best_lag = 0;
   double best_correlation = 0.0;
-  constexpr int kCoarseLagStep = 4;
+  constexpr int kCoarseLagStep = 1;
   for (int lag = -max_lag; lag <= max_lag; lag += kCoarseLagStep) {
     const double correlation = normalized_correlation_for_lag(
         oldest,
@@ -670,6 +672,11 @@ void feed_accumulated_audio() {
     for (int i = 0; i < s_feed_samples; ++i) {
       s_feed_interleaved[i * 2] = s_mic_accumulator[i];
       s_feed_interleaved[i * 2 + 1] = s_reference_frame[i];
+    }
+    const bool requested=s_bench_aec_requested.load();
+    if (requested!=s_bench_aec_applied.load()) {
+      const int rc=requested?s_afe_handle->enable_aec(s_afe_data):s_afe_handle->disable_aec(s_afe_data);
+      if (rc>=0) s_bench_aec_applied.store(requested);
     }
     const int accepted = s_afe_handle->feed(s_afe_data, s_feed_interleaved);
     if (accepted < 0) {
@@ -797,8 +804,26 @@ void audio_frontend_feed_task(void*) {
       diagnostic_take_windows(
           &mic_window, &reference_window, &processed_window);
 #if DESKBOT_AEC_CORRELATION_DIAGNOSTICS
-      const CorrelationResult correlation =
-          calculate_reference_correlation();
+      // Correlation is a diagnostic, never a periodic real-time audio cost.
+      // Serial "log 3" opts in; production defaults to WARN (no search).
+      const CorrelationResult correlation = (global_log_level >= LOG_LEVEL_INFO || usb_bench_active())
+          ? calculate_reference_correlation() : CorrelationResult{};
+#endif
+#if DESKBOT_AEC_CORRELATION_DIAGNOSTICS
+
+      if (usb_bench_active()) {
+        char diag[512];
+        snprintf(diag,sizeof(diag),
+          "{\"usb\":\"aec_stats\",\"device_ms\":%u,\"active\":%s,\"mic_rms\":%u,"
+          "\"processed_rms\":%u,\"ref_rms\":%u,\"ref_zero\":%u,\"ref_overrun\":%u,"
+          "\"mic_drop\":%u,\"out_drop\":%u,\"ref_delay_ms\":%u,\"corr_x1000\":%d,\"lag_ms\":%.2f}",
+          (unsigned)now,playback_active?"true":"false",(unsigned)window_rms(mic_window),
+          (unsigned)window_rms(processed_window),(unsigned)window_rms(reference_window),
+          (unsigned)reference_underflows,(unsigned)reference_overruns,
+          (unsigned)input_drops,(unsigned)output_drops,(unsigned)audio_frontend_reference_delay_ms(),
+          correlation.correlation_x1000,correlation.lag_16khz_samples/16.f);
+        usb_bench_emit(diag);
+      }
 #endif
       const unsigned input_depth =
           s_input_q ? static_cast<unsigned>(uxQueueMessagesWaiting(s_input_q))
@@ -990,13 +1015,13 @@ bool audio_frontend_setup() {
   srmodel_list_t no_models{};
 #if DESKBOT_AFE_LOW_COST
   constexpr afe_mode_t kSelectedAfeMode = AFE_MODE_LOW_COST;
-  constexpr aec_mode_t kSelectedAecMode = AEC_MODE_VOIP_LOW_COST;
+  constexpr aec_mode_t kSelectedAecMode = AEC_MODE_FD_LOW_COST;
 #else
   constexpr afe_mode_t kSelectedAfeMode = AFE_MODE_HIGH_PERF;
-  constexpr aec_mode_t kSelectedAecMode = AEC_MODE_VOIP_HIGH_PERF;
+  constexpr aec_mode_t kSelectedAecMode = AEC_MODE_FD_HIGH_PERF;
 #endif
   afe_config_t* config =
-      afe_config_init("MR", &no_models, AFE_TYPE_VC, kSelectedAfeMode);
+      afe_config_init("MR", &no_models, AFE_TYPE_FD, kSelectedAfeMode);
   if (!config) {
     log_error("[ESP-SR] afe_config_init failed");
     cleanup_failed_setup();
@@ -1006,6 +1031,7 @@ bool audio_frontend_setup() {
   config->aec_init = true;
   config->aec_mode = kSelectedAecMode;
   config->aec_filter_length = 4;
+  config->aec_nlp_level = AEC_NLP_LEVEL_VERYAGGR;
   config->se_init = false;
   config->ns_init = true;
   config->ns_model_name = nullptr;
@@ -1026,7 +1052,7 @@ bool audio_frontend_setup() {
   config->agc_compression_gain_db = DESKBOT_AFE_AGC_COMPRESSION_GAIN_DB;
   config->agc_target_level_dbfs = 3;
   config->afe_mode = kSelectedAfeMode;
-  config->afe_type = AFE_TYPE_VC;
+  config->afe_type = AFE_TYPE_FD;
   config->afe_perferred_core = 0;
   config->afe_perferred_priority = 5;
   config->afe_ringbuf_size = 24;
@@ -1035,6 +1061,8 @@ bool audio_frontend_setup() {
   config->debug_init = false;
   // WakeNet is disabled, so there is no "first wake-up" channel to pin.
   config->fixed_first_channel = false;
+  config->fixed_output_channel = true;
+  config->output_playback_channel = false;
 
   config = afe_config_check(config);
   if (!config || !config->aec_init || !config->ns_init ||
@@ -1163,7 +1191,7 @@ bool audio_frontend_setup() {
   s_previous_processed_valid = false;
   s_ready.store(true, std::memory_order_release);
   log_warn(
-      "[ESP-SR] official AFE ready pipeline=MR/VC-VOIP-%s-AEC/NS/AGC/VAD "
+      "[ESP-SR] official AFE ready pipeline=MR/FD-%s-AEC/NS/AGC/VAD "
       "feed=%d fetch=%d ref_delay=%dms linear_gain_x100=%d agc_gain_db=%d "
       "workers=split",
       DESKBOT_AFE_LOW_COST ? "LOW-COST" : "HIGH-PERF",
@@ -1180,6 +1208,15 @@ bool audio_frontend_setup() {
 
 bool audio_frontend_ready() {
   return s_ready.load(std::memory_order_acquire);
+}
+
+bool audio_frontend_output_healthy() {
+  return s_ready.load(std::memory_order_acquire) &&
+         s_output_healthy.load(std::memory_order_acquire);
+}
+
+bool audio_frontend_playback_or_tail_active() {
+  return vad_playback_or_tail_active();
 }
 
 void audio_frontend_force_raw_fallback(const char* reason) {
@@ -1221,10 +1258,16 @@ bool audio_frontend_take_output_frame(
     return false;
   }
   memcpy(pcm, frame.pcm, sizeof(frame.pcm));
-  return true;
+  return audio_frontend_output_healthy();
 }
 
 void audio_frontend_set_playback_active(bool active) {
+  // Raw fallback must know about speaker activity even if AFE setup failed.
+  s_speaker_active.store(active, std::memory_order_release);
+  if (!active) {
+    s_vad_playback_tail_until_ms.store(
+        millis() + kVadPlaybackTailMs, std::memory_order_release);
+  }
   if (!audio_frontend_ready()) {
     return;
   }
@@ -1242,14 +1285,13 @@ void audio_frontend_set_playback_active(bool active) {
   if (active) {
     reset_vad_stabilizer();
     emit_vad_transition(VAD_SILENCE, -120.0f);
-  } else {
-    s_vad_playback_tail_until_ms.store(
-        millis() + kVadPlaybackTailMs,
-        std::memory_order_release);
   }
 }
 
 void audio_frontend_abort_playback_reference() {
+  s_speaker_active.store(false, std::memory_order_release);
+  s_vad_playback_tail_until_ms.store(
+      millis() + kVadPlaybackTailMs, std::memory_order_release);
   if (!audio_frontend_ready()) {
     return;
   }
@@ -1306,3 +1348,31 @@ bool audio_frontend_take_vad_event(AudioFrontendVadEvent* event) {
   return event && s_vad_q &&
          xQueueReceive(s_vad_q, event, 0) == pdTRUE;
 }
+
+bool audio_frontend_speech_active() {
+  return s_vad_speech.load(std::memory_order_acquire);
+}
+
+
+bool audio_frontend_set_reference_delay_ms(uint32_t ms) {
+  if (ms>160 || s_speaker_active.load(std::memory_order_acquire)) return false;
+  portENTER_CRITICAL(&s_reference_mux);
+  s_reference_delay_samples=ms*16;
+  reference_clear_locked();
+  portEXIT_CRITICAL(&s_reference_mux);
+  return true;
+}
+uint32_t audio_frontend_reference_delay_ms() {
+  portENTER_CRITICAL(&s_reference_mux);
+  const uint32_t ms=s_reference_delay_samples/16;
+  portEXIT_CRITICAL(&s_reference_mux);
+  return ms;
+}
+
+bool audio_frontend_bench_set_aec_enabled(bool enabled) {
+  if (!usb_bench_active() || !audio_frontend_ready() || s_speaker_active.load() ||
+      !s_afe_handle->enable_aec || !s_afe_handle->disable_aec) return false;
+  s_bench_aec_requested.store(enabled);
+  return true;
+}
+bool audio_frontend_bench_aec_enabled() { return s_bench_aec_applied.load(); }
