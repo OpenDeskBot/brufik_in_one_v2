@@ -84,6 +84,9 @@ def test_schedule_task_crud_via_tool(temp_db):
 
     from deskbot_server.service.application.llm_tool_runner import execute_llm_tools
     from deskbot_server.service.scheduled_task_service import get_scheduled_task
+    from deskbot_server.service.session_service import create_session
+
+    sid = create_session("deskbot_a")["session_id"]
 
     created = asyncio.run(
         execute_llm_tools(
@@ -97,13 +100,13 @@ def test_schedule_task_crud_via_tool(temp_db):
                 }
             ],
             device_id="deskbot_a",
-            session_id="sess_abc123",
+            session_id=sid,
         )
     )
     assert created[0]["ok"] is True
     tid = created[0]["id"]
     assert created[0]["task_kind"] == "once"
-    assert created[0]["session_id"] == "sess_abc123"
+    assert created[0]["session_id"] == sid
 
     got = asyncio.run(execute_llm_tools([{"tool": "schedule_task", "action": "get", "id": tid}], device_id="deskbot_a"))
     assert got[0]["task"]["id"] == tid
@@ -126,8 +129,10 @@ def test_schedule_task_crud_via_tool(temp_db):
 def test_claim_due_tasks_lookback_window(temp_db):
     from deskbot_server.db.engine import get_session
     from deskbot_server.db.models import ScheduledTask, _new_id
+    from deskbot_server.service.device_identity_service import ensure_device_identity
     from deskbot_server.service.scheduled_task_service import claim_due_tasks, cst_now, expire_overdue_active_tasks
 
+    ensure_device_identity("deskbot_a")
     now = cst_now()
     session = get_session()
     session.add(
@@ -228,8 +233,10 @@ def test_scheduled_reminder_tts_helpers():
 def test_finish_recurring_reschedules(temp_db):
     from deskbot_server.db.engine import get_session
     from deskbot_server.db.models import ScheduledTask, _new_id
+    from deskbot_server.service.device_identity_service import ensure_device_identity
     from deskbot_server.service.scheduled_task_service import cst_now, finish_scheduled_task, get_scheduled_task
 
+    ensure_device_identity("deskbot_a")
     tid = _new_id()
     now = cst_now()
     session = get_session()

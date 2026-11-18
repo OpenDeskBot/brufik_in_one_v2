@@ -143,8 +143,9 @@ def test_published_settings_include_flecket_and_mutable_resources_are_not_cached
         assert response.status_code == 200
         assert response.headers["Cache-Control"] == "no-store"
         settings = response.json()["app2c/robot_settings.html"]
-        for provider in ("local", "moss-live", "flecket"):
+        for provider in ("moss-live", "flecket"):
             assert f'<option value="{provider}">' in settings
+        assert '<option value="local">' not in settings
         for path in ("/static/page-loader.js", "/static/page-renderer.js"):
             resource = client.get(path)
             assert resource.status_code == 200
