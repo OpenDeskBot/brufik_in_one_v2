@@ -192,6 +192,32 @@ def test_profile_and_history_tool_reads_track_sources_through_later_unknown_turn
     asyncio.run(run())
 
 
+def test_superseded_turn_does_not_block_later_evidence_or_borrow_its_identity():
+    p = person()
+
+    async def run():
+        session = MemorySession("robot")
+        await session.start()
+        try:
+            session.begin_turn("old")
+            session.offer("input.transcript.done", {"text": "旧的一句", "turn_id": "old"})
+            await asyncio.sleep(0)
+            # The old turn's context preparation was cancelled by new speech.
+            session.begin_turn("new")
+            session.observations["new"] = {"speaker": {"state": "found", "name": p["name"]}}
+            session.offer("input.transcript.done", {"text": "新的一句", "turn_id": "new"})
+            await asyncio.wait_for(session.flush(), timeout=.5)
+            old = memory.read_chat("robot", session.input_events["old"])["event"]
+            new = memory.read_chat("robot", session.input_events["new"])["event"]
+            assert old.get("person_id") is None
+            assert new["person_id"] == p["id"]
+            assert old["text"] == "旧的一句" and new["text"] == "新的一句"
+        finally:
+            await session.close()
+
+    asyncio.run(run())
+
+
 def test_split_correction_captures_all_unanswered_fragments_for_forgetting():
     p = person()
     original = memory.add_memory("喜欢柠檬茶", device_id="robot", person_id=p["id"])

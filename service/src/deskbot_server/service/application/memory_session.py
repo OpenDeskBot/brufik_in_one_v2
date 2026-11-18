@@ -30,6 +30,13 @@ class MemorySession:
         self.worker = None
         self.closing = False
         self.invalidated = False
+        self.current_turn = None
+
+    def begin_turn(self, turn_id):
+        self.current_turn = turn_id
+        # A superseded turn's context task is cancelled upstream. Its queued
+        # transcript must not hold every later transcript waiting for that task.
+        self.changed.set()
 
     async def start(self):
         self.epoch = await asyncio.to_thread(memory.memory_epoch, self.device_id)
@@ -129,7 +136,8 @@ class MemorySession:
         if action == "input.transcript.done" and turn_id:
             # Wait for this exact turn's observation, never use another turn's identity.
             deadline = asyncio.get_running_loop().time() + 1.2
-            while not self.closing and turn_id not in self.observations and asyncio.get_running_loop().time() < deadline:
+            while (not self.closing and turn_id not in self.observations
+                   and self.current_turn in {None, turn_id} and asyncio.get_running_loop().time() < deadline):
                 self.changed.clear()
                 try:
                     await asyncio.wait_for(self.changed.wait(), max(.001, deadline - asyncio.get_running_loop().time()))

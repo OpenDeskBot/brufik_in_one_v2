@@ -326,6 +326,8 @@ class MossLiveBridge:
         while True:
             event = await self.client.receive()
             action, data = event.action, event.data
+            if action == "input.speech.started" and data.get("turn_id"):
+                self.memory.begin_turn(data["turn_id"])
             await self._on_event(action, data)
             if action == "audio":
                 self.received_audio_chunks += 1
