@@ -98,8 +98,10 @@ def _seed_all_tables(device_id: str = DID) -> dict[str, int]:
     from deskbot_server.dao import device_session_mapper as session_mapper
     from deskbot_server.db.engine import get_session
     from deskbot_server.db.models import DeviceUsage, _new_id
+    from deskbot_server.service.device_identity_service import ensure_device_identity
     from deskbot_server.service.scheduled_task_service import create_scheduled_task
 
+    ensure_device_identity(device_id)
     device_memory_mapper.insert(device_id, "住处", "", "我住在北京")
     device_memory_mapper.insert(device_id, "喜好", "", "喜欢猫")
     device_profile_face_mapper.insert(device_id, "小明", "[0.1,0.2,0.3,0.4]", "embedding")
@@ -432,7 +434,10 @@ def test_clear_device_data_forbidden_for_other_users_device(temp_db, data_root):
 
     assert resp.status_code == 403
     assert resp.get_json()["error"] == "设备不属于当前账号"
-    assert _count(DID)["memory"] == 2
+    from deskbot_server.service.memory_service import list_memory_for_device
+
+    assert _count(DID)["memory"] == 0
+    assert len(list_memory_for_device(DID)) == 2
     assert (data_root / DID / "user_info_小明.txt").is_file()
 
 

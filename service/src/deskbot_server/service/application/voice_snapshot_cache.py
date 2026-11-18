@@ -68,6 +68,7 @@ def finish_identification(
     state: str,
     name: str | None = None,
     score: float | None = None,
+    profile_id: str | int | None = None,
 ) -> bool:
     """写识别终态；仅当 ``seq`` 仍是该设备当前 seq（无更新 utterance 抢跑）才生效。"""
     device_id = str(device_id or "").strip()
@@ -78,6 +79,7 @@ def finish_identification(
         t0 = cur.pop("_t0_mono", None)
         cur["state"] = state
         cur["name"] = str(name) if name else None
+        cur["profile_id"] = str(profile_id) if profile_id is not None else None
         try:
             cur["score"] = round(float(score), 3) if score is not None else None
         except (TypeError, ValueError):
@@ -133,7 +135,7 @@ def store_voice_sample(device_id: str, request_id: str, embedding: list[float]) 
         }
 
 
-def take_voice_sample(device_id: str, max_age_s: float = 60.0) -> list[float] | None:
+def take_voice_sample(device_id: str, max_age_s: float = 60.0, *, request_id: str | None = None) -> list[float] | None:
     """取最近声音样本的 embedding；过期/缺失返回 None（不删除，留给下次取）。"""
     device_id = str(device_id or "").strip()
     if not device_id:
@@ -144,13 +146,13 @@ def take_voice_sample(device_id: str, max_age_s: float = 60.0) -> list[float] | 
         cap = 60.0
     with _lock:
         mem = _samples.get(device_id)
-        if not mem:
+        if not mem or (request_id is not None and mem.get("request_id") != request_id):
             return None
         try:
             age = time.time() - float(mem.get("ts") or 0.0)
         except (TypeError, ValueError):
             age = float("inf")
-        if age > cap:
+        if not 0 <= age <= cap:
             return None
         emb = mem.get("embedding")
     return list(emb) if isinstance(emb, list) else None

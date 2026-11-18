@@ -8,7 +8,10 @@ from deskbot_server.service.application.face_snapshot_cache import list_device_f
 
 
 def register_face_for_device(
-    device_id: str, name: str, *, face_id: int | None = None, extra: dict[str, Any] | None = None
+    device_id: str, name: str, *, face_id: int | None = None, extra: dict[str, Any] | None = None,
+    max_age_s: float | None = None,
+    person_id: str | None = None,
+    memory_epoch: str | None = None,
 ) -> dict[str, Any]:
     """将当前帧 ``face_id`` 的人脸写入 ``face_profiles.json``。"""
     from deskbot_server.service.camera_face_service import CameraFaceService
@@ -19,8 +22,12 @@ def register_face_for_device(
         raise ValueError("device_id required")
     if not name:
         raise ValueError("name required")
+    if person_id:
+        from deskbot_server.service.memory_service import read_person
 
-    faces = list_device_faces(device_id)
+        read_person(device_id, person_id)
+
+    faces = list_device_faces(device_id, max_age_s=max_age_s)
     if not faces:
         raise ValueError("当前画面无人脸，请确保 ESP32 正在推流且已检出脸")
 
@@ -43,4 +50,13 @@ def register_face_for_device(
         raise ValueError("无法提取人脸 embedding/特征，请让人正对镜头、五官清晰后再试")
 
     profile = CameraFaceService().register_face_embedding(name, desc, device_id=device_id)
+    from deskbot_server.service.memory_service import ensure_person
+
+    try:
+        person = ensure_person(device_id, name, identity="face:" + str(profile["id"]), person_id=person_id,
+                               rename=True, expected_epoch=memory_epoch)
+        profile["memory_person_id"] = person["id"]
+        profile["memory_status"] = "linked"
+    except (ValueError, OSError):
+        profile["memory_status"] = "pending"
     return {"ok": True, "profile": profile, "face_id": face_id, "device_id": device_id}

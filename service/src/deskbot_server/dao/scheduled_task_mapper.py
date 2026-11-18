@@ -11,6 +11,10 @@ from deskbot_server.db.models import ScheduledTask
 def get(task_id: str): ...
 
 
+@select_one("SELECT * FROM scheduled_tasks WHERE id=:task_id AND device_id=:device_id", model=ScheduledTask)
+def get_for_device(task_id: str, device_id: str): ...
+
+
 @select_one(
     """SELECT * FROM scheduled_tasks WHERE device_id=:device_id AND description=:description
 AND cron_expr=:cron AND task_kind=:kind AND enabled=1 AND status IN ('active','running')
@@ -52,7 +56,7 @@ def create(
 
 @db_update("""UPDATE scheduled_tasks SET description=:description,cron_expr=:cron,task_kind=:kind,
 enabled=:enabled,next_run_at=:next_run,session_id=:session_id,status=:status,
-result_summary=:summary,executed_at=:executed_at WHERE id=:task_id""")
+result_summary=:summary,executed_at=:executed_at WHERE id=:task_id AND device_id=:device_id""")
 def save(
     task_id: str,
     description: str,
@@ -64,6 +68,7 @@ def save(
     status: str,
     summary: str | None,
     executed_at: str | None,
+    device_id: str,
 ) -> int: ...
 
 
@@ -71,8 +76,8 @@ def save(
 def delete_for_device(device_id: str) -> int: ...
 
 
-@db_delete("DELETE FROM scheduled_tasks WHERE id=:task_id")
-def delete_one(task_id: str) -> int: ...
+@db_delete("DELETE FROM scheduled_tasks WHERE id=:task_id AND device_id=:device_id")
+def delete_one(task_id: str, device_id: str) -> int: ...
 
 
 @select(

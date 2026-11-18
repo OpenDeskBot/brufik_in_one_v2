@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
 
 from deskbot_server.client.flecket_live import realtime_url
 from deskbot_server.config import get_config, read_secret
@@ -34,16 +32,6 @@ def _params(row) -> dict:
 
 def _flecket_defaults() -> dict:
     return get_config().get("conversation", {}).get("flecket", {})
-
-
-async def execute_agent_tool(name: str, arguments: dict) -> dict:
-    """Execute only the saved Agent's explicitly supported client tool."""
-    if name != "get_current_time":
-        return {"error": "此机器人未提供该工具"}
-    if arguments:
-        raise ValueError("查询时间无需参数")
-    now = datetime.now(UTC)
-    return {"time": now.isoformat(), "local_time": now.astimezone(ZoneInfo("Asia/Shanghai")).isoformat()}
 
 
 def moss_config(device_id: str) -> MossLiveConfig:

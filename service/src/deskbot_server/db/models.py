@@ -3,7 +3,19 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -36,11 +48,21 @@ class User(Base):
 
 class Device(Base):
     __tablename__ = "devices"
-    __table_args__ = (UniqueConstraint("device_id", name="uq_devices_device_id"),)
+    __table_args__ = (
+        UniqueConstraint("device_id", name="uq_devices_device_id"),
+        CheckConstraint(
+            "length(device_id) BETWEEN 1 AND 128 AND device_id NOT GLOB '*[^A-Za-z0-9_.-]*' "
+            "AND trim(device_id, '.') != '' AND device_id NOT IN ('global','quest','services','test','device')",
+            name="ck_devices_valid_device_id",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
     device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    owner_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    # 设备独立存在；解绑/删除账号只移除所有权，不删除设备及其业务数据。
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     access_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     volume: Mapped[int] = mapped_column(Integer, default=80, nullable=False)
@@ -72,20 +94,28 @@ class Device(Base):
     )
     # 设备绑定的剧情剧本名（对应 data/quest/{quest_id}.json）；空/NULL=未绑定
     quest_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
-    owner: Mapped[User] = relationship(back_populates="devices")
+    owner: Mapped[User | None] = relationship(back_populates="devices")
 
 
 class ScheduledTask(Base):
     """设备 cron 定时任务：由 LLM tools 创建，调度器按 next_run_at 触发。"""
 
     __tablename__ = "scheduled_tasks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["session_id", "device_id"], ["device_session.id", "device_session.device_id"],
+            name="fk_scheduled_tasks_device_session", deferrable=True, initially="DEFERRED",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
-    device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("devices.device_id", onupdate="CASCADE", ondelete="RESTRICT"), nullable=False, index=True
+    )
     description: Mapped[str] = mapped_column(Text, nullable=False)
     cron_expr: Mapped[str] = mapped_column(String(128), nullable=False, default="* * * * *")
     task_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="once")
@@ -106,7 +136,9 @@ class DeviceUsage(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
     date: Mapped[date] = mapped_column(Date, nullable=False)
-    device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("devices.device_id", onupdate="CASCADE", ondelete="RESTRICT"), nullable=False, index=True
+    )
     asr: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     llm: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     cv: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
@@ -122,7 +154,9 @@ class DeviceProfileFace(Base):
     __tablename__ = "device_profile_face"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("devices.device_id", onupdate="CASCADE", ondelete="RESTRICT"), nullable=False, index=True
+    )
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     descriptor: Mapped[str] = mapped_column(Text, nullable=False)
     descriptor_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="embedding")
@@ -136,7 +170,9 @@ class DeviceProfileVoice(Base):
     __tablename__ = "device_profile_voice"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("devices.device_id", onupdate="CASCADE", ondelete="RESTRICT"), nullable=False, index=True
+    )
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     descriptor: Mapped[str] = mapped_column(Text, nullable=False)
     descriptor_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="voice")
@@ -145,7 +181,7 @@ class DeviceProfileVoice(Base):
 
 
 class DeviceMemory(Base):
-    """设备长期记忆（原 user_memory.json 迁入），注入 LLM system prompt。"""
+    """历史记忆表，仅供文件迁移及旧结构兼容；新记忆不再写入此表。"""
 
     __tablename__ = "device_memory"
     __table_args__ = (
@@ -153,7 +189,9 @@ class DeviceMemory(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("devices.device_id", onupdate="CASCADE", ondelete="RESTRICT"), nullable=False, index=True
+    )
     title: Mapped[str] = mapped_column(String(128), nullable=False)
     parent: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -166,9 +204,12 @@ class DeviceSession(Base):
     """设备对话 Session 头。"""
 
     __tablename__ = "device_session"
+    __table_args__ = (UniqueConstraint("id", "device_id", name="uq_device_session_id_device"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
-    device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("devices.device_id", onupdate="CASCADE", ondelete="RESTRICT"), nullable=False, index=True
+    )
     title: Mapped[str] = mapped_column(String(64), nullable=False, default="新对话")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
@@ -180,7 +221,7 @@ class DeviceSessionMessage(Base):
     __tablename__ = "device_session_message"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("device_session.id"), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("device_session.id", ondelete="CASCADE"), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -200,7 +241,9 @@ class QuestInstance(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
-    device_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("devices.device_id", onupdate="CASCADE", ondelete="RESTRICT"), nullable=False, index=True
+    )
     playbook: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     task_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="not_started", index=True)

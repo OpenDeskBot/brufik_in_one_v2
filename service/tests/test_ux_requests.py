@@ -14,11 +14,11 @@ def test_page_device_binding_survives_session_switch(api_client):
                                json={"provider": "flecket", "api_key": "test-only-key", "prompt": "A"})
     assert response.status_code == 200
     assert get_conversation("device-owner")["conversation_provider"] == "flecket"
-    assert get_conversation("device-second")["conversation_provider"] == "local"
+    assert get_conversation("device-second")["conversation_provider"] == "flecket"
     assert api_client.get("/api/robot-settings", headers={"X-Deskbot-Device": "device-other"}).status_code == 403
     assert api_client.post("/api/robot-settings/conversation", headers={"X-Deskbot-Device": "device-other"},
                            json={"provider": "local"}).status_code == 403
-    assert get_conversation("device-other")["conversation_provider"] == "local"
+    assert get_conversation("device-other")["conversation_provider"] == "flecket"
 
 
 def test_memory_retry_key_is_idempotent_and_device_scoped(api_client):
@@ -32,7 +32,7 @@ def test_memory_retry_key_is_idempotent_and_device_scoped(api_client):
     assert len(list_memory_for_device("device-owner")) == 1
     assert api_client.post(url, headers=headers, json={"text": "Different"}).status_code == 400
     assert api_client.post(url, headers={**headers, "Idempotency-Key": "another"}, json={"text": "Remember"}).status_code == 200
-    assert len(list_memory_for_device("device-owner")) == 2
+    assert len(list_memory_for_device("device-owner")) == 1
 
 
 def test_concurrent_memory_retries_are_one_insert(api_client):

@@ -8,11 +8,11 @@ import time
 
 import pytest
 
-from deskbot_server.service.llm_context import build_llm_user_message
 from deskbot_server.client.voice.vpr_http_client import VprHttpError
 from deskbot_server.service.application import voice_snapshot_cache as snap
 from deskbot_server.service.application.tool_interim_tts import build_tool_interim_tts, phrase_for_tool
 from deskbot_server.service.application.voice_registration import register_voice_for_device
+from deskbot_server.service.llm_context import build_llm_user_message
 from deskbot_server.service.voice_profile_service import (
     delete_voice_profile,
     list_voice_profiles_summary,
@@ -60,6 +60,9 @@ def db_env(monkeypatch, tmp_path):
     reset_engine()
     init_engine(db_path)
     init_database()
+    from deskbot_server.service.device_identity_service import ensure_device_identity
+
+    ensure_device_identity(DV)
     return DV
 
 
@@ -293,10 +296,7 @@ def test_voice_cosine_unnormalized_vectors_not_clamped():
 
     回归：旧实现点积不除模长，4·A 与 2·(0.6A+0.8B) 点积=4.8 → 钳制 1.000。
     """
-    from deskbot_server.service.voice_profile_service import (
-        best_voice_similarity,
-        voice_cosine_similarity,
-    )
+    from deskbot_server.service.voice_profile_service import best_voice_similarity, voice_cosine_similarity
 
     p = {"id": 1, "name": "小明", "descriptor": [4 * x for x in A], "descriptor_kind": "voice"}
     e = [2 * (0.6 * A[i] + 0.8 * B[i]) for i in range(256)]  # norm=2, 与 4·A 真实余弦 0.6

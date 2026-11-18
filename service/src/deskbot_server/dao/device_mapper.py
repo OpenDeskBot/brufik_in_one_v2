@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-from deskbot_server.dao.decorators import delete as db_delete
 from deskbot_server.dao.decorators import insert as db_insert
 from deskbot_server.dao.decorators import select, select_one
 from deskbot_server.dao.decorators import update as db_update
@@ -33,6 +32,14 @@ def device_ids_for_user(user_id: str) -> list[str]:
     """返回用户绑定的所有 device_id。"""
 
 
+@select_one(
+    """SELECT EXISTS(SELECT 1 FROM devices d JOIN users u ON u.id=d.owner_user_id
+    WHERE d.device_id=:device_id AND u.id=:user_id AND u.is_active=1)"""
+)
+def owned_by_active_user(device_id: str, user_id: str) -> bool:
+    """实时校验设备所有权及账号状态。"""
+
+
 # ────────────────────────── 写操作 ──────────────────────────
 
 
@@ -55,16 +62,33 @@ def insert(
     """插入新设备记录。"""
 
 
+@db_insert(
+    """INSERT INTO devices
+    (id, device_id, display_name, volume, fps, auto_reply, servo_mode, live_mode,
+     asr_provider, tts_provider, conversation_provider, created_at)
+    VALUES (:uid, :device_id, :device_id, 80, 10, 1, '', 1, 'funasr', 'moss-tts-nano', 'flecket', datetime('now'))
+    ON CONFLICT(device_id) DO NOTHING""",
+    id_param="uid",
+)
+def ensure_identity(uid: str, device_id: str) -> str:
+    """登记独立设备，不更改已存在设备的所有权和设置。"""
+
+
+@db_update(
+    """UPDATE devices SET owner_user_id=:user_id, display_name=:display_name, claimed_at=datetime('now')
+    WHERE device_id=:device_id AND (owner_user_id IS NULL OR owner_user_id=:user_id)"""
+)
+def claim(device_id: str, user_id: str, display_name: str) -> int:
+    """原子绑定：不能覆盖其他账号的所有权。"""
+
+
 @db_update(
     """
-    UPDATE devices
-    SET owner_user_id = :user_id,
-        display_name  = :display_name
-    WHERE id = :device_id_pk
+    UPDATE devices SET display_name = :display_name WHERE id = :device_id_pk
     """
 )
-def update_owner(device_id_pk: str, user_id: str, display_name: str) -> int:
-    """更新设备归属（转绑 / 重绑）。"""
+def update_display_name(device_id_pk: str, display_name: str) -> int:
+    """更新设备名称；不改所有权。"""
 
 
 @db_update("UPDATE devices SET volume = :volume WHERE device_id = :device_id")
@@ -225,8 +249,8 @@ def get_llm_param(device_id: str) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-@db_delete("DELETE FROM devices WHERE device_id = :device_id AND owner_user_id = :user_id")
-def delete_by_device_id(device_id: str, user_id: str) -> int:
+@db_update("UPDATE devices SET owner_user_id=NULL, claimed_at=NULL WHERE device_id=:device_id AND owner_user_id=:user_id")
+def release_owner(device_id: str, user_id: str) -> int:
     """删除设备绑定。"""
 
 

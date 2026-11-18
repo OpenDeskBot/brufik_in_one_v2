@@ -21,12 +21,15 @@ from typing import Any
 
 from deskbot_server.dao import device_memory_mapper, device_usage_mapper, legacy_usage_mapper, quest_mapper
 from deskbot_server.dao import device_session_mapper as session_mapper
-from deskbot_server.service import face_profile_service, scheduled_task_service, voice_profile_service
-from deskbot_server.service.device_data_paths import (
-    ensure_device_data_initialized,
-    legacy_device_data_dir,
-    safe_device_data_dir,
+from deskbot_server.dao.memory_file_store import device_guard
+from deskbot_server.service import (
+    device_data_paths,
+    face_profile_service,
+    memory_service,
+    scheduled_task_service,
+    voice_profile_service,
 )
+from deskbot_server.service.device_data_paths import legacy_device_data_dir, safe_device_data_dir
 
 logger = logging.getLogger("deskbot-server")
 
@@ -42,14 +45,14 @@ def _delete_legacy_usage_rows(device_id: str) -> int:
 def _db_steps(device_id: str) -> list[tuple[str, Callable[[], int]]]:
     """按序执行的删库步骤；每步返回删除行数，目标不存在时返回 0（天然幂等）。"""
     return [
-        ("memory", lambda: device_memory_mapper.delete_by_device(device_id)),
+        ("memory", lambda: memory_service.clear_file_memory(device_id) + device_memory_mapper.delete_by_device(device_id)),
         ("face_profiles", lambda: face_profile_service.delete_device_profiles(device_id)),
         ("voice_profiles", lambda: voice_profile_service.delete_device_profiles(device_id)),
+        ("scheduled_tasks", lambda: scheduled_task_service.delete_scheduled_tasks_for_device(device_id)),
         # 顺序有要求：device_session_message 无 device_id，靠 session_id 关联子查询定位
         ("session_messages", lambda: session_mapper.delete_messages_by_device(device_id)),
         ("sessions", lambda: session_mapper.delete_sessions_by_device(device_id)),
         ("quest_instances", lambda: quest_mapper.delete_instances_by_device(device_id)),
-        ("scheduled_tasks", lambda: scheduled_task_service.delete_scheduled_tasks_for_device(device_id)),
         ("usage_rows", lambda: device_usage_mapper.delete_by_device(device_id)),
         ("legacy_usage_rows", lambda: _delete_legacy_usage_rows(device_id)),
     ]
@@ -72,7 +75,7 @@ def _wipe_files(device_id: str) -> dict[str, Any]:
     if legacy.is_dir() and not legacy.is_symlink():
         shutil.rmtree(legacy)
         out["legacy_dir_removed"] = True
-    out["seeded"] = bool(ensure_device_data_initialized(device_id))
+    out["seeded"] = bool(device_data_paths.ensure_device_data_initialized(device_id))
     return out
 
 
@@ -87,7 +90,7 @@ def _wipe_caches(device_id: str) -> None:
     interaction_feedback.clear_face_analysis(device_id)
 
 
-def clear_device_data(device_id: str) -> dict[str, Any]:
+def _clear_device_data_locked(device_id: str) -> dict[str, Any]:
     """清除设备全部云端数据，返回 ``{deleted, files, errors}``。
 
     单步失败只记进 ``errors`` 而不中断——每一步在目标已不存在时都不报错，
@@ -122,3 +125,12 @@ def clear_device_data(device_id: str) -> dict[str, Any]:
 
     logger.info("[device_data] 已清除 device_id=%s deleted=%s files=%s errors=%s", did, deleted, files, errors)
     return {"deleted": deleted, "files": files, "errors": errors}
+
+
+def clear_device_data(device_id: str) -> dict[str, Any]:
+    """Serialize a full device wipe against file-memory readers and writers."""
+    try:
+        with device_guard(device_id):
+            return _clear_device_data_locked(device_id)
+    except ValueError as exc:
+        return {"deleted": {}, "files": {}, "errors": [str(exc)]}

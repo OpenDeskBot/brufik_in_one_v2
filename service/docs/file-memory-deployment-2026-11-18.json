@@ -1,0 +1,777 @@
+{
+  "date": "2026-11-18",
+  "timezone": "Asia/Shanghai",
+  "status": "deployed_and_real_agent_verified",
+  "server": {
+    "host": "39.107.38.241",
+    "service_root": "/root/work/brufik_in_one_v2/service",
+    "unit": "deskbot-server.service",
+    "public_health": {
+      "status": 200,
+      "body": {
+        "status": "ok"
+      }
+    }
+  },
+  "release": {
+    "status": "deployed",
+    "backup": "/root/work/brufik_in_one_v2/service/data/backups/file-memory-20261118T104925Z",
+    "installed_files": 32,
+    "config_preserved": true,
+    "health": "passed",
+    "foreign_keys": "passed",
+    "legacy_sql_memory_rows": 0,
+    "dependency_fix": {
+      "file": "src/deskbot_server/service/application/realtime_voiceprint.py",
+      "sha256": "ac801572635c4d5edc6157cd3da3964ca556714ca7e934b0e90234e0eee697aa",
+      "speech_event_probe": "passed"
+    },
+    "recall_provenance_fix": {
+      "status": "deployed",
+      "candidate_probe": "passed",
+      "files": {
+        "src/deskbot_server/service/memory_service.py": "e781a9923b69d611b27a0cd7839e3ab99b3f5ec4ed29a1f3c6e6de2584fc76d9",
+        "src/deskbot_server/service/application/memory_session.py": "e5ed3d135c9c4bc4c532eff3f47f4424a4d930efe93d3969a735135c5e2761e5",
+        "src/deskbot_server/service/agent_tools.py": "71e37a75660a7dc8cc1c3cdb959ecae941529ab85516e3b1595d2189c392e511"
+      }
+    },
+    "split_fragment_fix": {
+      "status": "deployed",
+      "candidate_probe": "passed",
+      "files": {
+        "src/deskbot_server/service/memory_service.py": "c79c56c36a3861a219cf02c2b77f6fe1e5e282a0bc87c4c99c4ac003514b8f7e",
+        "src/deskbot_server/service/application/memory_session.py": "427157bf8989a4baa0202e082610c7e7a5473db06d359d16b612153bf6a4463e",
+        "src/deskbot_server/service/agent_tools.py": "b647bd6a6a2a360e28b1f91547c8d6ef13fb9005aad2471c8b367376d1298f76"
+      }
+    }
+  },
+  "final_audit": {
+    "status": "passed",
+    "fixtures_cleaned": [
+      "memory_live_8c470c4c70fc",
+      "memory_live_b321559d8bd9",
+      "memory_live_e4dae74d85ee",
+      "memory_live_253593616ae0",
+      "memory_live_6575c2ff5271",
+      "memory_live_2e71cf3d5bfb",
+      "memory_live_809df08d3ba6"
+    ],
+    "remaining_test_devices": 0,
+    "counts_after_cleanup": {
+      "users": 10,
+      "devices": 12,
+      "device_profile_face": 3,
+      "device_profile_voice": 5,
+      "device_memory": 0
+    },
+    "original_identity_rows_preserved": true,
+    "legacy_facts_preserved": 5,
+    "database_integrity": "passed",
+    "foreign_keys": "passed",
+    "config_preserved": true,
+    "health": {
+      "9000": 200,
+      "9104": 200,
+      "9110": 200
+    },
+    "installed_file_count": 33,
+    "installed_sha256": {
+      "src/deskbot_server/client/flecket_live.py": "44ee335779927214b4a14a001ce42b9b2814538fd33a602b80debad27d5a4891",
+      "src/deskbot_server/client/moss_live.py": "8066e65be810b7ed6397e0a0be7b3384de38de423a6c288cf4d50f166559171b",
+      "src/deskbot_server/dao/device_memory_mapper.py": "faa24b2cc22918d4a233634007185d8e25aa00ba7b28d8a0a4ff739c416bda76",
+      "src/deskbot_server/dao/memory_file_store.py": "a66bed2769c42bfeeaa1bc87d1c09bd1b2af6336183ba70718f4c79d28b17bf5",
+      "src/deskbot_server/db/init_db.py": "82c42102fc3df8f3f5d622cfe71c7bdb6b02121acf6ef12ae7c16ba7a53c5376",
+      "src/deskbot_server/db/models.py": "5b6801ccd061d0db19ee2f7ebd0338a29b8052843f2b79d8796361c96fde8046",
+      "src/deskbot_server/model/memory.py": "1a446a290964b3b568fb067ba163faaa66697c164a8e02ac4f3988e2928c8ac2",
+      "src/deskbot_server/model/system_event.py": "6f687d0684b213a7faed567219b5aa5d95dc56d504c1dd5ce711ca10cbc9bf56",
+      "src/deskbot_server/service/memory_service.py": "c79c56c36a3861a219cf02c2b77f6fe1e5e282a0bc87c4c99c4ac003514b8f7e",
+      "src/deskbot_server/service/memory_migration.py": "3d96706e88101549554c4e5e693291ace46fb6dda3f940a67edb8ef555ba6a68",
+      "src/deskbot_server/service/memory_consolidation.py": "86b6775471180ba3de131cd0ba59df2fd41c1a88ca803b54a044d15a8bcd77a5",
+      "src/deskbot_server/service/application/memory_session.py": "427157bf8989a4baa0202e082610c7e7a5473db06d359d16b612153bf6a4463e",
+      "src/deskbot_server/service/application/face_registration.py": "d762fc800624af14a578b0738f41b39e812729c1205759ca75fd4bd7c51e25f6",
+      "src/deskbot_server/service/application/voice_registration.py": "1973844a76288094885025e17ab05a2ba02af93ea0b36a5f565dec48f8fcfd68",
+      "src/deskbot_server/service/application/face_snapshot_cache.py": "8796ba5a9881c26b324b052b5bba51e641d8330ead5a81c04ff6c0b9ce758a1a",
+      "src/deskbot_server/service/application/voice_snapshot_cache.py": "6768fbad0f26e30a298bfa0e0215a6eff2f0274cb9be35d76b77219aeadeb48a",
+      "src/deskbot_server/service/application/device_media.py": "5e378e4837b981371b2ec4230d75fb2332f5cfe7525623dc88ac4178a2fbc5a2",
+      "src/deskbot_server/service/agent_tools.py": "b647bd6a6a2a360e28b1f91547c8d6ef13fb9005aad2471c8b367376d1298f76",
+      "src/deskbot_server/service/agent_perception.py": "d1b9f03b93850de1157523aa18dab34bc3a08a5d589751a8e81bf0eb3cf81630",
+      "src/deskbot_server/service/moss_live_service.py": "92d8791b0185fe99632cc7260cd7e362315f1d41049a75237c57b1f9787a14c1",
+      "src/deskbot_server/service/system_event_service.py": "650c407273374d0b6101ec85d3cee0097a7c1b7f76179d07446e8c87b3f1a6a4",
+      "src/deskbot_server/service/voiceprint_service.py": "b192fc209a719f2e5f6ddf25fb0e6c29b438b5875a3b6923f7566d96cb5f6a76",
+      "src/deskbot_server/service/face_profile_service.py": "bbf6aa75c502e8b74c73683694f94cd68eb0334b4f4b77f408b9d95b7514a668",
+      "src/deskbot_server/service/voice_profile_service.py": "100051f216581ad183feb032213b16a51903ab42d0c4164bc61f7b62a37d28b5",
+      "src/deskbot_server/service/device_data_service.py": "98432ffc0045b8c3f26c001988da5c92015fbb620aaef406920cc7f1d8bbef67",
+      "src/deskbot_server/service/scheduled_task_service.py": "911b43a680753d0b36bacdfefd612cb33e27ff7156fb2f0f30ef6cead0fac520",
+      "src/deskbot_server/web/blueprints/app_bp.py": "983cfcd3a0f28643ad45d2dea930155a8cc57d658ac813929497cd5e72e33fd7",
+      "src/deskbot_server/public/admin/views/app2c/memories.html": "6571f8148a38aaa2a25315393a351754aef26e3ee2f3e0f7cf12773740666ae4",
+      "tools/build_public.py": "a8a217f7f7925db7d3267989b23bae7809da222f3004f0f05334baa9a9c6d5c1",
+      "src/deskbot_server/service/application/realtime_voiceprint.py": "ac801572635c4d5edc6157cd3da3964ca556714ca7e934b0e90234e0eee697aa",
+      "src/deskbot_server/public/shared/views.json": "942e7f6838457ba5b4ec6c4f10c963c13d1b1cde3a1009bdedc394657358a975",
+      "src/deskbot_server/public/admin/index.html": "5c22f8f9fc5941ee7df859091179ad6457642291d86170a155c6ae260a788ebb",
+      "src/deskbot_server/public/site/index.html": "5c22f8f9fc5941ee7df859091179ad6457642291d86170a155c6ae260a788ebb"
+    }
+  },
+  "validation": {
+    "pytest": {
+      "passed": 341,
+      "failed": 0,
+      "warnings": [
+        "Existing Starlette TestClient/httpx deprecation warning"
+      ]
+    },
+    "file_memory_tests": {
+      "passed": 32,
+      "failed": 0
+    },
+    "ruff": "passed",
+    "compileall": "passed",
+    "whitespace": "passed",
+    "local_source_hashes_match_all_30_deployed_source_files": true,
+    "production_log_audit": {
+      "since_latest_restart": true,
+      "tracebacks": 0,
+      "memory_persistence_errors": 0,
+      "attribute_errors": 0,
+      "upstream_session_failures": 0
+    }
+  },
+  "real_agent": {
+    "kind": "real_flecket_asr_vpr_with_synthetic_speech",
+    "device_id": "memory_live_809df08d3ba6",
+    "real_agent": true,
+    "real_asr": true,
+    "real_voiceprint": true,
+    "physical_rom": false,
+    "microphone_capture": false,
+    "camera_capture": false,
+    "stages": [
+      {
+        "stage": "enroll",
+        "input": [
+          "我叫小林，请记住我的声音。"
+        ],
+        "answers": [
+          "好的，我来记住你的声音。",
+          "已经记住你的声音啦，小林。下次你说话我就能认出你了。"
+        ],
+        "tools": [
+          {
+            "name": "register_voiceprint",
+            "output": {
+              "ok": true,
+              "status": "registered",
+              "name": "小林",
+              "profile_id": 9,
+              "person_id": "p70ad54748f73407fba442c5d",
+              "memory_status": "linked",
+              "speak": true
+            }
+          }
+        ],
+        "context": [
+          {
+            "lemon_loaded": false,
+            "osmanthus_loaded": false
+          },
+          {
+            "lemon_loaded": false,
+            "osmanthus_loaded": false
+          }
+        ],
+        "voice_state": "unknown",
+        "playback_completed": true,
+        "session_reset": false,
+        "elapsed_s": 11.39
+      },
+      {
+        "stage": "remember",
+        "input": [
+          "我喜欢柠檬茶，请记住这个爱好。"
+        ],
+        "answers": [
+          "已经记住了，小林。你喜欢柠檬茶，以后有相关的推荐我会想着你的。"
+        ],
+        "tools": [
+          {
+            "name": "person_read",
+            "output": {
+              "ok": true,
+              "person": {
+                "id": "p70ad54748f73407fba442c5d",
+                "name": "小林",
+                "aliases": [
+                  "小林"
+                ],
+                "version": 2,
+                "updated_at": "2026-11-18T19:22:13.274+08:00",
+                "processed_event": "20261118-e91462e0d6d5738cabc3175c",
+                "entries": [
+                  {
+                    "id": "m2351e59003ad4e12b0ff088b",
+                    "person_id": "p70ad54748f73407fba442c5d",
+                    "section": "爱好",
+                    "text": "用户自述：我喜欢柠檬茶",
+                    "source_ids": [
+                      "20261118-e91462e0d6d5738cabc3175c"
+                    ],
+                    "created_at": "2026-11-18T19:22:13.274+08:00",
+                    "updated_at": "2026-11-18T19:22:13.274+08:00",
+                    "observed_at": "2026-11-18T19:22:10.117000+08:00",
+                    "expires_at": null,
+                    "status": "active",
+                    "replaces": null,
+                    "expired": false,
+                    "source_count": 1
+                  }
+                ]
+              },
+              "total": 1,
+              "has_more": false,
+              "speak": true
+            }
+          }
+        ],
+        "context": [
+          {
+            "lemon_loaded": false,
+            "osmanthus_loaded": false
+          },
+          {
+            "lemon_loaded": true,
+            "osmanthus_loaded": false
+          }
+        ],
+        "voice_state": "found",
+        "playback_completed": true,
+        "session_reset": false,
+        "elapsed_s": 11.24
+      },
+      {
+        "stage": "episode",
+        "input": [
+          "今天我把钥匙放在绿色盒子里。"
+        ],
+        "answers": [
+          "好的，我记下了，钥匙放在绿色盒子里。需要我帮你设个提醒吗？"
+        ],
+        "tools": [],
+        "context": [
+          {
+            "lemon_loaded": true,
+            "osmanthus_loaded": false
+          }
+        ],
+        "voice_state": "found",
+        "playback_completed": true,
+        "session_reset": false,
+        "elapsed_s": 9.36
+      },
+      {
+        "stage": "load",
+        "input": [
+          "我喜欢喝什么茶？"
+        ],
+        "answers": [
+          "你喜欢喝柠檬茶。"
+        ],
+        "tools": [
+          {
+            "name": "person_read",
+            "output": {
+              "ok": true,
+              "person": {
+                "id": "p70ad54748f73407fba442c5d",
+                "name": "小林",
+                "aliases": [
+                  "小林"
+                ],
+                "version": 2,
+                "updated_at": "2026-11-18T19:22:13.274+08:00",
+                "processed_event": "20261118-16a86a7478e4e3b2453f3ef6",
+                "entries": [
+                  {
+                    "id": "m2351e59003ad4e12b0ff088b",
+                    "person_id": "p70ad54748f73407fba442c5d",
+                    "section": "爱好",
+                    "text": "用户自述：我喜欢柠檬茶",
+                    "source_ids": [
+                      "20261118-e91462e0d6d5738cabc3175c"
+                    ],
+                    "created_at": "2026-11-18T19:22:13.274+08:00",
+                    "updated_at": "2026-11-18T19:22:13.274+08:00",
+                    "observed_at": "2026-11-18T19:22:10.117000+08:00",
+                    "expires_at": null,
+                    "status": "active",
+                    "replaces": null,
+                    "expired": false,
+                    "source_count": 1
+                  }
+                ]
+              },
+              "total": 1,
+              "has_more": false,
+              "speak": true
+            }
+          }
+        ],
+        "context": [
+          {
+            "lemon_loaded": true,
+            "osmanthus_loaded": false
+          },
+          {
+            "lemon_loaded": true,
+            "osmanthus_loaded": false
+          }
+        ],
+        "voice_state": "found",
+        "playback_completed": true,
+        "session_reset": false,
+        "elapsed_s": 5.52
+      },
+      {
+        "stage": "recall",
+        "input": [
+          "请查每日记录，我把钥匙放在哪里？"
+        ],
+        "answers": [
+          "小林，你今天说过钥匙放在绿色盒子里，去那里找找看。"
+        ],
+        "tools": [
+          {
+            "name": "chat_search",
+            "output": {
+              "ok": true,
+              "events": [
+                {
+                  "id": "20261118-0bd092e586af3d9a306be921",
+                  "kind": "user",
+                  "text": "请查每日记录，我把钥匙放在哪里？",
+                  "actor": "小林",
+                  "person_id": "p70ad54748f73407fba442c5d",
+                  "identity_basis": "voice",
+                  "turn_id": "turn_cf143d2853b0447391ac32eecb3e2caf",
+                  "occurred_at": "2026-11-18T19:22:38.639000+08:00",
+                  "received_at": "2026-11-18T19:22:41.866+08:00",
+                  "status": "observed",
+                  "source_ids": [],
+                  "truncated": false
+                },
+                {
+                  "id": "20261118-4d06edbef6289c5fca94aed4",
+                  "kind": "assistant",
+                  "text": "好的，我记下了，钥匙放在绿色盒子里。需要我帮你设个提醒吗？",
+                  "actor": "机器人",
+                  "person_id": "p70ad54748f73407fba442c5d",
+                  "identity_basis": "unknown",
+                  "turn_id": "turn_0d757b794a1345d8a6169fdb2e4d4ea0",
+                  "occurred_at": "2026-11-18T19:22:27.537000+08:00",
+                  "received_at": "2026-11-18T19:22:27.540+08:00",
+                  "status": "generated_playback_unconfirmed",
+                  "source_ids": [
+                    "20261118-e91462e0d6d5738cabc3175c",
+                    "20261118-f1fff688e4b0cf89273e12c2"
+                  ],
+                  "truncated": false
+                },
+                {
+                  "id": "20261118-c3208cacabfd9bdfcfaa6d86",
+                  "kind": "user",
+                  "text": "今天我把钥匙放在绿色盒子里。",
+                  "actor": "小林",
+                  "person_id": "p70ad54748f73407fba442c5d",
+                  "identity_basis": "voice",
+                  "turn_id": "turn_0d757b794a1345d8a6169fdb2e4d4ea0",
+                  "occurred_at": "2026-11-18T19:22:22.081000+08:00",
+                  "received_at": "2026-11-18T19:22:24.825+08:00",
+                  "status": "observed",
+                  "source_ids": [],
+                  "truncated": false
+                }
+              ],
+              "total": 3,
+              "has_more": false,
+              "offset": 0,
+              "speak": true
+            }
+          }
+        ],
+        "context": [
+          {
+            "lemon_loaded": true,
+            "osmanthus_loaded": false
+          },
+          {
+            "lemon_loaded": true,
+            "osmanthus_loaded": false
+          }
+        ],
+        "voice_state": "found",
+        "playback_completed": true,
+        "session_reset": false,
+        "elapsed_s": 10.68
+      },
+      {
+        "stage": "correct",
+        "input": [
+          "纠正一下，我现在喜欢桂花茶。",
+          "不喜欢柠檬茶了。"
+        ],
+        "answers": [
+          "好的，已经帮你改过来了，现在记下你喜欢桂花茶，不再喜欢柠檬茶。"
+        ],
+        "tools": [
+          {
+            "name": "person_read",
+            "output": {
+              "ok": false,
+              "status": "cancelled",
+              "error": "本轮已被新输入打断"
+            }
+          },
+          {
+            "name": "person_read",
+            "output": {
+              "ok": true,
+              "person": {
+                "id": "p70ad54748f73407fba442c5d",
+                "name": "小林",
+                "aliases": [
+                  "小林"
+                ],
+                "version": 2,
+                "updated_at": "2026-11-18T19:22:13.274+08:00",
+                "processed_event": "20261118-8c45fa5825f22cd9fb58354b",
+                "entries": [
+                  {
+                    "id": "m2351e59003ad4e12b0ff088b",
+                    "person_id": "p70ad54748f73407fba442c5d",
+                    "section": "爱好",
+                    "text": "用户自述：我喜欢柠檬茶",
+                    "source_ids": [
+                      "20261118-e91462e0d6d5738cabc3175c"
+                    ],
+                    "created_at": "2026-11-18T19:22:13.274+08:00",
+                    "updated_at": "2026-11-18T19:22:13.274+08:00",
+                    "observed_at": "2026-11-18T19:22:10.117000+08:00",
+                    "expires_at": null,
+                    "status": "active",
+                    "replaces": null,
+                    "expired": false,
+                    "source_count": 1
+                  }
+                ]
+              },
+              "total": 1,
+              "has_more": false,
+              "speak": true
+            }
+          },
+          {
+            "name": "person_update",
+            "output": {
+              "ok": true,
+              "person_id": "p70ad54748f73407fba442c5d",
+              "entry": {
+                "id": "m5e768258a7214974ba39b114",
+                "person_id": "p70ad54748f73407fba442c5d",
+                "section": "爱好",
+                "text": "用户自述：我喜欢桂花茶",
+                "source_ids": [
+                  "20261118-8c45fa5825f22cd9fb58354b",
+                  "20261118-e4332263f3362b51c73a4711"
+                ],
+                "created_at": "2026-11-18T19:22:57.465+08:00",
+                "updated_at": "2026-11-18T19:22:57.465+08:00",
+                "observed_at": "2026-11-18T19:22:53.088000+08:00",
+                "expires_at": null,
+                "status": "active",
+                "replaces": "m2351e59003ad4e12b0ff088b"
+              },
+              "version": 3,
+              "status": "updated",
+              "saved": true,
+              "speak": true
+            }
+          }
+        ],
+        "context": [
+          {
+            "lemon_loaded": true,
+            "osmanthus_loaded": false
+          },
+          {
+            "lemon_loaded": true,
+            "osmanthus_loaded": false
+          },
+          {
+            "lemon_loaded": true,
+            "osmanthus_loaded": false
+          },
+          {
+            "lemon_loaded": false,
+            "osmanthus_loaded": true
+          }
+        ],
+        "voice_state": "found",
+        "playback_completed": true,
+        "session_reset": false,
+        "elapsed_s": 15.08
+      },
+      {
+        "stage": "load_after_correction",
+        "input": [
+          "我喜欢喝什么茶？"
+        ],
+        "answers": [
+          "你喜欢喝桂花茶呀，小林。"
+        ],
+        "tools": [
+          {
+            "name": "person_read",
+            "output": {
+              "ok": true,
+              "person": {
+                "id": "p70ad54748f73407fba442c5d",
+                "name": "小林",
+                "aliases": [
+                  "小林"
+                ],
+                "version": 3,
+                "updated_at": "2026-11-18T19:22:57.465+08:00",
+                "processed_event": "20261118-350bba1edbc760117db92c98",
+                "entries": [
+                  {
+                    "id": "m5e768258a7214974ba39b114",
+                    "person_id": "p70ad54748f73407fba442c5d",
+                    "section": "爱好",
+                    "text": "用户自述：我喜欢桂花茶",
+                    "source_ids": [
+                      "20261118-8c45fa5825f22cd9fb58354b",
+                      "20261118-e4332263f3362b51c73a4711"
+                    ],
+                    "created_at": "2026-11-18T19:22:57.465+08:00",
+                    "updated_at": "2026-11-18T19:22:57.465+08:00",
+                    "observed_at": "2026-11-18T19:22:53.088000+08:00",
+                    "expires_at": null,
+                    "status": "active",
+                    "replaces": "m2351e59003ad4e12b0ff088b",
+                    "expired": false,
+                    "source_count": 2
+                  }
+                ]
+              },
+              "total": 1,
+              "has_more": false,
+              "speak": true
+            }
+          }
+        ],
+        "context": [
+          {
+            "lemon_loaded": false,
+            "osmanthus_loaded": true
+          },
+          {
+            "lemon_loaded": false,
+            "osmanthus_loaded": true
+          }
+        ],
+        "voice_state": "found",
+        "playback_completed": true,
+        "session_reset": false,
+        "elapsed_s": 7.19
+      },
+      {
+        "stage": "forget",
+        "input": [
+          "请忘记我的喝茶喜好和相关记录。"
+        ],
+        "answers": [],
+        "tools": [
+          {
+            "name": "memory_forget",
+            "output": {
+              "ok": true,
+              "status": "forgotten",
+              "entries": 2,
+              "events": 15,
+              "reset_session": true,
+              "speak": true
+            }
+          }
+        ],
+        "context": [
+          {
+            "lemon_loaded": false,
+            "osmanthus_loaded": true
+          }
+        ],
+        "voice_state": "found",
+        "playback_completed": false,
+        "session_reset": true,
+        "elapsed_s": 4.62
+      },
+      {
+        "stage": "after_forget",
+        "input": [
+          "我喜欢喝什么茶？"
+        ],
+        "answers": [
+          "小林，我这边还没有记录你喜欢喝的茶，你告诉我之后我就帮你记下来。"
+        ],
+        "tools": [
+          {
+            "name": "person_read",
+            "output": {
+              "ok": true,
+              "person": {
+                "id": "p70ad54748f73407fba442c5d",
+                "name": "小林",
+                "aliases": [
+                  "小林"
+                ],
+                "version": 4,
+                "updated_at": "2026-11-18T19:23:17.709+08:00",
+                "processed_event": "20261118-1e645cabf18374e9bd53291a",
+                "entries": []
+              },
+              "total": 0,
+              "has_more": false,
+              "speak": true
+            }
+          },
+          {
+            "name": "chat_search",
+            "output": {
+              "ok": true,
+              "events": [
+                {
+                  "id": "20261118-1e645cabf18374e9bd53291a",
+                  "kind": "user",
+                  "text": "我喜欢喝什么茶？",
+                  "actor": "小林",
+                  "person_id": "p70ad54748f73407fba442c5d",
+                  "identity_basis": "voice",
+                  "turn_id": "turn_352a219c72a946838a3d1b54f829182f",
+                  "occurred_at": "2026-11-18T19:23:19.057000+08:00",
+                  "received_at": "2026-11-18T19:23:20.601+08:00",
+                  "status": "observed",
+                  "source_ids": [],
+                  "truncated": false
+                },
+                {
+                  "id": "20261118-350bba1edbc760117db92c98",
+                  "kind": "user",
+                  "text": "我喜欢喝什么茶？",
+                  "actor": "小林",
+                  "person_id": "p70ad54748f73407fba442c5d",
+                  "identity_basis": "voice",
+                  "turn_id": "turn_5f15ea817784418cbf87c4e4a84b24c3",
+                  "occurred_at": "2026-11-18T19:23:05.801000+08:00",
+                  "received_at": "2026-11-18T19:23:07.345+08:00",
+                  "status": "observed",
+                  "source_ids": [],
+                  "truncated": false
+                },
+                {
+                  "id": "20261118-16a86a7478e4e3b2453f3ef6",
+                  "kind": "user",
+                  "text": "我喜欢喝什么茶？",
+                  "actor": "小林",
+                  "person_id": "p70ad54748f73407fba442c5d",
+                  "identity_basis": "voice",
+                  "turn_id": "turn_f5b11042893440fd891745ba93d159f5",
+                  "occurred_at": "2026-11-18T19:22:32.341000+08:00",
+                  "received_at": "2026-11-18T19:22:33.882+08:00",
+                  "status": "observed",
+                  "source_ids": [],
+                  "truncated": false
+                }
+              ],
+              "total": 3,
+              "has_more": false,
+              "offset": 0,
+              "speak": true
+            }
+          }
+        ],
+        "context": [
+          {
+            "lemon_loaded": false,
+            "osmanthus_loaded": false
+          },
+          {
+            "lemon_loaded": false,
+            "osmanthus_loaded": false
+          }
+        ],
+        "voice_state": "found",
+        "playback_completed": true,
+        "session_reset": false,
+        "elapsed_s": 9.86
+      }
+    ],
+    "checks": {
+      "daily_record_and_person_update": true,
+      "production_http_auth_and_file_reads": true,
+      "recognized_profile_loaded_across_connection": true,
+      "history_search": true,
+      "correction_and_reload": true,
+      "forget_and_no_resurrection": true
+    },
+    "daily_files": [
+      "chat_20261118.txt"
+    ],
+    "person_files": [
+      "person_小林.txt"
+    ],
+    "status": "passed",
+    "fixture_cleanup": "passed"
+  },
+  "issues_found_and_resolved": [
+    {
+      "issue": "Incomplete audio upload before the first run",
+      "resolution": "Verify all eight mono 16kHz PCM16 files before creating a fixture"
+    },
+    {
+      "issue": "Missing realtime_voiceprint turn methods in the initial release manifest",
+      "resolution": "Deploy the dependency, preserve its original copy, and run a speech-event dependency probe before restart"
+    },
+    {
+      "issue": "One short utterance timed out",
+      "resolution": "The same audio and device succeeded in a standalone retry and subsequent full runs; no cause was established"
+    },
+    {
+      "issue": "Profile forgetting left later recalled assistant answers searchable",
+      "resolution": "Track prompt/tool evidence per turn and recursively erase derived outputs; retain independent user input"
+    },
+    {
+      "issue": "Voice model was not ready immediately after main HTTP health became ready",
+      "resolution": "Wait for the actual VPR dependency before enrolling any fixture"
+    },
+    {
+      "issue": "A correction split into two ASR turns retained its first fragment after forgetting",
+      "resolution": "Include unfinished same-person ASR fragments in the revision sources, preserving request idempotency"
+    }
+  ],
+  "rollback": {
+    "initial_backup": "/root/work/brufik_in_one_v2/service/data/backups/file-memory-20261118T104925Z",
+    "notes": "The initial release changes storage format. Rollback requires the matching code and database/device-data snapshot. Later code fixes have dependency-original, provenance-original and fragment-original subdirectories."
+  },
+  "scope_limits": [
+    "Real Flecket Agent, ASR, VPR and production HTTP login/read/ownership checks were used with synthetic speech and isolated test identities",
+    "The integration harness invokes the deployed bridge in a separate process; ROM playback acknowledgments are simulated and physical hardware/device WebSocket ingress was not exercised",
+    "MOSS Live was not exercised in this server run",
+    "File erasure checks cover current device memory files; server backups and upstream provider logs/history were not erased",
+    "Source linkage applies to new tracked records; older records without provenance may require explicit event deletion or whole-person forgetting"
+  ],
+  "test_fixtures": "All seven test accounts/devices and their data and voice profiles removed; original 10 accounts, 12 devices, 3 face profiles and 5 voice profiles remain",
+  "existing_workspace_changes_preserved": true,
+  "diagnostic_tool": {
+    "path": "/root/work/brufik_in_one_v2/service/tools/verify_file_memory_agent.py",
+    "status": "installed",
+    "sha256": "6aa52352602778310292980ed5c092b5749e06ae00cc9bef905dbda30030e714",
+    "separate_from_runtime_manifest": true
+  }
+}

@@ -47,20 +47,26 @@ async def execute(agent, name, args, call_id="test-call"):
 
 
 def test_agent_memory_is_persistent_idempotent_and_device_scoped():
+    from deskbot_server.service import memory_service as memory
+
+    person = memory.ensure_person("robot", "小明")
+    source = memory.record_chat_event("robot", kind="user", text="我喜欢爵士乐", external_id="source", person_id=person["id"])
     async def run():
         agent = fake_agent()
-        first = await execute(agent, "memory", {"action": "add", "text": "我喜欢爵士乐"})
-        second = await execute(agent, "memory", {"action": "add", "text": "我喜欢爵士乐"})
-        assert first["memory"]["id"] == second["memory"]["id"]
-        mid = first["memory"]["id"]
-        assert "爵士乐" in agent.instructions()
+        args = {"person_id": person["id"], "section": "爱好", "text": "喜欢爵士乐", "source_ids": [source["id"]], "expected_version": 0}
+        first = await execute(agent, "person_update", args)
+        second = await execute(agent, "person_update", args)
+        assert first["entry"]["id"] == second["entry"]["id"]
+        mid = first["entry"]["id"]
+        assert "爵士乐" not in agent.instructions()
         other = fake_agent("other")
-        assert (await execute(other, "memory", {"action": "get", "id": mid}))["ok"] is False
-        assert (await execute(other, "memory", {"action": "delete", "id": mid}))["ok"] is False
-        assert (await execute(agent, "memory", {"action": "update", "id": mid, "text": "我喜欢钢琴"}))["ok"]
-        assert (await execute(agent, "memory", {"action": "list"}))["memories"][0]["text"] == "我喜欢钢琴"
-        assert (await execute(agent, "memory", {"action": "delete", "id": mid}))["ok"]
-        assert not (await execute(agent, "memory", {"action": "list"}))["memories"]
+        assert not (await execute(other, "person_read", {"person_id": person["id"]}))["ok"]
+        assert not (await execute(other, "memory_forget", {"entry_ids": [mid]}))["ok"]
+        updated = await execute(agent, "person_update", {**args, "text": "喜欢钢琴", "entry_id": mid, "expected_version": 1}, call_id="update")
+        assert updated["ok"]
+        assert (await execute(agent, "person_read", {"person_id": person["id"]}))["person"]["entries"][0]["text"] == "喜欢钢琴"
+        assert (await execute(agent, "memory_forget", {"entry_ids": [updated["entry"]["id"]]}))["ok"]
+        assert not (await execute(agent, "person_read", {"person_id": person["id"]}))["person"]["entries"]
     asyncio.run(run())
 
 
@@ -79,16 +85,21 @@ def test_relative_reminder_keeps_seconds_and_cannot_cross_devices(monkeypatch):
 
 
 def test_memory_write_refreshes_agent_context_and_quiet_server_tool():
+    from deskbot_server.service import memory_service as memory
+
+    person = memory.ensure_person("robot", "小明")
+    source = memory.record_chat_event("robot", kind="user", text="我喜欢钢琴", external_id="source", person_id=person["id"])
     async def run():
         agent = fake_agent()
         refresh = AsyncMock()
         agent.bridge.client = SimpleNamespace(refresh_agent_instructions=refresh)
-        result = await execute(agent, "memory", {"action": "add", "text": "我喜欢钢琴", "speak": False})
+        result = await execute(agent, "person_update", {"person_id": person["id"], "section": "爱好", "text": "喜欢钢琴",
+                              "source_ids": [source["id"]], "expected_version": 0, "speak": False})
         assert result["ok"] and result["speak"] is False
-        refresh.assert_awaited_once()
-        assert "我喜欢钢琴" in refresh.call_args.args[0]
-        clock = await execute(agent, "get_current_time", {"speak": False})
-        assert clock["ok"] and clock["speak"] is False
+        refresh.assert_not_awaited()
+        assert "喜欢钢琴" in memory.person_context("robot", {"speaker": {"state": "found", "name": "小明"}})
+        removed = await execute(agent, "get_current_time", {"speak": False})
+        assert not removed["ok"] and removed["speak"] is False
     asyncio.run(run())
 
 

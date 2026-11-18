@@ -205,7 +205,7 @@ class VoiceprintService(metaclass=SingletonMeta):
             logger.debug("[vpr] 未匹配已知声纹 device_id=%s req=%s best_sim=%.3f", device_id, req, sim)
             return
         name = str(best.get("name") or "").strip() or "未知"
-        snap.finish_identification(device_id, seq, state=snap.STATE_FOUND, name=name, score=sim)
+        snap.finish_identification(device_id, seq, state=snap.STATE_FOUND, name=name, score=sim, profile_id=best.get("id"))
         logger.info(
             "[vpr] 说话人识别 device_id=%s req=%s name=%s sim=%.3f",
             device_id, req, name, sim,

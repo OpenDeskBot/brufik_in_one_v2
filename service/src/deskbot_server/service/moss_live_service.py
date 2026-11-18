@@ -20,6 +20,8 @@ from deskbot_server.model.pb_seq import PbAction, PbBlock, PbSeq, PlaybackOutcom
 from deskbot_server.model.realtime import media_identity
 from deskbot_server.model.robot_performance import RobotPerformance
 from deskbot_server.pb.media_wire import CAPABILITIES as MEDIA_CAPABILITIES
+from deskbot_server.service import memory_service as memory
+from deskbot_server.service.application.memory_session import MemorySession
 from deskbot_server.service.application.uplink_preview import split_uplink_preview
 from deskbot_server.service.conversation_service import moss_config
 from deskbot_server.service.pipeline.opus_downlink import decode_opus_batch_to_pcm_s16le
@@ -84,6 +86,8 @@ class MossLiveBridge:
         self.last_response_event = {}
         self.generation = hub._devices[device_id].generation
         self.decoder = opuslib_next.Decoder(16000, 1)
+        self.memory = MemorySession(device_id)
+        self._memory_unsubscribe = None
 
     def _spawn(self, coro):
         task = asyncio.create_task(coro)
@@ -108,6 +112,15 @@ class MossLiveBridge:
         return task
 
     async def start(self):
+        await self.memory.start()
+        loop = asyncio.get_running_loop()
+
+        def memory_changed(*, reset=False):
+            if reset:
+                loop.call_soon_threadsafe(self._memory_reset)
+
+        self._memory_unsubscribe = memory.subscribe(self.device_id, memory_changed)
+        self.memory.worker.add_done_callback(self._memory_done)
         await self.client.start()
         entry = self.hub._devices.get(self.device_id)
         if self.closed or entry is None or entry.generation != self.generation or entry.ws is not self.websocket:
@@ -126,6 +139,21 @@ class MossLiveBridge:
             self.client.config.camera,
             self.startup_audio_skipped,
         )
+
+    def _memory_done(self, task):
+        if not task.cancelled() and task.exception() is not None and not self.closed:
+            logger.error("[memory] 持久化失败 device_id=%s kind=%s", self.device_id, type(task.exception()).__name__)
+            self._spawn(self.websocket.close(code=1011, reason="memory persistence failed"))
+
+    def _memory_reset(self):
+        self.client.memory_invalidated = True
+        self.memory.invalidated = True
+        if hasattr(self.client, "_memory_context"):
+            self.client._memory_context = ""
+        for run in list(self.runs.values()):
+            self._stop(run)
+        if not getattr(self.client, "_active_calls", ()) and not self.closed:
+            self._spawn(self.websocket.close(code=1012, reason="memory context reset"))
 
     def begin(self):
         # Never hold the ROM receive loop during the multi-second handshake.
@@ -226,7 +254,23 @@ class MossLiveBridge:
         pass
 
     async def _on_event(self, action, data):
-        pass
+        if self.provider == "moss-live" and action == "input.speech.started" and data.get("turn_id"):
+            self.voiceprint.use_turn_events = True
+            self.voiceprint.begin_turn(data["turn_id"])
+            self._spawn(self._moss_memory_context(data["turn_id"]))
+        elif self.provider == "moss-live" and action in {"input.speech.stopped", "input.transcript.done"} and data.get("turn_id"):
+            self.voiceprint.finish_turn(data["turn_id"])
+            self._spawn(self._moss_memory_context(data["turn_id"]))
+
+    async def _moss_memory_context(self, turn_id):
+        from deskbot_server.service.system_event_service import PerceptionEvents
+
+        event = await PerceptionEvents(self.device_id).for_turn(turn_id)
+        self.memory.observations[turn_id] = event.as_dict()["data"]
+        self.memory.changed.set()
+        context = await self.memory.context(turn_id, event.as_dict()["data"])
+        if not self.closed and self.voiceprint.request_id == turn_id:
+            await self.client.refresh_memory_context(context)
 
     async def _before_audio(self, run):
         pass
@@ -241,7 +285,10 @@ class MossLiveBridge:
         return 0
 
     def _playback_finished(self, run, completed):
-        pass
+        source_turn = getattr(self.client, "_response_turns", {}).get(run.identity[0]) or run.identity[0]
+        self.memory.offer("memory.playback", {"text": f"语音播放{'完成' if completed else '中断'}；已确认播放 {run.played_ms} 毫秒",
+                                               "turn_id": source_turn, "status": "completed" if completed else "interrupted",
+                                               "external_id": "playback:" + run.req})
 
     def _note_control(self, action, data, run=None):
         # Keep enough protocol evidence to distinguish a model ending its turn
@@ -326,6 +373,12 @@ class MossLiveBridge:
                     if run.identity[0] == data.get("run_id") and data.get("status") == "failed":
                         self._stop(run)
             if action.startswith(("input.transcript.", "output.transcript.")):
+                self.memory.offer(action, data)
+                if self.provider == "moss-live" and action == "input.transcript.done" and data.get("turn_id"):
+                    from deskbot_server.service.system_event_service import PerceptionEvents
+
+                    self.memory.observations[data["turn_id"]] = PerceptionEvents(self.device_id).snapshot(data["turn_id"]).as_dict()["data"]
+                    self.memory.changed.set()
                 if self.transcript_queue.full():
                     self.transcript_queue.get_nowait()
                 self.transcript_queue.put_nowait(
@@ -491,6 +544,9 @@ class MossLiveBridge:
         if self.closed:
             return
         self.closed = True
+        if self._memory_unsubscribe:
+            self._memory_unsubscribe()
+            self._memory_unsubscribe = None
         await self.voiceprint.close()
         for task in list(self.tasks):
             task.cancel()
@@ -504,6 +560,10 @@ class MossLiveBridge:
                     async with asyncio.timeout(1):
                         await run.stream.seq._done.wait()
         await self.client.close()
+        try:
+            await self.memory.close()
+        except Exception as exc:
+            logger.error("[memory] 关闭时写入失败 device_id=%s kind=%s", self.device_id, type(exc).__name__)
         logger.info(
             "[%s] closed device_id=%s uploaded_frames=%d received_audio_chunks=%d startup_audio_skipped=%d",
             self.provider,
@@ -523,7 +583,7 @@ class FlecketBridge(MossLiveBridge):
         from deskbot_server.client.flecket_live import FlecketLiveClient
         from deskbot_server.service.agent_tools import AgentTools
         from deskbot_server.service.application.device_media import DeviceMedia
-        from deskbot_server.service.conversation_service import execute_agent_tool, flecket_config
+        from deskbot_server.service.conversation_service import flecket_config
         from deskbot_server.service.robot_performance_service import ROBOT_TOOL_INSTRUCTIONS, RobotPerformanceService
 
         self.performances = RobotPerformanceService(device_id)
@@ -539,7 +599,7 @@ class FlecketBridge(MossLiveBridge):
         self._response_announcements = {}
         self._completed_reminders = deque(maxlen=128)
         super().__init__(hub, device_id, websocket,
-                         client=client or FlecketLiveClient(flecket_config(device_id), tool_handler=execute_agent_tool), prefill_ms=prefill_ms)
+                         client=client or FlecketLiveClient(flecket_config(device_id)), prefill_ms=prefill_ms)
         self.client.robot_tool = self.performances.schema()
         self.client.performance_handler = self._handle_performance
         self.client.robot_instructions = ROBOT_TOOL_INSTRUCTIONS
@@ -551,11 +611,18 @@ class FlecketBridge(MossLiveBridge):
         self.perception_events = PerceptionEvents(device_id)
         self.voiceprint.use_turn_events = True
         self.client.system_event_provider = self._perception_for_turn
+        self.client.memory_context_provider = self._memory_context_for_turn
         self.media = DeviceMedia(self)
 
     async def _perception_for_turn(self, turn_id):
         self.voiceprint.finish_turn(turn_id)
         return await self.perception_events.for_turn(turn_id)
+
+    async def _memory_context_for_turn(self, turn_id, event, *, prepare=False, budget=4000):
+        observation = json.loads(event.context()).get("data", {}) if event.event == "perception_snapshot" else {}
+        if prepare:
+            return await self.memory.prepare(turn_id, observation, budget=budget)
+        return await self.memory.context(turn_id, observation, budget=budget)
 
     async def announce(self, text, *, timeout=45, task_id=None, scheduled_at=None):
         """An external Agent reminder succeeds only after the ROM played it."""
@@ -593,6 +660,7 @@ class FlecketBridge(MossLiveBridge):
             self._announcements.pop(token, None)
 
     def _playback_finished(self, run, completed):
+        super()._playback_finished(run, completed)
         future = self._announcements.get(run.announcement)
         if future is not None and not future.done():
             future.set_result({"ok": completed, "status": "completed" if completed else "interrupted"})
@@ -635,7 +703,8 @@ class FlecketBridge(MossLiveBridge):
             raise ValueError("本轮已经安排了媒体播放")
         token = uuid.uuid4().hex
         self._media_plans[token] = {"asset_id": asset_id, "kind": item["kind"], "duration_ms": arguments.get("duration_ms", 5000),
-                                    "generation": generation, "expires": time.monotonic()+20}
+                                    "generation": generation, "expires": time.monotonic()+20, "title": item["title"],
+                                    "source_turn_id": getattr(self.client, "_turn_id", None)}
         return {"ok": True, "status": "scheduled", "media_id": token, "title": item["title"]}
 
     def offer_ack(self, ack):
@@ -678,6 +747,9 @@ class FlecketBridge(MossLiveBridge):
                 result["error"] = "设备未完成动作"
         logger.info("[robot_perform] device_id=%s call_id=%s response_id=%s gesture=%s expression=%s timing=%s status=%s",
                     self.device_id, call_id, response_id, plan.gesture, plan.expression, plan.timing, result["status"])
+        self.memory.offer("memory.action", {"text": f"动作 {plan.gesture}；表情 {plan.expression}；{plan.duration_ms} 毫秒",
+                                             "status": result["status"], "source_turn_id": getattr(self.client, "_turn_id", None),
+                                             "external_id": "performance:" + call_id})
         return result
 
     async def _on_event(self, action, data):
@@ -761,9 +833,16 @@ class FlecketBridge(MossLiveBridge):
             return
         try:
             if plan["kind"] == "image":
-                await self.media.show_image(plan["asset_id"], plan["duration_ms"], generation=plan["generation"])
+                result = await self.media.show_image(plan["asset_id"], plan["duration_ms"], generation=plan["generation"])
             else:
-                await self.media.start_music(plan["asset_id"], generation=plan["generation"])
+                result = await self.media.start_music(plan["asset_id"], generation=plan["generation"])
+            if not result.get("ok"):
+                self.media.status = {"state": "failed", "error": result.get("error") or "设备未确认媒体开始执行"}
+            if hasattr(self, "memory"):
+                self.memory.offer("memory.action", {"text": f"{'展示图片' if plan['kind'] == 'image' else '播放音乐'}：{plan.get('title') or plan['asset_id']}",
+                                                     "status": result.get("status") or ("started" if result.get("ok") else "failed"),
+                                                     "source_turn_id": plan.get("source_turn_id"),
+                                                     "external_id": "media:" + uuid.uuid4().hex})
         except ValueError:
             self.media.status = {"state": "failed", "error": "媒体资源已不可用"}
 

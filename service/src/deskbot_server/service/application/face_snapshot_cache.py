@@ -69,16 +69,18 @@ def face_snapshot_detect_ms(device_id: str) -> int | None:
     return ms if ms is not None else None
 
 
-def list_device_faces(device_id: str) -> dict[int, dict[str, Any]]:
+def list_device_faces(device_id: str, *, max_age_s: float | None = None) -> dict[int, dict[str, Any]]:
     """返回设备最近一帧各 ``face_id`` 的快照（进程内缓存）。"""
     device_id = str(device_id or "").strip()
     if not device_id:
         return {}
     with _lock:
         mem = _snapshots.get(device_id)
-    if not mem:
-        return {}
-    return {int(k): dict(v) for k, v in mem.items()}
+        if max_age_s is not None:
+            observed = _detect_ts.get(device_id)
+            if observed is None or not 0 <= time.time() - observed <= max_age_s:
+                return {}
+        return {int(k): dict(v) for k, v in (mem or {}).items()}
 
 
 def get_perception_snapshot(device_id: str) -> dict:

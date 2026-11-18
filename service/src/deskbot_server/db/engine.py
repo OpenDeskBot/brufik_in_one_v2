@@ -64,6 +64,7 @@ def init_engine(db_path: Path | None = None):
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=30000")
             cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
         _session_factory = scoped_session(

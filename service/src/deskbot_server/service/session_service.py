@@ -19,6 +19,7 @@ from deskbot_server.dao.device_session_mapper import (
 )
 from deskbot_server.db.models import DeviceSession, DeviceSessionMessage
 from deskbot_server.db.transaction import transaction as db_transaction
+from deskbot_server.service.device_identity_service import ensure_device_identity
 
 SESSION_IDLE_SECONDS = 10 * 60
 _MAX_HISTORY_TURNS = 30
@@ -98,10 +99,11 @@ def create_session(
 ) -> dict[str, Any]:
     from deskbot_server.db.models import _new_id
 
-    dev = str(device_id).strip()
+    dev = str(device_id or "").strip()
     sid = _new_id()
     ts_str = datetime.fromtimestamp(now, tz=UTC).isoformat() if now is not None else None
     with db_transaction(transaction) as tx:
+        dev = ensure_device_identity(dev, transaction=tx)
         insert_session(sid, dev, _truncate_title(title or ""), created_at=ts_str, updated_at=ts_str, transaction=tx)
         session = get_session(sid, transaction=tx)
         if session is None:

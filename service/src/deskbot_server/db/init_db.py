@@ -8,6 +8,16 @@ from deskbot_server.db.models import Base
 logger = logging.getLogger("deskbot-server")
 
 
+def _ensure_import_device(conn, device_id: str) -> None:
+    from sqlalchemy.dialects.sqlite import insert
+
+    from deskbot_server.db.models import Device
+
+    conn.execute(insert(Device).values(device_id=device_id, display_name=device_id).on_conflict_do_nothing(
+        index_elements=["device_id"]
+    ))
+
+
 def _migrate_legacy_schema(engine) -> None:
     from sqlalchemy import inspect, text
 
@@ -242,6 +252,7 @@ def _migrate_face_profiles_to_db(engine) -> None:
             kind = str(item.get("descriptor_kind") or "embedding").strip()
             try:
                 with engine.begin() as conn:
+                    _ensure_import_device(conn, device_id)
                     conn.execute(
                         text(
                             "INSERT INTO device_profile_face "
@@ -299,6 +310,7 @@ def _migrate_memory_to_db(engine) -> None:
             title = str(item.get("title") or text_val[:64] or "").strip() or "未命名"
             try:
                 with engine.begin() as conn:
+                    _ensure_import_device(conn, device_id)
                     conn.execute(
                         text(
                             "INSERT OR IGNORE INTO device_memory "
@@ -390,5 +402,10 @@ def init_database() -> None:
     _migrate_devices_schema(engine)
     _migrate_scheduled_tasks_schema(engine)
     _migrate_quest_instance_schema(engine)
+    from deskbot_server.db.device_ownership import migrate_device_ownership
+
+    migrate_device_ownership(engine)
     _migrate_face_profiles_to_db(engine)
-    _migrate_memory_to_db(engine)
+    from deskbot_server.service.memory_migration import migrate_legacy_memories
+
+    migrate_legacy_memories()

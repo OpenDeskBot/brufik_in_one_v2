@@ -16,13 +16,13 @@ def test_ensure_device_data_initialized_copies_json(tmp_path, monkeypatch):
 
     monkeypatch.setattr(dd, "DATA_DIR", data_dir)
 
-    assert dd.ensure_device_data_initialized("deskbot_test", "1234") is True
-    dev_dir = data_dir / "deskbot_test_1234"
+    assert dd.ensure_device_data_initialized("deskbot_test") is True
+    dev_dir = data_dir / "deskbot_test"
     assert dev_dir.is_dir()
     assert (dev_dir / "servo.json").is_file()
     assert (dev_dir / "user_memory.json").is_file()
     assert not (dev_dir / "llm_system.txt").exists()
-    assert dd.ensure_device_data_initialized("deskbot_test", "1234") is False
+    assert dd.ensure_device_data_initialized("deskbot_test") is False
 
 
 def test_resolve_json_path_device_scoped(tmp_path, monkeypatch):
@@ -35,12 +35,12 @@ def test_resolve_json_path_device_scoped(tmp_path, monkeypatch):
     monkeypatch.setattr(dd, "DATA_DIR", data_dir)
 
     global_path = str(data_dir / "servo.json")
-    scoped = dd.resolve_json_path(global_path, "deskbot_abc", "5678")
-    assert scoped == str(data_dir / "deskbot_abc_5678" / "servo.json")
+    scoped = dd.resolve_json_path(global_path, "deskbot_abc")
+    assert scoped == str(data_dir / "deskbot_abc" / "servo.json")
     assert dd.resolve_json_path(global_path, None) == global_path
 
     camera_path = str(global_dir / "camera_face.json")
-    assert dd.resolve_json_path(camera_path, "deskbot_abc", "5678") == camera_path
+    assert dd.resolve_json_path(camera_path, "deskbot_abc") == camera_path
 
 
 def test_load_and_save_llm_system_prompt(tmp_path, monkeypatch):

@@ -94,7 +94,7 @@ def test_handshake_merges_saved_agent_tools_and_persona(catalog, monkeypatch, pr
                                   robot_instructions=performance.ROBOT_TOOL_INSTRUCTIONS)
         await value.start()
         settings = ws.sent[0]["session"]
-        assert settings["tools"] == [clock, catalog.schema()]
+        assert settings["tools"] == [catalog.schema()]
         assert settings["instructions"].startswith(prompt or "原有 Agent 人设")
         assert "speak=false" in settings["instructions"]
         assert "voice" not in settings["audio"]["output"]

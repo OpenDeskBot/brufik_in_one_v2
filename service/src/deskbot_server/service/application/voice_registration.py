@@ -14,6 +14,9 @@ def register_voice_for_device(
     name: str,
     *,
     max_age_s: float | None = None,
+    request_id: str | None = None,
+    person_id: str | None = None,
+    memory_epoch: str | None = None,
 ) -> dict[str, Any]:
     """用「最近一次成功抽出 embedding 的 VAD 语音」注册/更新声纹档案。
 
@@ -28,6 +31,10 @@ def register_voice_for_device(
         raise ValueError("device_id required")
     if not name:
         raise ValueError("name required")
+    if person_id:
+        from deskbot_server.service.memory_service import read_person
+
+        read_person(device_id, person_id)
 
     svc = VoiceprintService()
     if not svc.enabled():
@@ -40,7 +47,7 @@ def register_voice_for_device(
     except (TypeError, ValueError):
         cap = DEFAULT_SAMPLE_MAX_AGE_S
 
-    embedding = take_voice_sample(device_id, max_age_s=cap)
+    embedding = take_voice_sample(device_id, max_age_s=cap, request_id=request_id)
     if embedding is None:
         raise ValueError(
             "还没有可用的声音样本：请先对机器人说一句完整的话（半秒以上），"
@@ -48,4 +55,13 @@ def register_voice_for_device(
         )
 
     profile = svc.register_voice_embedding(name, embedding, device_id=device_id)
+    from deskbot_server.service.memory_service import ensure_person
+
+    try:
+        person = ensure_person(device_id, name, identity="voice:" + str(profile["id"]), person_id=person_id,
+                               rename=True, expected_epoch=memory_epoch)
+        profile["memory_person_id"] = person["id"]
+        profile["memory_status"] = "linked"
+    except (ValueError, OSError):
+        profile["memory_status"] = "pending"
     return {"ok": True, "profile": profile, "device_id": device_id}

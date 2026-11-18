@@ -7,6 +7,7 @@ import threading
 from typing import Any
 
 from deskbot_server.dao import device_profile_face_mapper as mapper
+from deskbot_server.service.device_identity_service import ensure_device_identity, require_device_id
 from deskbot_server.vision.face_identity import (
     descriptor_cosine_similarity,
     ema_update_descriptor,
@@ -49,9 +50,8 @@ def _row_to_dict(row) -> dict[str, Any]:
 
 
 def load_face_profiles(*, device_id: str | None = None) -> list[dict[str, Any]]:
-    if not device_id:
-        return []
-    rows = mapper.list_by_device(str(device_id))
+    device_id = require_device_id(device_id)
+    rows = mapper.list_by_device(device_id)
     return [_row_to_dict(r) for r in rows]
 
 
@@ -144,6 +144,7 @@ def upsert_profile(
     if not name:
         raise ValueError("name required")
 
+    device_id = ensure_device_identity(device_id)
     profiles = load_face_profiles(device_id=device_id)
     matched, sim = find_profile_by_similarity(profiles, descriptor, threshold=merge_threshold)
     kind = "embedding" if is_embedding_vector(descriptor) else "geometry"
@@ -152,14 +153,14 @@ def upsert_profile(
     if matched is not None and matched.get("name") == name:
         merged = ema_update_descriptor(matched["descriptor"], descriptor, alpha=0.35)
         merged_json = json.dumps(merged, ensure_ascii=False)
-        mapper.update(int(matched["id"]), name, merged_json, kind)
+        mapper.update(int(matched["id"]), name, merged_json, kind, device_id)
         _bump_version()
         return {"id": int(matched["id"]), "person_id": int(matched["id"]), "name": name, "descriptor": merged, "descriptor_kind": kind}
 
     if matched is not None and sim >= 0.95:
         merged = ema_update_descriptor(matched["descriptor"], descriptor, alpha=0.35)
         merged_json = json.dumps(merged, ensure_ascii=False)
-        mapper.update(int(matched["id"]), name, merged_json, kind)
+        mapper.update(int(matched["id"]), name, merged_json, kind, device_id)
         _bump_version()
         return {"id": int(matched["id"]), "person_id": int(matched["id"]), "name": name, "descriptor": merged, "descriptor_kind": kind}
 
@@ -170,20 +171,22 @@ def upsert_profile(
 
 def delete_face_profile(profile_id: int, *, device_id: str | None = None) -> bool:
     """按 ``id`` 删除已注册人脸档案。"""
+    device_id = require_device_id(device_id)
     try:
         pid = int(profile_id)
     except (TypeError, ValueError):
         return False
     if pid <= 0:
         return False
-    row = mapper.get_by_id(pid)
+    row = mapper.get_by_id(pid, device_id)
     if row is None:
         return False
-    if device_id and str(row.device_id) != str(device_id):
+    if str(row.device_id) != device_id:
         return False
-    mapper.delete_by_id(pid)
-    _bump_version()
-    return True
+    deleted = mapper.delete_by_id(pid, device_id) > 0
+    if deleted:
+        _bump_version()
+    return deleted
 
 
 def delete_device_profiles(device_id: str) -> int:
@@ -198,6 +201,7 @@ def update_face_profile_name(
     profile_id: int, name: str, *, device_id: str | None = None
 ) -> dict[str, Any] | None:
     """更新已注册人脸档案名称，返回摘要；档案不存在时返回 ``None``。"""
+    device_id = require_device_id(device_id)
     try:
         pid = int(profile_id)
     except (TypeError, ValueError):
@@ -205,12 +209,16 @@ def update_face_profile_name(
     clean_name = str(name or "").strip()
     if pid <= 0 or not clean_name:
         return None
-    row = mapper.get_by_id(pid)
+    row = mapper.get_by_id(pid, device_id)
     if row is None:
         return None
-    if device_id and str(row.device_id) != str(device_id):
+    if str(row.device_id) != device_id:
         return None
-    mapper.update_name(pid, clean_name)
+    if not mapper.update_name(pid, clean_name, device_id):
+        return None
+    from deskbot_server.service.memory_service import ensure_person
+
+    ensure_person(device_id, clean_name, identity="face:" + str(pid), rename=True)
     _bump_version()
     return {
         "id": int(row.id),

@@ -488,6 +488,9 @@ class QuestService(metaclass=SingletonMeta):
 
         入口任务（无任何前置连线）直接 running（剧情起点），其余 not_started。
         """
+        from deskbot_server.service.device_identity_service import ensure_device_identity
+
+        device_id = ensure_device_identity(device_id)
         pb = self._require_playbook(playbook_name)
         existing = {r.task_id for r in quest_mapper.list_instances(device_id, playbook_name)}
         now = _utcnow_iso()

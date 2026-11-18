@@ -21,6 +21,31 @@ from deskbot_server.utils.util import _extract_device_id, _parse_query, _split_p
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+class _DeviceSubscriberSocket(StarletteWsCompat):
+    """订阅期间持续校验归属；解绑后旧连接不能继续接收设备数据。"""
+
+    def __init__(self, websocket, device_id: str):
+        super().__init__(websocket)
+        self._subscriber_id = websocket.state.user_id
+        self._device_id = device_id
+
+    async def send(self, message: Any) -> None:
+        from websockets.exceptions import ConnectionClosedError
+
+        from deskbot_server.service.user_service import UserService
+        from deskbot_server.utils.async_helpers import run_blocking
+
+        try:
+            allowed = await run_blocking(UserService().user_owns_device, self._subscriber_id, self._device_id)
+        except Exception:
+            await self.close(code=1008, reason="auth_db_error")
+            raise
+        if not allowed:
+            await self.close(code=1008, reason="forbidden_device")
+            raise ConnectionClosedError(None, None)
+        await super().send(message)
+
+
 def _resolve_user_id_from_session(request_or_qargs: Any, headers: Any = None) -> str | None:
     """从 web session token 解析 user_id。"""
     from deskbot_server.auth.debug_ws_token import extract_debug_token_from_query, verify_debug_ws_token
@@ -204,7 +229,7 @@ def require_web_ws_subscriber_auth(fn: F) -> F:
         ok = await _ws_require_debug_auth(compat, device_id=device_id, require_device=True)
         if not ok:
             return
-        websocket.state.ws = compat
+        websocket.state.ws = _DeviceSubscriberSocket(websocket, device_id)
         websocket.state.qargs = qargs
         websocket.state.device_id = device_id
         return await fn(*args, **kwargs)
@@ -231,7 +256,7 @@ def require_web_ws_pipeline_auth(fn: F) -> F:
             if not device_id:
                 await compat.close(code=1008, reason="device_id_required")
                 return
-        websocket.state.ws = compat
+        websocket.state.ws = _DeviceSubscriberSocket(websocket, device_id) if is_subscriber else compat
         websocket.state.qargs = qargs
         websocket.state.device_id = device_id
         websocket.state.is_subscriber = is_subscriber

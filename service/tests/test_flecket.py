@@ -125,15 +125,15 @@ def test_generation_done_waits_for_dma_playback():
     asyncio.run(run())
 
 
-def test_saved_agent_clock_tool_continues_once_after_generation():
-    from deskbot_server.service.conversation_service import execute_agent_tool
-
+def test_saved_agent_tool_continues_once_after_generation():
     async def run():
         value = client()
-        value.tool_handler = execute_agent_tool
+        async def handler(name, arguments):
+            return {"ok": True, "assets": []} if name == "media_list" else {"error": "此客户端未提供该工具"}
+        value.tool_handler = handler
         ws = value.ws
         response = {"id": "tool-response", "status": "completed", "output": [
-            {"type": "function_call", "call_id": "clock", "name": "get_current_time", "arguments": "{}"},
+            {"type": "function_call", "call_id": "media", "name": "media_list", "arguments": "{}"},
             {"type": "function_call", "call_id": "unknown", "name": "run_shell", "arguments": "{}"},
         ]}
         ws.emit("response.done", response=response)
@@ -145,8 +145,8 @@ def test_saved_agent_clock_tool_continues_once_after_generation():
                 await asyncio.sleep(0)
         results = [event["item"] for event in ws.sent if event["type"] == "conversation.item.create"]
         assert len(results) == 2
-        clock = json.loads(results[0]["output"])
-        assert clock["local_time"].endswith("+08:00")
+        media = json.loads(results[0]["output"])
+        assert media == {"ok": True, "assets": []}
         assert "error" in json.loads(results[1]["output"])
         assert sum(event["type"] == "response.create" for event in ws.sent) == 1
         await value.close()

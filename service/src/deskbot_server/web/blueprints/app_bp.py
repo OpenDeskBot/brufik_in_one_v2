@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
-
 from fastapi import APIRouter, Request
 
 from deskbot_server.controller.decorators import access
 from deskbot_server.dao import device_mapper
+from deskbot_server.model.memory import SECTIONS
 from deskbot_server.service.device_data_service import clear_device_data
 from deskbot_server.service.face_profile_service import (
     delete_face_profile,
@@ -15,8 +14,14 @@ from deskbot_server.service.face_profile_service import (
 from deskbot_server.service.memory_service import (
     add_memory,
     delete_memory,
+    ensure_person,
+    forget_memory,
     get_memory,
     list_memory_for_device,
+    list_people,
+    read_chat,
+    read_person,
+    search_chat,
     update_memory,
 )
 from deskbot_server.service.miot_service import (
@@ -235,12 +240,13 @@ def api_clear_device_data(request: Request, user: RequireUser, device_id: str):
 def api_reset_device_id(request: Request, user: RequireUser, device_id: str):
     if not UserService().user_owns_device(user.id, device_id):
         return jsonify({"ok": False, "error": "设备不属于当前账号"}), 403
+    was_current = get_current_device_id(request) == device_id
     try:
         new_device_id = UserService().reset_device_id(device_id)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     # 同步更新 session 中的当前设备
-    if get_current_device_id(request) == device_id:
+    if was_current:
         set_current_device_id(request, new_device_id)
     return jsonify({"ok": True, "device_id": new_device_id})
 
@@ -408,8 +414,17 @@ def api_list_memories(request: Request, user: RequireUser):
     if err:
         return err
     assert device_id is not None
-    entries = list_memory_for_device(device_id)
-    return jsonify({"ok": True, "device_id": device_id, "memories": entries, "count": len(entries)})
+    try:
+        limit, offset = int(request.query_params.get("limit", "100")), int(request.query_params.get("offset", "0"))
+        if not 1 <= limit <= 100 or offset < 0:
+            raise ValueError("分页参数无效")
+        entries = list_memory_for_device(device_id, person_id=request.query_params.get("person_id"),
+                                         query=request.query_params.get("query", ""))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    page = entries[offset:offset + limit]
+    return jsonify({"ok": True, "device_id": device_id, "memories": page, "count": len(page), "total": len(entries),
+                    "has_more": offset + limit < len(entries), "people": list_people(device_id), "sections": list(SECTIONS)})
 
 
 @router.post("/api/memories")
@@ -420,11 +435,15 @@ def api_create_memory(request: Request, user: RequireUser):
         return err
     assert device_id is not None
     payload = get_json(request, silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "请求需要 JSON 对象"}), 400
     text = str(payload.get("text") or form_get(request, "text") or "").strip()
     if not text:
         return jsonify({"ok": False, "error": "text 不能为空"}), 400
     try:
-        entry = add_memory(text, device_id=device_id, request_key=request.headers.get("idempotency-key"))
+        entry = add_memory(text, device_id=device_id, request_key=request.headers.get("idempotency-key"),
+                           person_id=payload.get("person_id"), person_name=payload.get("person_name"),
+                           section=payload.get("section", "基本信息"))
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "memory": entry})
@@ -452,11 +471,13 @@ def api_update_memory(request: Request, user: RequireUser, entry_id: str):
         return err
     assert device_id is not None
     payload = get_json(request, silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "请求需要 JSON 对象"}), 400
     text = str(payload.get("text") or "").strip()
     if not text:
         return jsonify({"ok": False, "error": "text 不能为空"}), 400
     try:
-        entry = update_memory(entry_id, text, device_id=device_id)
+        entry = update_memory(entry_id, text, device_id=device_id, expected_version=payload.get("expected_version"))
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     if entry is None:
@@ -474,6 +495,78 @@ def api_delete_memory(request: Request, user: RequireUser, entry_id: str):
     if not delete_memory(entry_id, device_id=device_id):
         return jsonify({"ok": False, "error": "记忆不存在"}), 404
     return jsonify({"ok": True})
+
+
+@router.get("/api/memory/chat")
+@access('user')
+def api_memory_chat(request: Request, user: RequireUser):
+    device_id, err = _require_owned_device_id(request, user)
+    if err:
+        return err
+    try:
+        result = search_chat(device_id, request.query_params.get("query", ""),
+                             person_id=request.query_params.get("person_id"),
+                             date_from=request.query_params.get("date_from"), date_to=request.query_params.get("date_to"),
+                             limit=int(request.query_params.get("limit", "50")), offset=int(request.query_params.get("offset", "0")))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, **result})
+
+
+@router.get("/api/memory/chat/{event_id}")
+@access('user')
+def api_memory_chat_read(request: Request, user: RequireUser, event_id: str):
+    device_id, err = _require_owned_device_id(request, user)
+    if err:
+        return err
+    try:
+        return jsonify({"ok": True, **read_chat(device_id, event_id)})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@router.post("/api/memory/people")
+@access('user')
+def api_memory_person_create(request: Request, user: RequireUser):
+    device_id, err = _require_owned_device_id(request, user)
+    if err:
+        return err
+    body = get_json(request, silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "请求需要 JSON 对象"}), 400
+    try:
+        return jsonify({"ok": True, "person": ensure_person(device_id, body.get("name"))})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@router.get("/api/memory/people/{person_id}")
+@access('user')
+def api_memory_person_read(request: Request, user: RequireUser, person_id: str):
+    device_id, err = _require_owned_device_id(request, user)
+    if err:
+        return err
+    try:
+        return jsonify({"ok": True, "person": read_person(device_id, person_id, include_history=True)})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@router.post("/api/memory/forget")
+@access('user')
+def api_memory_forget(request: Request, user: RequireUser):
+    device_id, err = _require_owned_device_id(request, user)
+    if err:
+        return err
+    body = get_json(request, silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "请求需要 JSON 对象"}), 400
+    if set(body) - {"entry_ids", "event_ids", "person_id"}:
+        return jsonify({"ok": False, "error": "遗忘参数无效"}), 400
+    try:
+        return jsonify({"ok": True, **forget_memory(device_id, **body)})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 

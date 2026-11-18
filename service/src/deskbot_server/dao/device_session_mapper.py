@@ -68,8 +68,7 @@ def delete_session(id: str) -> int:
 def delete_messages_by_device(device_id: str) -> int:
     """删除设备全部 Session 的消息。**必须先于** ``delete_sessions_by_device`` 调用。
 
-    ``device_session_message`` 没有 ``device_id`` 列，靠 ``session_id`` 关联；且
-    ``PRAGMA foreign_keys`` 未开启，顺序反了会静默留下永远查不到的孤儿消息。
+    ``device_session_message`` 通过 ``session_id`` 归属设备；显式先删消息以保留删除统计。
     """
 
 

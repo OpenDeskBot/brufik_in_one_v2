@@ -1,0 +1,108 @@
+{
+  "date": "2026-11-18",
+  "timezone": "Asia/Shanghai",
+  "status": "local_verified",
+  "baseline": "8973b5b plus existing uncommitted workspace changes",
+  "scope": "Replace runtime SQLite memory with device-owned daily conversation files and sourced person profiles",
+  "engineering_sop": "HTTP service engineering v0.4-draft",
+  "runtime": {
+    "python": "3.11.15",
+    "node": "22.23.1",
+    "database": "isolated temporary SQLite for accounts and legacy migration only",
+    "memory": "temporary device directories"
+  },
+  "layout": [
+    "data/{device_id}/memory/chat_YYYYMMDD.txt",
+    "data/{device_id}/memory/person_{name}.txt",
+    "data/{device_id}/memory/_memory_state.json"
+  ],
+  "agent_tools": [
+    "chat_search",
+    "chat_read",
+    "person_read",
+    "person_update",
+    "memory_forget"
+  ],
+  "implemented": [
+    "Final user and assistant transcripts, operation outcomes and playback receipts recorded independently of lossy admin subscriptions",
+    "Original turn and item IDs retained for delayed transcripts, date partitioned by event time in Asia/Shanghai",
+    "Unknown speakers stay unattributed; explicit self-introductions and registered voice/face identities use stable person IDs",
+    "Versioned person sections with user sources, observed time, superseded history, expiry and complete management pagination",
+    "Conservative incremental first-person extraction with restart checkpoints; complex interpretation uses sourced Agent tools",
+    "Repeated facts merge source references, transient states renew only from newer evidence, delayed old evidence cannot replace newer corrections",
+    "Flecket per-response and tool-continuation profile loading; visible non-speakers expose basic information only",
+    "MOSS session background updates through its existing session.update protocol",
+    "Bounded and continuable Agent search, person listing and long-record reading",
+    "Linked forgetting removes sources, same-turn records and derived revisions; old memory epochs invalidate delayed writers and old playback/context",
+    "Device locks, atomic replacement, durable recovery journal, interrupted append recovery and idempotent writes",
+    "One-way resumable legacy SQLite/JSON export into unattributed file profiles; old sources removed only after file commits",
+    "Memory management page supports people, sections, source inspection, dates, search, pagination, correction and forgetting"
+  ],
+  "validation": {
+    "pytest": {
+      "passed": 338,
+      "failed": 0,
+      "warnings": [
+        "Existing Starlette TestClient/httpx deprecation warning"
+      ],
+      "command": ".venv/bin/python -m pytest -q tests/test_file_memory.py tests/test_device_clear_data.py tests/test_device_ownership.py tests/test_memory_store.py tests/test_agent_capabilities.py tests/test_ux_requests.py tests/test_agent_tools_runtime.py tests/test_robot_performance.py tests/test_external_conversation_only.py tests/test_flecket.py tests/test_moss_live.py tests/test_system_events.py tests/test_voiceprint_service.py tests/test_voice_snapshot_cache.py tests/test_controller_auth.py tests/test_device_data.py"
+    },
+    "ruff": "passed for changed Python source, tests and browser runner",
+    "compileall": "passed",
+    "javascript_syntax": "passed tools/check_file_memory.cjs",
+    "generated_view": "28 views built; memory source and generated views.json verified identical",
+    "diff_whitespace": "passed",
+    "browser": {
+      "runner": "tools/run_file_memory_browser.py",
+      "checks": [
+        "person creation",
+        "sourced addition",
+        "source lookup",
+        "versioned correction",
+        "56-entry pagination",
+        "linked source/history forgetting",
+        "lost-response retry without duplicate",
+        "zero page script errors",
+        "desktop and mobile layout",
+        "real HTTP health with X-Request-ID",
+        "graceful stop and restart",
+        "persisted account login and file fact after restart"
+      ],
+      "desktop_viewport": [
+        1280,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ],
+      "desktop_screenshot": "/tmp/deskbot-file-memory-desktop.png",
+      "mobile_screenshot": "/tmp/deskbot-file-memory-mobile.png"
+    }
+  },
+  "limits": [
+    "Automatic extraction is conservative rule-based processing plus normal Agent tool use; no additional local inference pipeline was introduced",
+    "MOSS update timing relative to an already-generating response requires upstream integration verification",
+    "Client reconnect does not independently prove erasure of upstream-provider logs, backups or provider-managed persistent history",
+    "Whole-device erase coordination follows the project's single-process runtime binding"
+  ],
+  "existing_user_changes_preserved": true,
+  "not_run_at_initial_local_check": [
+    "production deployment",
+    "migration of the real production database",
+    "real Flecket/MOSS model interaction",
+    "physical robot verification"
+  ],
+  "production_follow_up": {
+    "status": "deployed_and_real_agent_verified",
+    "report": "file-memory-deployment-2026-11-18.json",
+    "real_agent_checks": [
+      "daily records",
+      "recognized profile loading across connections",
+      "history search",
+      "correction and reload",
+      "forgetting and no resurrection"
+    ],
+    "regression_tests_passed": 341
+  }
+}

@@ -17,6 +17,7 @@ from croniter import croniter
 from deskbot_server.dao import scheduled_task_mapper as mapper
 from deskbot_server.db.models import ScheduledTask, _new_id
 from deskbot_server.db.transaction import transaction as db_transaction
+from deskbot_server.service.device_identity_service import ensure_device_identity, require_device_id
 
 _STATUS_ACTIVE = "active"
 _STATUS_RUNNING = "running"
@@ -162,24 +163,38 @@ def compute_next_run(cron_expr: str, *, base: datetime | None = None) -> datetim
     return _as_cst(nxt)
 
 
-def _coerce_delay_minutes(raw: object) -> float | None:
-    if raw is None:
-        return None
+def _resolve_schedule_time(expr, delay_minutes, delay_seconds):
+    supplied = bool(expr) + (delay_minutes is not None) + (delay_seconds is not None)
+    if supplied != 1:
+        raise ValueError("cron、delay_minutes、delay_seconds 必须且只能提供一个")
+    if expr:
+        normalized = normalize_cron_expr(expr)
+        return normalized, compute_next_run(normalized), False
+    value = delay_minutes if delay_minutes is not None else delay_seconds
+    if isinstance(value, bool):
+        raise ValueError("提醒延迟必须是有效数字")
     try:
-        v = float(raw)
-        return v if v > 0 else None
-    except (TypeError, ValueError):
-        return None
+        seconds = float(value) * (60 if delay_minutes is not None else 1)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("提醒延迟必须是有效数字") from exc
+    if not math.isfinite(seconds) or not 0 < seconds <= 366 * 86400:
+        raise ValueError("提醒延迟必须大于 0，且不超过一年")
+    target = cst_now() + timedelta(seconds=seconds)
+    return datetime_to_once_cron(target), target, True
 
 
-def _coerce_delay_seconds(raw: object) -> float | None:
-    if raw is None:
-        return None
-    try:
-        v = float(raw)
-        return v if v > 0 else None
-    except (TypeError, ValueError):
-        return None
+def _tool_delay(raw, keys):
+    return next((raw[key] for key in keys if key in raw and raw[key] is not None), None)
+
+
+def _validate_session(device_id: str, session_id: str | None, *, transaction=None) -> None:
+    if session_id is None:
+        return
+    from deskbot_server.dao import device_session_mapper
+
+    session = device_session_mapper.get_session(session_id, transaction=transaction)
+    if session is None or session.device_id != device_id:
+        raise ValueError("提醒关联的对话必须属于当前设备")
 
 
 def create_scheduled_task(
@@ -202,26 +217,16 @@ def create_scheduled_task(
 
     kind = validate_task_kind(task_kind)
     expr_raw = str(cron or cron_expr or "").strip()
-    relative_target = None
-    if not expr_raw:
-        if delay_minutes is not None or delay_seconds is not None:
-            seconds = float(delay_minutes) * 60 if delay_minutes is not None else float(delay_seconds)
-            if not math.isfinite(seconds) or not 0 < seconds <= 366*86400:
-                raise ValueError("提醒延迟必须大于 0，且不超过一年")
-            relative_target = cst_now() + timedelta(seconds=seconds)
-            expr_raw = delay_to_once_cron(delay_minutes=delay_minutes, delay_seconds=delay_seconds)
-            kind = _TASK_ONCE
-        else:
-            raise ValueError("需要 cron 或 delay_minutes/delay_seconds")
-    expr = normalize_cron_expr(expr_raw)
-    nxt = relative_target or compute_next_run(expr)
-    if relative_target is None and nxt <= cst_now():
-        nxt = compute_next_run(expr, base=cst_now() + timedelta(seconds=1))
+    expr, nxt, relative = _resolve_schedule_time(expr_raw, delay_minutes, delay_seconds)
+    if relative:
+        kind = _TASK_ONCE
 
     sid = str(session_id or "").strip() or None
     with db_transaction() as tx:
+        ensure_device_identity(dev, transaction=tx)
+        _validate_session(dev, sid, transaction=tx)
         existing = mapper.find_active(dev, desc, expr, kind, transaction=tx)
-        if existing is not None and (relative_target is None or abs((_as_cst(existing.next_run_at)-relative_target).total_seconds()) <= 2):
+        if existing is not None and (not relative or abs((_as_cst(existing.next_run_at)-nxt).total_seconds()) <= 2):
             return {**_task_to_dict(existing), "deduped": True}
         uid = _new_id()
         mapper.create(uid, dev, desc, expr, kind, _sql_time(nxt), sid, _sql_time(cst_now()), transaction=tx)
@@ -229,11 +234,12 @@ def create_scheduled_task(
 
 
 def get_scheduled_task(task_id: str, *, device_id: str | None = None) -> dict[str, Any] | None:
+    device_id = require_device_id(device_id)
     tid = str(task_id or "").strip()
     if not tid:
         return None
-    row = mapper.get(tid)
-    if row is None or (device_id is not None and row.device_id != str(device_id).strip()):
+    row = mapper.get_for_device(tid, device_id)
+    if row is None or row.device_id != device_id:
         return None
     return _task_to_dict(row)
 
@@ -252,30 +258,44 @@ def count_scheduled_tasks_for_device(device_id: str) -> int:
 
 def update_scheduled_task(task_id: str, *, device_id: str | None = None, description: str | None = None,
                           cron: str | None = None, cron_expr: str | None = None, task_kind: str | None = None,
-                          enabled: bool | None = None, session_id: str | None = None, transaction=None):
+                          enabled: bool | None = None, session_id: str | None = None,
+                          delay_minutes: float | None = None, delay_seconds: float | None = None, transaction=None):
+    device_id = require_device_id(device_id)
     tid = str(task_id or "").strip()
     if not tid:
         raise ValueError("id 不能为空")
     with db_transaction(transaction) as tx:
-        row = mapper.get(tid, transaction=tx)
-        if row is None or (device_id is not None and row.device_id != str(device_id).strip()):
+        row = mapper.get_for_device(tid, device_id, transaction=tx)
+        if row is None or row.device_id != device_id:
             return None
         if description is not None:
             if not description.strip():
                 raise ValueError("任务描述不能为空")
             row.description = description.strip()
         expr = str(cron or cron_expr or "").strip()
-        if expr:
-            row.cron_expr = normalize_cron_expr(expr)
-            row.next_run_at = compute_next_run(row.cron_expr)
+        if expr or delay_minutes is not None or delay_seconds is not None:
+            if row.status == _STATUS_RUNNING:
+                raise ValueError("提醒正在播报，请稍后再修改时间")
+            row.cron_expr, row.next_run_at, relative = _resolve_schedule_time(expr, delay_minutes, delay_seconds)
+            if relative:
+                if task_kind is not None and validate_task_kind(task_kind) != _TASK_ONCE:
+                    raise ValueError("相对延迟只用于一次性提醒，周期提醒请使用 cron")
+                task_kind = _TASK_ONCE
+            row.status = _STATUS_ACTIVE
+            row.executed_at = row.result_summary = None
+            if enabled is None:
+                row.enabled = True
         if task_kind is not None:
             row.task_kind = validate_task_kind(task_kind)
         if enabled is not None:
-            row.enabled = bool(enabled)
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled 必须为布尔值")
+            row.enabled = enabled
             if row.enabled and row.status in (_STATUS_COMPLETED, _STATUS_FAILED):
                 row.status = _STATUS_ACTIVE
         if session_id is not None:
             row.session_id = session_id.strip() or None
+            _validate_session(device_id, row.session_id, transaction=tx)
         if row.enabled and row.status == _STATUS_ACTIVE and _as_cst(row.next_run_at) <= cst_now():
             row.next_run_at = compute_next_run(row.cron_expr, base=cst_now() + timedelta(seconds=1))
         _save_task(row, tx)
@@ -288,14 +308,15 @@ def delete_scheduled_tasks_for_device(device_id: str, *, transaction=None) -> in
 
 
 def delete_scheduled_task(task_id: str, *, device_id: str | None = None, transaction=None) -> bool:
+    device_id = require_device_id(device_id)
     tid = str(task_id or "").strip()
     if not tid:
         return False
     with db_transaction(transaction) as tx:
-        row = mapper.get(tid, transaction=tx)
-        if row is None or (device_id is not None and row.device_id != str(device_id).strip()):
+        row = mapper.get_for_device(tid, device_id, transaction=tx)
+        if row is None or row.device_id != device_id:
             return False
-        return mapper.delete_one(tid, transaction=tx) > 0
+        return mapper.delete_one(tid, device_id, transaction=tx) > 0
 
 
 def execute_schedule_task_tool(
@@ -313,16 +334,20 @@ def execute_schedule_task_tool(
             str(raw.get("task") or raw.get("description") or raw.get("text") or "").strip(),
             cron=str(raw.get("cron") or raw.get("cron_expr") or "").strip() or None,
             task_kind=str(raw.get("task_kind") or raw.get("kind") or _TASK_ONCE),
-            delay_minutes=_coerce_delay_minutes(
-                raw.get("delay_minutes") or raw.get("minutes") or raw.get("delay_minute") or raw.get("minute")
-            ),
-            delay_seconds=_coerce_delay_seconds(raw.get("delay_seconds") or raw.get("seconds") or raw.get("second")),
+            delay_minutes=_tool_delay(raw, ("delay_minutes", "minutes", "delay_minute", "minute")),
+            delay_seconds=_tool_delay(raw, ("delay_seconds", "seconds", "second")),
             session_id=sid,
         )
         return {"tool": "schedule_task", "action": "create", "ok": True, **entry}
     if action in ("list", "ls", "query_all"):
-        tasks = list_scheduled_tasks_for_device(dev)
-        return {"tool": "schedule_task", "action": "list", "ok": True, "tasks": tasks, "count": len(tasks)}
+        limit, offset = raw.get("limit", 100), raw.get("offset", 0)
+        if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or offset < 0:
+            raise ValueError("limit 需要 1～100 的整数，offset 需要非负整数")
+        tasks = list_scheduled_tasks_for_device(dev, limit=limit, offset=offset)
+        total = count_scheduled_tasks_for_device(dev)
+        return {"tool": "schedule_task", "action": "list", "ok": True, "tasks": tasks,
+                "count": len(tasks), "total": total, "offset": offset,
+                "has_more": offset + len(tasks) < total}
     tid = str(raw.get("id") or raw.get("task_id") or "").strip()
     if action in ("get", "read", "query"):
         if not tid:
@@ -342,6 +367,8 @@ def execute_schedule_task_tool(
             task_kind=raw.get("task_kind") or raw.get("kind"),
             enabled=raw.get("enabled") if "enabled" in raw else None,
             session_id=str(raw.get("session_id") or "").strip() or None if "session_id" in raw else None,
+            delay_minutes=_tool_delay(raw, ("delay_minutes", "minutes", "delay_minute", "minute")),
+            delay_seconds=_tool_delay(raw, ("delay_seconds", "seconds", "second")),
         )
         if row is None:
             raise ValueError(f"未找到任务 id={tid}")
@@ -410,7 +437,7 @@ def _sql_time(value):
 
 def _save_task(row, tx):
     mapper.save(row.id, row.description, row.cron_expr, row.task_kind, bool(row.enabled), _sql_time(row.next_run_at),
-                row.session_id, row.status, row.result_summary, _sql_time(row.executed_at), transaction=tx)
+                row.session_id, row.status, row.result_summary, _sql_time(row.executed_at), row.device_id, transaction=tx)
 
 
 def _task_to_dict(row: ScheduledTask) -> dict[str, Any]:

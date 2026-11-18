@@ -229,7 +229,7 @@ def llm_memory_prompt_appendix(device_id: str | None = None) -> str:
     """长期记忆列表，注入 system prompt。"""
     from deskbot_server.service.memory_service import list_memory_for_device
 
-    rows = list_memory_for_device(device_id, limit=30)
+    rows = list_memory_for_device(device_id, limit=30) if str(device_id or "").strip() else []
     if not rows:
         return "长期记忆：暂无。"
     lines: list[str] = []

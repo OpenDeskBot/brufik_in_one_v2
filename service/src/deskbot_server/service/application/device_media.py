@@ -116,5 +116,8 @@ class DeviceMedia:
         await self.stop_music()
         entry = self.bridge.hub._devices.get(self.bridge.device_id)
         if entry and "rom_tools_v1" in entry.capabilities:
-            await self.bridge.hub.rom_command(self.bridge.device_id, "stop_image", {}, expected_generation=self.bridge.generation)
+            result = await self.bridge.hub.rom_command(self.bridge.device_id, "stop_image", {}, expected_generation=self.bridge.generation)
+            if not result.get("ok"):
+                return {"ok": False, "status": "unconfirmed", "music_stopped": True,
+                        "image_stopped": False, "error": result.get("error") or "设备未确认图片已停止"}
         return {"ok": True, "status": "stopped"}

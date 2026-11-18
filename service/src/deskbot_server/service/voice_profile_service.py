@@ -12,6 +12,7 @@ import threading
 from typing import Any
 
 from deskbot_server.dao import device_profile_voice_mapper as mapper
+from deskbot_server.service.device_identity_service import ensure_device_identity, require_device_id
 from deskbot_server.vision.face_identity import ema_update_descriptor, is_embedding_vector
 
 # 声纹 embedding 均为 256 维 WeSpeaker 向量；不同名档案相似度 ≥ 此值才并入新名
@@ -55,9 +56,8 @@ def _row_to_dict(row) -> dict[str, Any]:
 
 
 def load_voice_profiles(*, device_id: str | None = None) -> list[dict[str, Any]]:
-    if not device_id:
-        return []
-    rows = mapper.list_by_device(str(device_id))
+    device_id = require_device_id(device_id)
+    rows = mapper.list_by_device(device_id)
     return [_row_to_dict(r) for r in rows]
 
 
@@ -160,13 +160,14 @@ def upsert_voice_profile(
         raise ValueError("descriptor must be an embedding vector")
     descriptor = _unit_vector([float(x) for x in descriptor])
 
+    device_id = ensure_device_identity(device_id)
     profiles = load_voice_profiles(device_id=device_id)
     matched, sim = find_voice_by_similarity(profiles, descriptor, threshold=merge_threshold)
 
     if matched is not None and (matched.get("name") == name or sim >= RENAME_MERGE_THRESHOLD):
         merged = ema_update_descriptor(matched["descriptor"], descriptor, alpha=0.35)
         merged_json = json.dumps(list(merged), ensure_ascii=False)
-        mapper.update(int(matched["id"]), name, merged_json, VOICE_DESCRIPTOR_KIND)
+        mapper.update(int(matched["id"]), name, merged_json, VOICE_DESCRIPTOR_KIND, device_id)
         _bump_version()
         return {"id": int(matched["id"]), "person_id": int(matched["id"]), "name": name, "descriptor": merged, "descriptor_kind": VOICE_DESCRIPTOR_KIND}
 
@@ -177,20 +178,22 @@ def upsert_voice_profile(
 
 def delete_voice_profile(profile_id: int, *, device_id: str | None = None) -> bool:
     """按 ``id`` 删除已注册声纹档案。"""
+    device_id = require_device_id(device_id)
     try:
         pid = int(profile_id)
     except (TypeError, ValueError):
         return False
     if pid <= 0:
         return False
-    row = mapper.get_by_id(pid)
+    row = mapper.get_by_id(pid, device_id)
     if row is None:
         return False
-    if device_id and str(row.device_id) != str(device_id):
+    if str(row.device_id) != device_id:
         return False
-    mapper.delete_by_id(pid)
-    _bump_version()
-    return True
+    deleted = mapper.delete_by_id(pid, device_id) > 0
+    if deleted:
+        _bump_version()
+    return deleted
 
 
 def delete_device_profiles(device_id: str) -> int:
@@ -205,6 +208,7 @@ def update_voice_profile_name(
     profile_id: int, name: str, *, device_id: str | None = None
 ) -> dict[str, Any] | None:
     """更新已注册声纹档案名称，返回摘要；档案不存在时返回 ``None``。"""
+    device_id = require_device_id(device_id)
     try:
         pid = int(profile_id)
     except (TypeError, ValueError):
@@ -212,12 +216,16 @@ def update_voice_profile_name(
     clean_name = str(name or "").strip()
     if pid <= 0 or not clean_name:
         return None
-    row = mapper.get_by_id(pid)
+    row = mapper.get_by_id(pid, device_id)
     if row is None:
         return None
-    if device_id and str(row.device_id) != str(device_id):
+    if str(row.device_id) != device_id:
         return None
-    mapper.update_name(pid, clean_name)
+    if not mapper.update_name(pid, clean_name, device_id):
+        return None
+    from deskbot_server.service.memory_service import ensure_person
+
+    ensure_person(device_id, clean_name, identity="voice:" + str(pid), rename=True)
     _bump_version()
     return {
         "id": int(row.id),

@@ -10,11 +10,11 @@ from deskbot_server.dao import device_mapper, user_mapper
 from deskbot_server.db.models import Device, User, _new_id
 from deskbot_server.db.transaction import transaction as db_transaction
 from deskbot_server.model.errors import DataAccessError
+from deskbot_server.service.device_identity_service import ensure_device_identity, require_device_id
 from deskbot_server.service.device_ws_service import DeviceWsService
 from deskbot_server.utils.singleton import SingletonMeta
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_DEVICE_ID_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
 
 
 def _normalize_email(email: str) -> str:
@@ -30,7 +30,11 @@ def _normalize_device_id(device_id: str) -> str:
 
 
 def _validate_device_id(device_id: str) -> bool:
-    return bool(_DEVICE_ID_RE.match(_normalize_device_id(device_id)))
+    try:
+        require_device_id(device_id)
+    except ValueError:
+        return False
+    return True
 
 
 class UserService(metaclass=SingletonMeta):
@@ -143,8 +147,7 @@ class UserService(metaclass=SingletonMeta):
         return {r if isinstance(r, str) else r["device_id"] for r in rows}
 
     def user_owns_device(self, user_id: str, device_id: str) -> bool:
-        dev = self.get_device(device_id)
-        return not (dev is None or dev.owner_user_id != user_id)
+        return bool(user_id) and bool(device_mapper.owned_by_active_user(_normalize_device_id(device_id), user_id))
 
     def bind_device(self, user_id: str, device_id: str, *, display_name: str | None = None) -> Device:
         from deskbot_server.service.device_data_paths import ensure_device_data_initialized
@@ -157,22 +160,17 @@ class UserService(metaclass=SingletonMeta):
         if svc is None or not svc.is_device_online(did):
             raise ValueError("绑定失败：设备未在线，请确认设备已开机并连接 Wi‑Fi")
 
-        existing = device_mapper.get_by_device_id(did)
-        if existing is not None:
-            if existing.owner_user_id != user_id:
-                raise ValueError("该设备已被其他账号绑定")
+        with db_transaction() as tx:
+            ensure_device_identity(did, transaction=tx)
+            existing = device_mapper.get_by_device_id(did, transaction=tx)
             name = (display_name or "").strip() or existing.display_name or did
-            device_mapper.update_owner(existing.id, user_id, name)
-            ensure_device_data_initialized(did)
-            return device_mapper.get_by_device_id(did)
-
-        name = (display_name or did).strip() or did
-        device_mapper.insert(_new_id(), did, user_id, name)
+            if not device_mapper.claim(did, user_id, name, transaction=tx):
+                raise ValueError("该设备已被其他账号绑定")
         ensure_device_data_initialized(did)
         return device_mapper.get_by_device_id(did)
 
     def unbind_device(self, user_id: str, device_id: str) -> bool:
-        affected = device_mapper.delete_by_device_id(_normalize_device_id(device_id), user_id)
+        affected = device_mapper.release_owner(_normalize_device_id(device_id), user_id)
         return affected > 0
 
     def reset_device_id(self, old_device_id: str) -> str:
@@ -188,19 +186,29 @@ class UserService(metaclass=SingletonMeta):
         # 重命名数据目录
         import shutil
 
-        from deskbot_server.utils.paths import DATA_DIR
+        from deskbot_server.service.device_data_paths import legacy_device_data_dir, safe_device_data_dir
 
-        old_dir = DATA_DIR / old_device_id
-        new_dir = DATA_DIR / new_device_id
-        if old_dir.is_dir():
-            shutil.move(str(old_dir), str(new_dir))
+        if device_mapper.get_by_device_id(new_device_id) is not None:
+            raise ValueError("新设备编号已存在，请重试")
+        paths = [
+            (safe_device_data_dir(old_device_id), safe_device_data_dir(new_device_id)),
+            (legacy_device_data_dir(old_device_id), legacy_device_data_dir(new_device_id)),
+        ]
+        if any(new.exists() for _, new in paths):
+            raise ValueError("新设备编号的数据目录已存在，请重试")
+        moved = []
         try:
+            for old, new in paths:
+                if old.is_dir():
+                    shutil.move(str(old), str(new))
+                    moved.append((old, new))
             with db_transaction() as tx:
                 device_mapper.update_device_id(old_device_id, new_device_id, transaction=tx)
                 if dev.display_name == old_device_id:
-                    device_mapper.update_owner(dev.id, dev.owner_user_id, new_device_id, transaction=tx)
+                    device_mapper.update_display_name(dev.id, new_device_id, transaction=tx)
         except Exception:
-            if new_dir.is_dir() and not old_dir.exists():
-                shutil.move(str(new_dir), str(old_dir))
+            for old, new in reversed(moved):
+                if new.is_dir() and not old.exists():
+                    shutil.move(str(new), str(old))
             raise
         return new_device_id

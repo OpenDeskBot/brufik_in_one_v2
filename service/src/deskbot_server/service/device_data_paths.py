@@ -39,9 +39,11 @@ def device_data_dir(device_id: str) -> Path:
     did = _normalize_device_id(device_id)
     if not did:
         raise ValueError("device_id required")
-    if not _DEVICE_ID_SAFE.match(did):
+    if len(did) > 128 or not _DEVICE_ID_SAFE.fullmatch(did):
         raise ValueError(f"invalid device_id: {did!r}")
-    return DATA_DIR / did
+    path = DATA_DIR / did
+    _assert_safe_delete_root(path, did)
+    return path
 
 
 def _assert_safe_delete_root(candidate: Path, device_id: str) -> None:

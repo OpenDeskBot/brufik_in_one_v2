@@ -261,6 +261,11 @@ class DeviceWsService(metaclass=SingletonMeta):
         if not device_id:
             return
 
+        from deskbot_server.service.device_identity_service import ensure_device_identity
+        from deskbot_server.utils.async_helpers import run_blocking
+
+        device_id = await run_blocking(ensure_device_identity, device_id)
+
         if not self._cleanup_task:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 

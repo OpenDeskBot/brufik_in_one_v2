@@ -15,8 +15,8 @@ def list_by_device(device_id: str) -> list[DeviceProfileFace]:
     """列出设备所有人脸档案。"""
 
 
-@select_one("SELECT * FROM device_profile_face WHERE id = :id", model=DeviceProfileFace)
-def get_by_id(id: int) -> DeviceProfileFace | None:
+@select_one("SELECT * FROM device_profile_face WHERE id = :id AND device_id = :device_id", model=DeviceProfileFace)
+def get_by_id(id: int, device_id: str) -> DeviceProfileFace | None:
     """根据主键查找人脸档案。"""
 
 
@@ -42,20 +42,20 @@ def insert(device_id: str, name: str, descriptor: str, descriptor_kind: str) -> 
     """
     UPDATE device_profile_face
     SET name = :name, descriptor = :descriptor, descriptor_kind = :descriptor_kind, updated_at = datetime('now')
-    WHERE id = :id
+    WHERE id = :id AND device_id = :device_id
     """
 )
-def update(id: int, name: str, descriptor: str, descriptor_kind: str) -> int:
+def update(id: int, name: str, descriptor: str, descriptor_kind: str, device_id: str) -> int:
     """更新人脸档案（姓名 + 向量）。"""
 
 
-@db_update("UPDATE device_profile_face SET name = :name, updated_at = datetime('now') WHERE id = :id")
-def update_name(id: int, name: str) -> int:
+@db_update("UPDATE device_profile_face SET name = :name, updated_at = datetime('now') WHERE id = :id AND device_id = :device_id")
+def update_name(id: int, name: str, device_id: str) -> int:
     """仅更新姓名。"""
 
 
-@db_delete("DELETE FROM device_profile_face WHERE id = :id")
-def delete_by_id(id: int) -> int:
+@db_delete("DELETE FROM device_profile_face WHERE id = :id AND device_id = :device_id")
+def delete_by_id(id: int, device_id: str) -> int:
     """按主键删除人脸档案。"""
 
 

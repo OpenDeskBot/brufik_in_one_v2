@@ -3,34 +3,78 @@
 {% block extra_head %}<script src="{{ url_for('static', filename='vendor/vue.global.prod.min.js') }}"></script>{% endblock %}
 {% block content %}
 <div id="app">
-  <div class="pagehd"><div><div class="eyebrow">MEMORY · [[ items.length ]] ENTRIES</div><h1>记忆</h1><p>机器人记住的关于你的小事，随时可改可删。</p></div></div>
-  <div style="display:flex;gap:8px;margin-bottom:18px;max-width:560px" v-if="!noDevice">
-    <input class="tinput" v-model="draft" placeholder="加一条它该记住的事…" @keyup.enter="add">
-    <button :disabled="!!busyAction" class="btn primary" @click="add">＋ 加一条</button>
-  </div>
-  <div class="colwrap">
-    <div class="note" v-for="(m,i) in items" :key="m.id">
-      <span class="memtag">MEM_[[ String(i+1).padStart(2,'0') ]]</span>
-      <textarea v-if="editing===m.id" class="tinput editarea" v-model="editText" @keyup.meta.enter="saveEdit(m)" @keyup.ctrl.enter="saveEdit(m)"></textarea>
-      <p v-else>[[ m.text ]]</p>
-      <small>[[ m.created_at_fmt || '' ]]</small>
-      <div class="btngroup" style="margin-top:12px">
-        <template v-if="editing===m.id">
-          <button :disabled="!!busyAction" class="btn primary" @click="saveEdit(m)">保存</button>
-          <button :disabled="!!busyAction" class="btn ghost" @click="cancelEdit">取消</button>
-        </template>
-        <template v-else>
-          <button :disabled="!!busyAction" class="btn ghost" @click="startEdit(m)">编辑</button>
-          <button :disabled="!!busyAction" class="btn ghost" @click="del(m)">删除</button>
-        </template>
+  <div class="pagehd"><div><div class="eyebrow">MEMORY</div><h1>记忆</h1><p>查看每天的交流经过，整理关于每个人的资料。</p></div></div>
+  <div v-if="!noDevice">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+      <button class="btn" :class="{primary:tab==='people'}" @click="changeTab('people')">人物资料</button>
+      <button class="btn" :class="{primary:tab==='chat'}" @click="changeTab('chat')">每日记录</button>
+      <select class="tinput" v-model="personId" @change="filterChanged" aria-label="筛选人物" style="max-width:210px">
+        <option value="">全部人物</option><option v-for="p in people" :key="p.id" :value="p.id">[[ p.name ]] · [[ p.id.slice(-6) ]]</option>
+      </select>
+      <input class="tinput" v-model="query" placeholder="搜索内容…" @keyup.enter="filterChanged" style="max-width:240px" aria-label="搜索记忆">
+      <button class="btn" @click="filterChanged">搜索</button>
+    </div>
+    <div v-if="tab==='people'" style="margin-bottom:20px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <input class="tinput" v-model="personName" placeholder="新人物的姓名" maxlength="80" style="max-width:210px" aria-label="新人物姓名">
+        <button class="btn" :disabled="!!busyAction" @click="addPerson">新增人物</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select class="tinput" v-model="section" style="max-width:180px" aria-label="资料分块"><option v-for="s in sections" :key="s">[[ s ]]</option></select>
+        <input class="tinput" v-model="draft" placeholder="选择人物后，添加一条有依据的资料…" maxlength="2000" style="max-width:560px" @keyup.enter="add" aria-label="新增人物资料">
+        <button class="btn primary" :disabled="!!busyAction || !personId" @click="add">添加资料</button>
+      </div>
+      <p v-if="!personId">添加资料前请选择具体人物；未归属的旧资料不会自动归给当前说话人。</p>
+    </div>
+    <div v-if="tab==='chat'" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+      <label>开始日期 <input type="date" class="tinput" v-model="dateFrom" @change="filterChanged"></label>
+      <label>结束日期 <input type="date" class="tinput" v-model="dateTo" @change="filterChanged"></label>
+    </div>
+    <p role="status" v-if="!loading">共 [[ total ]] 条，当前第 [[ Math.floor(offset/limit)+1 ]] 页。</p>
+    <div class="colwrap" v-if="tab==='people'">
+      <div class="note" v-for="m in items" :key="m.id">
+        <span class="memtag">[[ m.person_name ]] · [[ m.section ]]</span>
+        <textarea v-if="editing===m.id" class="tinput editarea" v-model="editText" maxlength="2000" aria-label="编辑人物资料"></textarea>
+        <p v-else>[[ m.text ]]</p>
+        <small>更新：[[ formatTime(m.updated_at) ]]<span v-if="m.expires_at"> · 状态复核：[[ formatTime(m.expires_at) ]]</span></small>
+        <p><button class="btn ghost" v-for="source in m.source_ids" :key="source" @click="viewSource(source)">查看来源</button></p>
+        <div class="btngroup">
+          <template v-if="editing===m.id">
+            <button class="btn primary" :disabled="!!busyAction" @click="saveEdit(m)">保存纠正</button>
+            <button class="btn ghost" @click="cancelEdit">取消</button>
+          </template>
+          <template v-else>
+            <button class="btn ghost" :disabled="!!busyAction" @click="startEdit(m)">编辑</button>
+            <button class="btn ghost" :disabled="!!busyAction" @click="del(m)">遗忘</button>
+          </template>
+        </div>
       </div>
     </div>
+    <div v-else>
+      <div class="note" v-for="e in events" :key="e.id" style="margin-bottom:12px">
+        <small>[[ formatTime(e.occurred_at) ]] · [[ e.actor ]]<span v-if="e.identity_basis==='voice'">（声纹推测）</span> · [[ statusLabel(e.status) ]]</small>
+        <p style="white-space:pre-wrap;overflow-wrap:anywhere">[[ e.text ]]</p>
+        <button class="btn ghost" @click="viewSource(e.id)">原文与前后文</button>
+        <button class="btn ghost" :disabled="!!busyAction" @click="delEvent(e)">遗忘这段记录</button>
+      </div>
+    </div>
+    <p v-if="!loading && total===0">还没有符合条件的记录。</p>
+    <div style="display:flex;gap:10px;margin-top:18px">
+      <button class="btn" :disabled="offset===0 || loading || !!busyAction" @click="previousPage">上一页</button>
+      <button class="btn" :disabled="!hasMore || loading || !!busyAction" @click="nextPage">下一页</button>
+    </div>
+    <section v-if="sourceEvents.length" style="margin-top:24px" aria-label="来源记录">
+      <h2>来源与前后文</h2>
+      <div class="note" v-for="e in sourceEvents" :key="e.id"><small>[[ formatTime(e.occurred_at) ]] · [[ e.actor ]] · [[ statusLabel(e.status) ]]</small><p style="white-space:pre-wrap;overflow-wrap:anywhere">[[ e.text ]]</p></div>
+      <button class="btn" @click="sourceEvents=[]">收起</button>
+    </section>
+    <p>遗忘会同时清理对应来源及同轮回复，并刷新机器人对话连接；后台整理不会恢复已遗忘内容。</p>
   </div>
   <p v-if="loading" role="status">正在读取数据…</p>
   <p v-if="!loading && noDevice">请先在顶栏选择设备。</p>
   <button v-if="loadError" class="btn" @click="load">重试加载</button>
   <p v-if="busyAction" role="status">正在处理，请稍候…</p>
-  <p class="lead" v-if="msg">[[ msg ]]</p>
+  <p class="lead" v-if="msg" role="status">[[ msg ]]</p>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -38,26 +82,65 @@
 const { createApp } = Vue;
 createApp({
   delimiters:['[[',']]'],
-  data(){ return { items:[], draft:'', msg:'', editing:'', editText:'', noDevice:false }; },
+  data(){ return { tab:'people',items:[],events:[],people:[],sections:['基本信息','爱好','偏好','最近关注','任务','项目','健康','情绪'],section:'基本信息',
+    draft:'',personName:'',personId:'',query:'',dateFrom:'',dateTo:'',msg:'',editing:'',editText:'',noDevice:false,
+    offset:0,limit:50,total:0,hasMore:false,sourceEvents:[],loadSequence:0 }; },
   methods:{
     async load(){
+      const sequence=++this.loadSequence;
       const d=await (await fetch('/app/api/devices')).json();
-      this.noDevice = !d.current_device_id;
-      if(this.noDevice){ this.items=[]; return; }
-      const r=await (await fetch('/app/api/memories')).json();
-      if(r.ok) this.items=r.memories||[]; else this.msg=r.error||'加载失败'; },
-    async add(){ const t=this.draft.trim(); if(!t) return;
-      const r=await (await fetch('/app/api/memories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})})).json();
-      if(r.ok){ this.draft=''; this.msg='已添加记忆'; this.load(); } else this.msg=r.error||'添加失败'; },
-    startEdit(m){ this.editing=m.id; this.editText=m.text||''; },
-    cancelEdit(){ this.editing=''; this.editText=''; },
-    async saveEdit(m){ const t=this.editText.trim(); if(!t){ this.msg='记忆内容不能为空'; return; }
-      const r=await (await fetch('/app/api/memories/'+m.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})})).json();
-      if(r.ok){ this.cancelEdit(); this.msg='已保存记忆'; this.load(); } else this.msg=r.error||'保存失败'; },
-    async del(m){ const r=await (await fetch('/app/api/memories/'+m.id,{method:'DELETE'})).json();
-      if(r.ok){ this.msg='已删除记忆'; this.load(); } else this.msg=r.error||'删除失败'; },
+      if(sequence!==this.loadSequence)return;
+      this.noDevice=!d.current_device_id;
+      if(this.noDevice){this.items=[];this.events=[];this.people=[];return;}
+      const params=new URLSearchParams({limit:String(this.limit),offset:String(this.offset),query:this.query});
+      if(this.personId)params.set('person_id',this.personId);
+      if(this.dateFrom)params.set('date_from',this.dateFrom.replaceAll('-',''));
+      if(this.dateTo)params.set('date_to',this.dateTo.replaceAll('-',''));
+      const [r,meta]=await Promise.all([
+        fetch((this.tab==='people'?'/app/api/memories':'/app/api/memory/chat')+'?'+params).then(x=>x.json()),
+        fetch('/app/api/memories?limit=1').then(x=>x.json())
+      ]);
+      if(sequence!==this.loadSequence)return;
+      this.people=meta.people||[];this.sections=meta.sections||this.sections;
+      this.items=r.memories||[];this.events=r.events||[];this.total=r.total||0;this.hasMore=!!r.has_more;
+    },
+    async filterChanged(){this.offset=0;this.sourceEvents=[];this.cancelEdit();await this.load();},
+    async changeTab(tab){if(this.busyAction)return;this.tab=tab;await this.filterChanged();},
+    async previousPage(){this.offset=Math.max(0,this.offset-this.limit);await this.load();},
+    async nextPage(){this.offset+=this.limit;await this.load();},
+    async addPerson(){
+      const name=this.personName.trim();if(!name)return;
+      const r=await (await fetch('/app/api/memory/people',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})})).json();
+      this.personName='';this.personId=r.person.id;this.msg='已建立人物资料';await this.filterChanged();
+    },
+    async add(){
+      const text=this.draft.trim();if(!text||!this.personId)return;
+      await fetch('/app/api/memories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,person_id:this.personId,section:this.section})});
+      this.draft='';this.msg='已保存人物资料';await this.load();
+    },
+    startEdit(m){this.editing=m.id;this.editText=m.text;},
+    cancelEdit(){this.editing='';this.editText='';},
+    async saveEdit(m){
+      const text=this.editText.trim();if(!text){this.msg='内容不能为空';return;}
+      await fetch('/app/api/memories/'+m.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,expected_version:m.person_version})});
+      this.cancelEdit();this.msg='已保存纠正';await this.load();
+    },
+    async del(m){
+      await fetch('/app/api/memories/'+m.id,{method:'DELETE'});
+      this.sourceEvents=[];this.msg='已遗忘相关资料及来源';await this.load();
+    },
+    async delEvent(e){
+      await fetch('/app/api/memory/forget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_ids:[e.id]})});
+      this.sourceEvents=[];this.msg='已遗忘这段记录及关联资料';await this.load();
+    },
+    async viewSource(id){
+      try{const r=await (await fetch('/app/api/memory/chat/'+encodeURIComponent(id))).json();this.sourceEvents=r.context||[];}
+      catch(error){this.msg=error.message;}
+    },
+    formatTime(t){return t?new Date(t).toLocaleString('zh-CN'):'';},
+    statusLabel(s){return ({observed:'已记录',generated_playback_unconfirmed:'生成文本，播放情况见回执',completed:'已完成',interrupted:'已中断',confirmed:'设备已确认',started:'已开始',scheduled:'已安排',failed:'失败'})[s]||s;}
   },
-  mounted(){ this.load(); },
+  mounted(){this.load();}
 }).mount('#app');
 </script>
 {% endblock %}

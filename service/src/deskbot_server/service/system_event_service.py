@@ -87,6 +87,8 @@ class PerceptionEvents:
                 score = confidence(result.get("score"))
                 if speaker["state"] == "found" and result.get("name") and score is not None:
                     speaker.update(name=text(result["name"]), confidence=score)
+                    if result.get("profile_id"):
+                        speaker["profile_id"] = text(result["profile_id"])
                 elif speaker["state"] == "found":
                     speaker = {"state": "unknown"}
         return SystemEvent.create("perception_snapshot", "perception-"+turn_id, "perception",
