@@ -95,13 +95,15 @@ def test_generate_face_svg_from_image_calls_ark_responses_and_sanitizes_svg(monk
                                     "eye_r": [{"shape": "ellipse_fill", "x": 188, "y": 92, "rw": 16, "rh": 6}],
                                     "mouth": [
                                         {
-                                            "shape": "round_rect_outline",
+                                            "shape": "round_rect",
                                             "x": 104,
                                             "y": 148,
                                             "w": 76,
                                             "h": 18,
                                             "radius": 9,
-                                        }
+                                            "c": 2047,
+                                        },
+                                        {"shape": "round_rect", "x": 108, "y": 155, "w": 68, "h": 4, "radius": 2, "c": 0},
                                     ],
                                     "nose": [],
                                     "extra": [],
@@ -137,6 +139,10 @@ def test_generate_face_svg_from_image_calls_ark_responses_and_sanitizes_svg(monk
     assert "284x240" in content[1]["text"]
     assert "只输出 JSON" in content[1]["text"]
     assert "4 到 6 帧动画" in content[1]["text"]
+    assert "香肠嘴" in content[1]["text"]
+    assert "不画舌头" in content[1]["text"]
+    for frame in result["scene"]["frames"]:
+        assert [p["c"] for p in frame["elements"]["mouth"]] == [2047, 0]
     assert len(result["scene"]["frames"]) >= 4
 
 
@@ -415,7 +421,7 @@ def test_generate_face_svg_from_image_slugifies_invalid_model_names_for_pb_downl
 
 def test_face_design_generate_from_image_endpoint_requires_owned_device(temp_db, monkeypatch):
     from tests.device_bind_helpers import bind_device_online
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     def fake_generate(image_bytes, mime_type, *, prompt="", **_kwargs):
@@ -437,7 +443,7 @@ def test_face_design_generate_from_image_endpoint_requires_owned_device(temp_db,
             "usage": None,
         }
 
-    monkeypatch.setattr("deskbot_server.ark_face_svg.generate_face_svg_from_image", fake_generate)
+    monkeypatch.setattr("deskbot_server.vision.ark_face_svg.generate_face_svg_from_image", fake_generate)
     user = create_user("face-image2c@example.com", "password1234")
     bind_device_online(user.id, "deskbot_image")
     app = create_app()
@@ -464,7 +470,7 @@ def test_face_design_generate_from_image_endpoint_requires_owned_device(temp_db,
 
 
 def test_face_design_generate_from_image_endpoint_allows_browsing_without_device(temp_db, monkeypatch):
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     def fake_generate(image_bytes, mime_type, *, prompt="", **_kwargs):
@@ -486,7 +492,7 @@ def test_face_design_generate_from_image_endpoint_allows_browsing_without_device
             "usage": None,
         }
 
-    monkeypatch.setattr("deskbot_server.ark_face_svg.generate_face_svg_from_image", fake_generate)
+    monkeypatch.setattr("deskbot_server.vision.ark_face_svg.generate_face_svg_from_image", fake_generate)
     create_user("face-image-browse2c@example.com", "password1234")
     app = create_app()
     client = app.test_client()
@@ -507,7 +513,7 @@ def test_face_design_generate_from_image_endpoint_allows_browsing_without_device
 
 def test_face_design_generate_from_image_rejects_unsupported_file(temp_db):
     from tests.device_bind_helpers import bind_device_online
-    from deskbot_server.auth.service import create_user
+    from tests._auth_compat import create_user
     from deskbot_server.web.app import create_app
 
     user = create_user("face-image-bad2c@example.com", "password1234")

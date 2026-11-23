@@ -18,6 +18,7 @@ def pose(ms, *, eyes=(11, 11), widths=(11, 11), dx=0, dy=0, mouth=(56, 16), my=1
     """Stable primitive topology allows interpolation and explicitly replaces every layer."""
     mw, mh = mouth
     mx = 176 + dx
+    lip_padding = 6  # Extra pixels above and below the original opening.
     extras = [dict(shape='circle', x=x, y=y, r=0, c=c) for x,y,c in [(65+dx,132+dy,AMBER),(221+dx,132+dy,AMBER),(190+dx,129,CYAN),(125,191,AMBER),(142,191,AMBER),(159,191,AMBER)]]
     extras += [dict(shape='line', x1=a, y1=b, x2=c, y2=d, c=BLACK) for a,b,c,d in [(88+dx,76,117+dx,76),(167+dx,76,196+dx,76),(223,83,223,99),(215,91,231,91)]]
     extras[:2] = [dict(shape='ellipse_fill', x=x, y=132, rw=0, rh=0, c=BLACK) for x in (61, 223)]
@@ -63,7 +64,7 @@ def pose(ms, *, eyes=(11, 11), widths=(11, 11), dx=0, dy=0, mouth=(56, 16), my=1
         eye_l=[dict(shape='ellipse_fill',x=104+dx,y=97+dy,rw=widths[0],rh=eyes[0],c=CYAN)],
         eye_r=[dict(shape='ellipse_fill',x=180+dx,y=97+dy,rw=widths[1],rh=eyes[1],c=CYAN)],
         nose=[dict(shape='circle',x=0,y=0,r=0,c=BLACK)],
-        mouth=[dict(shape='round_rect',x=mx-mw//2,y=my+dy-mh//2,w=mw,h=mh,radius=mh//2,c=CYAN),
+        mouth=[dict(shape='round_rect',x=mx-mw//2,y=my+dy-mh//2-lip_padding,w=mw,h=mh+2*lip_padding,radius=min(mw//2, mh//2+lip_padding),c=CYAN),
                dict(shape='round_rect',x=mx-mw//2+4,y=my+dy-mh//2+(6 if frown else 4),w=max(1,mw-8),h=(mh+8 if frown else max(1,mh-8)),radius=(max(1,mh//2-3) if frown else max(0,(mh-8)//2)),c=BLACK)],
         extra=extras))
 

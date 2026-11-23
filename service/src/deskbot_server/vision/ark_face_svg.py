@@ -194,6 +194,9 @@ def _build_prompt(user_prompt: str) -> str:
         "你是 Deskbot 小歪的图片表情包转译器。输入图会先被服务端转成高对比黑白图，"
         "请定位并提取面部表情，只保留眉眼、眼神、鼻子、嘴型和脸颊这些表达情绪的五官造型，"
         "忽略背景、文字、水印、边框、装饰、身体和手势，生成适合 284x240 OLED 显示的矢量表情。"
+        "嘴沿用小歪略偏右的青色圆角香肠嘴。SVG 和 scene 都用两个实心圆角矩形叠画："
+        "先画青色外唇（#00ffff，c=2047），再画黑色口腔（#000000，c=0）。"
+        "按原图表情调整开口大小，青色外唇在开口上下各留约 10 像素，左右各留约 4 像素。口腔内留纯黑，不画舌头。"
         "只输出 JSON，不要 Markdown，不要解释。"
         "JSON schema: {name, title, svg, scene}。"
         'svg 必须是单个 <svg viewBox="0 0 284 240">，只使用 path/circle/ellipse/rect/line/polyline/polygon，'
@@ -394,8 +397,11 @@ def _model_element_to_primitive(item: object) -> dict[str, Any] | None:
         return None
     if _is_background_like(params):
         return None
+    color = params.get("c")
+    palette = {"c": color} if type(color) is int and 0 <= color <= 65535 else {}
     if shape in {"ellipse", "ellipse_fill", "ellipse_outline"}:
         return {
+            **palette,
             "shape": "ellipse" if "outline" in shape else "ellipse_fill",
             "x": round(_num(params.get("x", params.get("cx")), 0)),
             "y": round(_num(params.get("y", params.get("cy")), 0)),
@@ -404,6 +410,7 @@ def _model_element_to_primitive(item: object) -> dict[str, Any] | None:
         }
     if shape in {"circle", "circle_fill", "circle_outline"}:
         return {
+            **palette,
             "shape": "circle_outline" if "outline" in shape else "circle",
             "x": round(_num(params.get("x", params.get("cx")), 0)),
             "y": round(_num(params.get("y", params.get("cy")), 0)),
@@ -411,6 +418,7 @@ def _model_element_to_primitive(item: object) -> dict[str, Any] | None:
         }
     if shape == "line":
         return {
+            **palette,
             "shape": "line",
             "x1": round(_num(params.get("x1"), 0)),
             "y1": round(_num(params.get("y1"), 0)),
@@ -426,6 +434,7 @@ def _model_element_to_primitive(item: object) -> dict[str, Any] | None:
         outline = "outline" in shape
         round_rect = "round" in shape or params.get("rx") is not None or params.get("radius") is not None
         return {
+            **palette,
             "shape": ("round_rect_outline" if outline else "round_rect")
             if round_rect
             else ("rect_outline" if outline else "rect"),
@@ -607,7 +616,10 @@ def _fallback_scene(*, fallback_name: str, fallback_title: str) -> dict[str, Any
                         {"shape": "line", "x1": 174, "y1": 74, "x2": 218, "y2": 62, "sw": 4},
                     ],
                     "nose": [{"shape": "circle", "x": 142, "y": 122, "r": 4}],
-                    "mouth": [{"shape": "round_rect_outline", "x": 112, "y": 146, "w": 60, "h": 36, "radius": 18}],
+                    "mouth": [
+                        {"shape": "round_rect", "x": 148, "y": 146, "w": 56, "h": 28, "radius": 14, "c": 2047},
+                        {"shape": "round_rect", "x": 152, "y": 156, "w": 48, "h": 8, "radius": 4, "c": 0},
+                    ],
                     "extra": [],
                 },
             }

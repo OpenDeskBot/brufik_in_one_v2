@@ -64,7 +64,8 @@ class FaceAssetsTest(unittest.TestCase):
                 actual=[p for p in ps if p[0]=='mouth']
                 self.assertEqual(len(actual),len(expected))
                 for p,q in zip(actual,expected):
-                    self.assertEqual((p[1],p[3],p[4],p[5],p[6]),(q['shape'],q['x'],q['y'],q['w'],q['h']))
+                    width, height = ('rw', 'rh') if q['shape'] == 'ellipse_fill' else ('w', 'h')
+                    self.assertEqual(p[1:7], (q['shape'], q['c'], q['x'], q['y'], q[width], q[height]))
                 self.assertEqual(ms,frame['ms'])
         self.doc['phonemes'][0]['frames'][0]['elements']['mouth'][0]['w']+=1
         self.assertNotEqual(first['version'],assets.compile_editor_document(self.doc)['version'])
